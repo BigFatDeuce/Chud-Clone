@@ -75,9 +75,12 @@ Name: "{group}\{cm:UninstallApp}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Chud Clone"; Filename: "{app}\chud-clone.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\chud-clone.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent unchecked
-; Update started from the application (/SILENT /relaunch=1): restart it afterwards.
-Filename: "{app}\chud-clone.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
+; chud-clone.exe always requires administrator rights: "shellexec" lets Windows show the
+; UAC prompt when the wizard's last page starts it as the original (non-elevated) user.
+Filename: "{app}\chud-clone.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent unchecked shellexec
+; Update started from the application (/SILENT /relaunch=1): restart it afterwards, with the
+; installer's administrator rights (no second prompt).
+Filename: "{app}\chud-clone.exe"; Flags: nowait runascurrentuser; Check: RelaunchRequested
 
 [Code]
 function RelaunchRequested(): Boolean;

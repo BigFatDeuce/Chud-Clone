@@ -157,6 +157,39 @@ pub fn validate_io(dev: &dyn BlockDevice, offset: u64, len: usize) -> io::Result
     check_io_args(dev.size(), dev.sector_size(), offset, len)
 }
 
+/// Marks a file as sparse (NTFS). Fails on file systems that do not support it.
+#[cfg(windows)]
+fn set_sparse(file: &File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    let mut returned = 0u32;
+    // SAFETY: valid file handle owned by `file`; no input or output buffer
+    // (no input buffer means "set the sparse flag").
+    let ok = unsafe {
+        DeviceIoControl(file.as_raw_handle(), FSCTL_SET_SPARSE, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut returned, std::ptr::null_mut())
+    };
+    if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+#[cfg(not(windows))]
+fn set_sparse(_: &File) -> io::Result<()> {
+    // On Unix file systems, a file extended with set_len is already sparse.
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_sparse(file: &File) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+    file.metadata().map(|m| m.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE != 0).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn is_sparse(_: &File) -> bool {
+    true
+}
+
 /// Image file used as a block device.
 pub struct FileDevice {
     file: File,
@@ -180,6 +213,12 @@ impl FileDevice {
     }
 
     /// Creates (or truncates) an image of the requested size, filled with zeros.
+    ///
+    /// On NTFS the file is made sparse before it is sized. Without that, the first write
+    /// near the end of the file (the backup GPT area is cleared before the copy) forces
+    /// Windows to physically write zeros over the whole file first: tens of minutes for
+    /// a large image on a hard disk, with no progress to report. A sparse file reads as
+    /// zeros where nothing was written and only takes the space actually copied.
     pub fn create(path: &Path, size: u64, sector: u32) -> io::Result<Self> {
         if !size.is_multiple_of(sector as u64) {
             return Err(io::Error::new(
@@ -188,8 +227,16 @@ impl FileDevice {
             ));
         }
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
+        // File systems without sparse files (FAT32, exFAT) refuse it: the image is then
+        // an ordinary file, which stays correct, only slower to start.
+        let _ = set_sparse(&file);
         file.set_len(size)?;
         Self::from_file(file, path, sector, false)
+    }
+
+    /// True if the image is stored as a sparse file.
+    pub fn is_sparse(&self) -> bool {
+        is_sparse(&self.file)
     }
 
     fn from_file(file: File, path: &Path, sector: u32, read_only: bool) -> io::Result<Self> {
@@ -504,6 +551,35 @@ impl Write for DeviceReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a large new image must not be zero-filled by the file system when
+    /// the clone clears its last mebibyte first ("Preparing the destination" stalled
+    /// for tens of minutes on a hard disk). The file is sparse, so the test uses no space.
+    #[test]
+    fn new_image_is_sparse_and_writable_at_the_end_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.img");
+        let size = 64u64 << 30;
+        let mut d = FileDevice::create(&path, size, 512).unwrap();
+        assert_eq!(d.size(), size);
+        // Checked before writing: on a non-sparse file the write below would take minutes.
+        assert!(d.is_sparse(), "a new image must be a sparse file");
+        let t = std::time::Instant::now();
+        d.write_at(size - 1024 * 1024, &vec![0xAB; 1024 * 1024]).unwrap();
+        d.flush().unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "write at the end took {:?}", t.elapsed());
+        let mut back = vec![0xFFu8; 4096];
+        d.read_at(size / 2, &mut back).unwrap();
+        assert!(back.iter().all(|b| *b == 0), "unwritten areas read as zeros");
+        d.read_at(size - 4096, &mut back).unwrap();
+        assert!(back.iter().all(|b| *b == 0xAB));
+        // Recreating an existing image keeps it sparse and empty.
+        drop(d);
+        let mut d = FileDevice::create(&path, size, 512).unwrap();
+        assert!(d.is_sparse());
+        d.read_at(size - 4096, &mut back).unwrap();
+        assert!(back.iter().all(|b| *b == 0));
+    }
 
     #[test]
     fn mem_device_roundtrip_and_alignment() {

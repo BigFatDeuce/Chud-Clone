@@ -582,16 +582,15 @@ fn serial_text(d: &DiskInfo) -> String {
 fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool) -> Result<Box<dyn BlockDevice>, JobError> {
     match target {
         Target::Image(p) => {
-            let dev = if p.exists() {
-                FileDevice::open_read_write(p, 512)
-            } else {
-                if let Some(parent) = p.parent()
-                    && !parent.as_os_str().is_empty()
-                {
-                    std::fs::create_dir_all(parent).map_err(fail)?;
-                }
-                FileDevice::create(p, info.size, 512)
-            };
+            // An existing image is recreated at the same size: its content is erased by
+            // the clone anyway, and an ordinary file left by an interrupted attempt would
+            // otherwise have to be zero-filled by Windows before the first write at its end.
+            if let Some(parent) = p.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).map_err(fail)?;
+            }
+            let dev = FileDevice::create(p, info.size, 512);
             dev.map(|d| Box::new(d) as Box<dyn BlockDevice>)
                 .map_err(|e| fail(tf!("ouverture de l'image de destination impossible : {e}", "cannot open the destination image: {e}")))
         }

@@ -18,9 +18,8 @@ REQUIREMENTS
   - Microsoft Edge WebView2 Runtime (ships with Windows 11 and up-to-date Windows 10).
     If it is missing the interface does not open: install "WebView2 Runtime" from
     Microsoft's website.
-  - Administrator rights to read or clone a real disk. Without them the application
-    opens in "limited mode" (disk list, image files) and offers to restart as
-    administrator.
+  - Administrator rights: reading and cloning disks needs them, so Windows asks for
+    them (UAC prompt) every time Chud Clone starts.
 
 PRIVACY
   No telemetry. Reports stay on this computer:

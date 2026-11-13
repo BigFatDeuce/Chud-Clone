@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Disk Clone (16-24 px)"><title>Disk Clone (16-24 px)</title><circle cx="32" cy="32" r="32" fill="#011128"/>
+<rect x="8" y="12" width="32" height="23" rx="4" fill="#2c639f"/>
+<path fill="none" stroke="#f9c83a" stroke-width="4" stroke-linecap="round" d="M43 16Q52 17 53 25"/>
+<path fill="#f9c83a" d="M47 24H59L53 31Z"/>
+<rect x="20" y="31" width="36" height="25" rx="4" fill="#f9c83a" stroke="#011128" stroke-width="2.5"/>
+<rect x="24" y="36" width="11" height="7" rx="1" fill="#ffffff" stroke="#011128" stroke-width="2"/><rect x="40" y="36" width="11" height="7" rx="1" fill="#ffffff" stroke="#011128" stroke-width="2"/>
+<rect x="28" y="51" width="20" height="5" fill="#011128"/></svg>

@@ -73,13 +73,13 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.2.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.2.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.2.0.txt` | Checksums of the files above. |
+| `ChudClone-0.2.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.2.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.2.1.txt` | Checksums of the files above. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
-Windows 11 and up-to-date Windows 10). The app starts without administrator rights in a *limited
-mode* (disk list, image files) and offers to restart as administrator when it needs to read a disk.
+Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
+Windows asks for them (UAC prompt) every time the app starts.
 
 ## Updates
 
@@ -178,7 +178,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 103 tests
+cargo test --workspace                                         # 104 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -211,7 +211,7 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 
 ## Tests
 
-- `crates/core`: 60 unit tests and 38 integration tests on **real disk images**
+- `crates/core`: 61 unit tests and 38 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
