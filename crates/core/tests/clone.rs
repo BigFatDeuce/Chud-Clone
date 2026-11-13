@@ -1,7 +1,7 @@
-//! Tests d'intégration du moteur de clonage sur des images disque réelles (en mémoire).
+//! Integration tests of the clone engine on real disk images (in memory).
 //!
-//! Chaque scénario exécute le clonage complet (plan → copie → table → vérifications)
-//! et contrôle à la fois le bilan annoncé et le contenu réel de la destination.
+//! Each scenario runs the complete clone (plan → copy → table → checks)
+//! and checks both the announced outcome and the actual content of the destination.
 
 mod common;
 
@@ -21,7 +21,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const SS: u64 = 512;
 
-/// Les scénarios manipulent des images de plusieurs centaines de Mio : un seul à la fois.
+/// The scenarios handle images of several hundred MiB: only one at a time.
 static HEAVY: Mutex<()> = Mutex::new(());
 fn heavy() -> MutexGuard<'static, ()> {
     HEAVY.lock().unwrap_or_else(|e| e.into_inner())
@@ -36,7 +36,7 @@ fn mbr_image() -> &'static [u8] {
     IMG.get_or_init(|| common::load_fixture("mbr-win.img"))
 }
 
-/// Source en lecture seule sur une image partagée ; compte les tentatives d'écriture.
+/// Read-only source on a shared image; counts write attempts.
 struct SliceDev {
     data: &'static [u8],
     write_attempts: u64,
@@ -114,7 +114,7 @@ struct Run {
     rec: Recorder,
 }
 
-/// Exécute un clonage complet de `src` vers une destination en mémoire.
+/// Runs a complete clone of `src` to an in-memory destination.
 fn run_with(
     src_img: &'static [u8],
     dst_size: u64,
@@ -128,11 +128,11 @@ fn run_with(
     let analysis = analyze_disk(&mut src).unwrap();
     let plan = build_plan(&analysis, dst_size, 512, &popts);
     src.plan = src_faults;
-    // Destination pré-remplie de déchets : rien ne doit dépendre de son ancien contenu.
+    // Destination pre-filled with garbage: nothing must depend on its old content.
     let mut dst = FaultyDevice::new(MemDevice::from_vec(vec![0xA5u8; dst_size as usize], 512), dst_faults);
     let ctl: &'static Control = rec.ctl.unwrap_or_else(|| Box::leak(Box::new(Control::new())));
     let outcome = run_clone(CloneRequest { src: &mut src, dst: &mut dst, src_analysis: &analysis, plan: &plan, opts: &eopts, ctl, obs: &rec });
-    assert_eq!(src.inner.write_attempts, 0, "aucune écriture ne doit être tentée sur la source");
+    assert_eq!(src.inner.write_attempts, 0, "no write may be attempted on the source");
     Run { outcome, plan, analysis, dst: dst.inner.data, rec }
 }
 
@@ -140,7 +140,7 @@ fn run(src_img: &'static [u8], dst_size: u64, popts: PlanOptions) -> Run {
     run_with(src_img, dst_size, popts, opts(), FaultPlan::default(), FaultPlan::default(), Recorder::default())
 }
 
-/// Toutes les plages planifiées doivent être identiques entre la source et la destination.
+/// Every planned range must be identical between the source and the destination.
 fn assert_tasks_equal(r: &Run, src: &[u8], except: &[(u64, u64)]) {
     for t in r.plan.tasks.iter().chain(r.plan.late_tasks.iter()) {
         let mut off = 0u64;
@@ -148,16 +148,16 @@ fn assert_tasks_equal(r: &Run, src: &[u8], except: &[(u64, u64)]) {
             let n = 4096.min(t.len - off);
             let (s, d) = ((t.src + off) as usize, (t.dst + off) as usize);
             let skip = except.iter().any(|(eo, el)| t.dst + off < eo + el && *eo < t.dst + off + n);
-            // En copie brute du disque entier, les secteurs de table sont réécrits ensuite.
+            // In a raw copy of the whole disk, the table sectors are rewritten afterwards.
             if !skip && src[s..s + n as usize] != r.dst[d..d + n as usize] {
-                panic!("différence source/destination à l'octet source {s} (destination {d})");
+                panic!("source/destination difference at source byte {s} (destination {d})");
             }
             off += n;
         }
     }
 }
 
-/// Tous les fichiers de chaque partition NTFS/FAT du clone sont identiques à la source.
+/// Every file of each NTFS/FAT partition of the clone is identical to the source.
 fn assert_same_files(r: &Run, src_img: &'static [u8]) {
     let mut s = SliceDev::new(src_img);
     let mut d = MemDevice::from_vec(r.dst.clone(), 512);
@@ -168,12 +168,12 @@ fn assert_same_files(r: &Run, src_img: &'static [u8]) {
         }
         let files = fs::ntfs::list_files(&mut s, pp.src_start, pp.src_len).unwrap();
         let files_d = fs::ntfs::list_files(&mut d, pp.dst_start, pp.dst_len).unwrap();
-        assert_eq!(files, files_d, "liste des fichiers de la partition {}", pp.number);
+        assert_eq!(files, files_d, "file list of partition {}", pp.number);
         for (path, _) in &files {
             let comps: Vec<&str> = path.split('/').collect();
             let a = fs::ntfs::read_file(&mut s, pp.src_start, pp.src_len, &comps, usize::MAX).unwrap().unwrap();
             let b = fs::ntfs::read_file(&mut d, pp.dst_start, pp.dst_len, &comps, usize::MAX).unwrap().unwrap();
-            assert!(a == b, "partition {} : contenu différent pour {path}", pp.number);
+            assert!(a == b, "partition {}: content differs for {path}", pp.number);
             checked += 1;
         }
     }
@@ -192,7 +192,7 @@ fn dump_reasons(o: &CloneOutcome) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Scénarios nominaux
+// Nominal scenarios
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -205,15 +205,15 @@ fn gpt_same_size_smart_clone_is_verified() {
     assert!(r.outcome.table_written && r.outcome.table_check.ok);
     assert!(r.outcome.data_check.passed());
     assert_eq!(r.outcome.copy.bytes_copied, r.plan.total_copy_bytes);
-    // Le clonage intelligent copie nettement moins que la taille du disque.
-    assert!(r.plan.total_copy_bytes < src.len() as u64 * 6 / 10, "copié : {}", r.plan.total_copy_bytes);
+    // The smart clone copies much less than the size of the disk.
+    assert!(r.plan.total_copy_bytes < src.len() as u64 * 6 / 10, "copied: {}", r.plan.total_copy_bytes);
     let methods: Vec<CopyMethod> = r.plan.partitions.iter().map(|p| p.method).collect();
     assert_eq!(methods, vec![CopyMethod::Smart, CopyMethod::Skip, CopyMethod::Smart, CopyMethod::Smart]);
 
     assert_tasks_equal(&r, src, &[]);
     assert_same_files(&r, src);
 
-    // Identité préservée : mêmes GUID de disque et de partitions.
+    // Identity preserved: same disk and partition GUIDs.
     let mut d = MemDevice::from_vec(r.dst.clone(), 512);
     let l = read_layout(&mut d).unwrap();
     assert!(l.findings.is_empty(), "{:#?}", l.findings);
@@ -221,14 +221,14 @@ fn gpt_same_size_smart_clone_is_verified() {
     let mut s = SliceDev::new(src);
     let ls = read_layout(&mut s).unwrap();
     assert_eq!(l.partitions, ls.partitions);
-    // Fichiers de démarrage présents sur l'ESP du clone.
+    // Boot files present on the clone's ESP.
     let esp = &l.partitions[0];
     assert!(fs::fat::file_size(&mut d, esp.start_lba * SS, esp.sectors * SS, "EFI/Microsoft/Boot/BCD").unwrap().is_some());
     let boot = r.outcome.boot_destination.as_ref().unwrap();
     assert_eq!(boot.style, chud_clone_core::boot::BootStyle::WindowsUefi);
     assert!(boot.findings.is_empty(), "{:#?}", boot.findings);
     assert_eq!(boot.windows_partition, Some(3));
-    // La MSR n'est pas copiée : la destination y garde son ancien contenu.
+    // The MSR is not copied: the destination keeps its old content there.
     let msr = &l.partitions[1];
     let o = (msr.start_lba * SS + 4096) as usize;
     assert!(r.dst[o..o + 4096].iter().all(|b| *b == 0xA5));
@@ -255,10 +255,10 @@ fn gpt_larger_destination_moves_trailing_partitions() {
     let gpt = l.gpt.as_ref().unwrap();
     assert!(gpt.backup_at_end);
     let rec = l.partitions.iter().find(|p| p.role() == PartRole::Recovery).unwrap();
-    // La récupération est collée à la fin, alignée sur 1 Mio.
+    // Recovery is moved against the end, aligned on 1 MiB.
     assert_eq!(rec.start_lba % 2048, 0);
     assert!(gpt.last_usable_lba + 1 - rec.end_lba() < 2048);
-    // Les trois premières partitions n'ont pas bougé.
+    // The first three partitions have not moved.
     for i in 0..3 {
         assert!(!r.plan.partitions[i].moved);
     }
@@ -279,8 +279,8 @@ fn gpt_larger_destination_without_layout_optimisation_stays_identical() {
     assert_same_files(&r, src);
 }
 
-/// Source avec un trou de 64 Mio avant la partition de récupération, obtenue en
-/// déplaçant celle-ci dans une copie agrandie de l'image de test.
+/// Source with a 64 MiB gap before the recovery partition, obtained by
+/// moving it in an enlarged copy of the test image.
 fn gpt_image_with_gap() -> &'static [u8] {
     static IMG: OnceLock<Vec<u8>> = OnceLock::new();
     IMG.get_or_init(|| {
@@ -327,7 +327,7 @@ fn gpt_image_with_gap() -> &'static [u8] {
         };
         let g = build_gpt(&spec).unwrap();
         let pm = mbr::build_protective(None, 512, new_size / SS);
-        // Efface l'ancienne table de secours puis installe la nouvelle.
+        // Erase the old backup table then install the new one.
         let old_backup = base.len() - 33 * 512;
         img[old_backup..base.len()].fill(0);
         img[..512].copy_from_slice(&pm);
@@ -342,13 +342,13 @@ fn gpt_image_with_gap() -> &'static [u8] {
 fn gpt_smaller_destination_compacts_partitions() {
     let _g = heavy();
     let src = gpt_image_with_gap();
-    // Vérifie d'abord que la source fabriquée est saine.
+    // First check that the fabricated source is sound.
     let mut s = SliceDev::new(src);
     let a = analyze_disk(&mut s).unwrap();
     assert!(a.all_findings().is_empty(), "{:#?}", a.all_findings());
     assert_eq!(a.parts[3].part.start_lba, (1 + 40 + 16 + 96 + 64) * 2048);
 
-    // 190 Mio : trop petit pour les positions d'origine (fin à 249 Mio), assez pour 185 Mio resserrés.
+    // 190 MiB: too small for the original positions (end at 249 MiB), enough for 185 MiB packed.
     let r = run(src, 190 * MIB, PlanOptions::default());
     assert_eq!(r.plan.strategy, LayoutStrategy::Compacted, "{:#?}", r.plan.findings);
     assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&r.outcome));
@@ -367,14 +367,14 @@ fn destination_too_small_is_refused_before_any_write() {
     for (src, size) in [(gpt_image(), 150 * MIB), (mbr_image(), 100 * MIB)] {
         let r = run(src, size, PlanOptions::default());
         assert!(r.plan.is_blocked());
-        let f = r.plan.findings.iter().find(|f| f.code == "DEST_TOO_SMALL").expect("constat attendu");
+        let f = r.plan.findings.iter().find(|f| f.code == "DEST_TOO_SMALL").expect("finding expected");
         assert!(f.blocking);
         assert!(f.detail.contains("Gestion des disques") || f.detail.contains("plus grande"), "{}", f.detail);
         assert_eq!(r.outcome.status, FinalStatus::Failed);
         assert!(matches!(r.outcome.stop, StopReason::Internal(_)));
-        assert!(r.dst.iter().all(|b| *b == 0xA5), "la destination ne doit pas avoir été touchée");
+        assert!(r.dst.iter().all(|b| *b == 0xA5), "the destination must not have been touched");
     }
-    // La copie brute exige une destination au moins aussi grande.
+    // The raw copy requires a destination at least as large.
     let r = run(gpt_image(), 191 * MIB, PlanOptions { mode: CloneMode::RawDisk, optimize_layout: true, grow_main: true });
     assert!(r.plan.is_blocked());
     assert!(r.dst.iter().all(|b| *b == 0xA5));
@@ -391,18 +391,18 @@ fn mbr_smart_clone_preserves_positions_boot_track_and_logicals() {
         assert!(r.plan.partitions.iter().all(|p| !p.moved && p.dst_start == p.src_start));
         let methods: Vec<CopyMethod> = r.plan.partitions.iter().map(|p| p.method).collect();
         assert_eq!(methods, vec![CopyMethod::Smart, CopyMethod::Smart, CopyMethod::Smart, CopyMethod::Raw]);
-        // Secteur 0 (code d'amorçage, signature, table) et piste d'amorçage identiques.
+        // Sector 0 (boot code, signature, table) and boot track identical.
         assert_eq!(&r.dst[..63 * 512], &src[..63 * 512]);
         let mut d = MemDevice::from_vec(r.dst.clone(), 512);
         let l = read_layout(&mut d).unwrap();
         assert!(l.findings.is_empty(), "{:#?}", l.findings);
         assert_eq!(l.mbr.as_ref().unwrap().signature, 0x1BADF00D);
         assert_eq!(l.partitions.len(), 4);
-        // Partition brute (type Linux, contenu inconnu) : identique octet pour octet.
+        // Raw partition (Linux type, unknown content): identical byte for byte.
         let p6 = &l.partitions[3];
         let (o, n) = ((p6.start_lba * SS) as usize, (p6.sectors * SS) as usize);
         assert!(src[o..o + n] == r.dst[o..o + n]);
-        // FAT16 logique : fichiers lisibles sur le clone.
+        // Logical FAT16: files readable on the clone.
         let p5 = &l.partitions[2];
         let a = fs::fat::read_file(&mut d, p5.start_lba * SS, p5.sectors * SS, "big.bin").unwrap().unwrap();
         let mut s = SliceDev::new(src);
@@ -438,12 +438,12 @@ fn raw_partitions_mode_copies_every_sector() {
 fn raw_disk_mode_reproduces_the_disk_and_relocates_backup_gpt() {
     let _g = heavy();
     let src = gpt_image();
-    // Même taille : copie strictement identique.
+    // Same size: strictly identical copy.
     let r = run(src, src.len() as u64, PlanOptions { mode: CloneMode::RawDisk, optimize_layout: true, grow_main: true });
     assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&r.outcome));
-    assert!(r.dst == src, "copie brute de même taille : identique à l'octet près");
+    assert!(r.dst == src, "raw copy of the same size: identical to the byte");
 
-    // Plus grand : tout est identique sauf la table GPT, réajustée à la nouvelle taille.
+    // Larger: everything is identical except the GPT table, adjusted to the new size.
     let r = run(src, 256 * MIB, PlanOptions { mode: CloneMode::RawDisk, optimize_layout: true, grow_main: true });
     assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&r.outcome));
     assert!(r.plan.findings.iter().any(|f| f.code == "GPT_BACKUP_RELOCATED"));
@@ -471,7 +471,7 @@ fn disk_without_partition_table_is_cloned_raw_with_reservation() {
     let r = run(src, 10 * MIB, PlanOptions::default());
     assert_eq!(r.plan.mode, CloneMode::RawDisk);
     assert!(r.plan.findings.iter().any(|f| f.code == "MODE_FORCED_RAW_DISK"));
-    // Octets identiques, mais jamais « réussi et vérifié » : aucune structure n'a pu être contrôlée.
+    // Identical bytes, but never "successful and verified": no structure could be checked.
     assert_eq!(r.outcome.status, FinalStatus::CompletedWithWarnings, "{}", dump_reasons(&r.outcome));
     assert!(r.dst[..src.len()] == *src);
 }
@@ -492,7 +492,7 @@ fn dirty_ntfs_partition_falls_back_to_raw_copy_and_is_flagged() {
     assert_eq!(p3.method, CopyMethod::Raw);
     assert!(p3.method_reason.as_deref().unwrap().contains("dirty"), "{:?}", p3.method_reason);
     assert_eq!(p3.copy_bytes, p3.src_len);
-    // Copie fidèle, mais la source avait un défaut : jamais « réussi » sans réserve.
+    // Faithful copy, but the source had a defect: never "successful" without reservation.
     assert_eq!(r.outcome.status, FinalStatus::CompletedWithWarnings, "{}", dump_reasons(&r.outcome));
     assert!(r.outcome.reasons.iter().any(|x| x.contains("à vérifier")), "{:#?}", r.outcome.reasons);
     let (o, n) = (p3.src_start as usize, p3.src_len as usize);
@@ -503,14 +503,14 @@ fn dirty_ntfs_partition_falls_back_to_raw_copy_and_is_flagged() {
 // Secteurs illisibles
 // ---------------------------------------------------------------------------
 
-/// Choisit une plage de 3 secteurs au milieu d'une grande étendue utilisée de la
-/// partition Windows.
+/// Picks a 3-sector range in the middle of a large used extent of the
+/// Windows partition.
 fn pick_bad_range(src: &'static [u8]) -> (u64, u64) {
     let mut s = SliceDev::new(src);
     let a = analyze_disk(&mut s).unwrap();
     let plan = build_plan(&a, src.len() as u64, 512, &PlanOptions::default());
     let p3 = &plan.partitions[2];
-    let t = plan.tasks.iter().find(|t| t.src >= p3.src_start && t.len >= 2 * MIB).expect("grande étendue");
+    let t = plan.tasks.iter().find(|t| t.src >= p3.src_start && t.len >= 2 * MIB).expect("large extent");
     (t.src + MIB + 7 * 512, 3 * 512)
 }
 
@@ -532,14 +532,14 @@ fn unreadable_sectors_stop_the_clone_by_default() {
     assert_eq!(r.outcome.stop, StopReason::Unreadable);
     assert_eq!(r.outcome.bad_ranges.len(), 1, "{:#?}", r.outcome.bad_ranges);
     let b = &r.outcome.bad_ranges[0];
-    assert_eq!((b.lba, b.sectors), (bad_off / SS, 3), "position exacte au secteur près");
+    assert_eq!((b.lba, b.sectors), (bad_off / SS, 3), "exact position, to the sector");
     assert_eq!(b.outcome, BadOutcome::NotCopied);
     assert_eq!(b.class, IoErrorClass::Media);
     assert_eq!(b.attempts, opts().read_retries + 2);
     assert!(!r.outcome.table_written);
-    assert!(no_table(&r.dst), "aucune table de partitions ne doit exister sur une destination incomplète");
-    assert!(r.rec.asked.lock().unwrap().is_none(), "politique Stop : aucune question posée");
-    // Le reste des données saines a tout de même été copié avant l'arrêt.
+    assert!(no_table(&r.dst), "no partition table may exist on an incomplete destination");
+    assert!(r.rec.asked.lock().unwrap().is_none(), "Stop policy: no question asked");
+    // The rest of the healthy data was still copied before the stop.
     assert!(r.outcome.copy.bytes_copied >= r.plan.total_copy_bytes - 16 * 1024);
     assert!(r.rec.logs.lock().unwrap().iter().any(|(l, m)| *l == LogLevel::Error && m.contains(&format!("LBA {}", bad_off / SS))));
 }
@@ -561,14 +561,14 @@ fn zero_fill_policy_completes_but_reports_incomplete_clone() {
         Recorder::default(),
     );
     assert_eq!(r.outcome.stop, StopReason::Completed);
-    // Jamais « réussi » avec des données manquantes, même si tout le reste est vérifié.
+    // Never "successful" with missing data, even if everything else is verified.
     assert_eq!(r.outcome.status, FinalStatus::Incomplete, "{}", dump_reasons(&r.outcome));
     assert!(r.outcome.table_written && r.outcome.table_check.ok);
     assert_eq!(r.outcome.bad_ranges.len(), 1);
     assert_eq!(r.outcome.bad_ranges[0].outcome, BadOutcome::ZeroFilled);
     assert_eq!(r.outcome.copy.bytes_zero_filled, bad_len);
     let o = bad_off as usize;
-    assert!(r.dst[o..o + bad_len as usize].iter().all(|b| *b == 0), "secteurs illisibles remplacés par des zéros");
+    assert!(r.dst[o..o + bad_len as usize].iter().all(|b| *b == 0), "unreadable sectors replaced with zeros");
     assert_tasks_equal(&r, src, &[(bad_off, bad_len)]);
     assert!(r.outcome.reasons.iter().any(|x| x.contains("remplacés par des zéros")));
 }
@@ -591,7 +591,7 @@ fn ask_policy_consults_the_user_with_exact_positions() {
             FaultPlan::default(),
             rec,
         );
-        let asked = r.rec.asked.lock().unwrap().clone().expect("la décision doit être demandée");
+        let asked = r.rec.asked.lock().unwrap().clone().expect("the decision must be requested");
         assert_eq!(asked.total_sectors, 4);
         assert_eq!(asked.ranges.len(), 2);
         assert_eq!(asked.ranges[0].lba, bad_off / SS);
@@ -614,7 +614,7 @@ fn intermittent_read_errors_are_recovered_and_reported_as_warning() {
     let _g = heavy();
     let src = gpt_image();
     let (bad_off, bad_len) = pick_bad_range(src);
-    // Échoue 3 fois (bloc, sous-bloc, 1re relecture) puis réussit.
+    // Fails 3 times (block, sub-block, 1st re-read) then succeeds.
     let r = run_with(
         src,
         src.len() as u64,
@@ -629,7 +629,7 @@ fn intermittent_read_errors_are_recovered_and_reported_as_warning() {
     assert!(r.outcome.copy.recovered_bytes > 0);
     assert!(!r.outcome.recovered.is_empty());
     assert!(r.outcome.copy.read_error_events >= 2);
-    // Données complètes et vérifiées, mais la source a montré une faiblesse.
+    // Complete and verified data, but the source showed a weakness.
     assert_eq!(r.outcome.status, FinalStatus::CompletedWithWarnings, "{}", dump_reasons(&r.outcome));
     assert!(r.outcome.data_check.passed());
     assert_tasks_equal(&r, src, &[]);
@@ -637,7 +637,7 @@ fn intermittent_read_errors_are_recovered_and_reported_as_warning() {
 }
 
 // ---------------------------------------------------------------------------
-// Pannes et interruptions
+// Failures and interruptions
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -649,7 +649,7 @@ fn source_disconnection_fails_cleanly() {
         src.len() as u64,
         PlanOptions::default(),
         opts(),
-        // L'analyse est faite avant l'injection ; la source « disparaît » après 20 Mio copiés.
+        // The analysis is done before the injection; the source "disappears" after 20 MiB copied.
         FaultPlan { vanish_after_read: Some(20 * MIB), ..Default::default() },
         FaultPlan::default(),
         Recorder::default(),
@@ -698,7 +698,7 @@ fn destination_write_error_is_never_skipped() {
         StopReason::DestinationFailed(m) => assert!(m.contains("écriture"), "{m}"),
         other => panic!("{other:?}"),
     }
-    assert_eq!(r.outcome.copy.write_error_events, opts().write_retries as u64 + 1, "tentatives bornées");
+    assert_eq!(r.outcome.copy.write_error_events, opts().write_retries as u64 + 1, "bounded attempts");
     assert!(!r.outcome.table_written && no_table(&r.dst));
 }
 
@@ -730,7 +730,7 @@ fn destination_disconnection_and_write_protection_fail_cleanly() {
     );
     assert_eq!(r.outcome.status, FinalStatus::Failed);
     assert!(matches!(r.outcome.stop, StopReason::DestinationFailed(_)));
-    assert!(r.dst.iter().all(|b| *b == 0xA5), "destination protégée : intacte");
+    assert!(r.dst.iter().all(|b| *b == 0xA5), "protected destination: untouched");
     assert_eq!(r.outcome.copy.bytes_copied, 0);
 }
 
@@ -748,7 +748,7 @@ fn silent_destination_corruption_is_caught_by_verification() {
         FaultPlan { corrupt_write: vec![(off, 512)], ..Default::default() },
         Recorder::default(),
     );
-    // La copie s'est « bien passée » du point de vue des E/S : seule la relecture révèle le défaut.
+    // The copy "went well" from the I/O point of view: only the re-read reveals the defect.
     assert_eq!(r.outcome.stop, StopReason::Completed);
     assert_eq!(r.outcome.copy.write_error_events, 0);
     assert_eq!(r.outcome.status, FinalStatus::Failed, "{}", dump_reasons(&r.outcome));
@@ -757,7 +757,7 @@ fn silent_destination_corruption_is_caught_by_verification() {
     assert_eq!(m.kind, MismatchKind::DestinationDiffers);
     assert!(m.lba <= off / SS && off / SS < m.lba + m.sectors);
 
-    // Sans vérification, la corruption passe inaperçue : le statut ne doit alors JAMAIS être « réussi ».
+    // Without verification, the corruption goes unnoticed: the status must then NEVER be "successful".
     let mut e = opts();
     e.verify = VerifyMode::None;
     let r = run_with(
@@ -797,7 +797,7 @@ fn full_verification_detects_unstable_source() {
     );
     assert_ne!(r.outcome.status, FinalStatus::SuccessVerified);
 
-    // Source stable : la comparaison complète réussit.
+    // Stable source: the full comparison succeeds.
     let r = run_with(src, src.len() as u64, PlanOptions::default(), e, FaultPlan::default(), FaultPlan::default(), Recorder::default());
     assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&r.outcome));
     assert_eq!(r.outcome.data_check.mode, VerifyMode::Full);
@@ -824,8 +824,8 @@ fn cancellation_stops_promptly_and_leaves_no_partition_table() {
     assert_eq!(r.outcome.stop, StopReason::Cancelled);
     assert_eq!(r.outcome.status, FinalStatus::Incomplete);
     assert!(!r.outcome.table_written && no_table(&r.dst));
-    // Arrêt immédiat : le bloc en cours se termine, pas un de plus. (Le compteur de
-    // lecture inclut les quelques Mio lus pendant l'analyse préalable.)
+    // Immediate stop: the current block finishes, not one more. (The read counter
+    // includes the few MiB read during the preliminary analysis.)
     assert!(r.outcome.copy.bytes_copied >= 4 * MIB && r.outcome.copy.bytes_copied <= 10 * MIB + 64 * 1024, "{}", r.outcome.copy.bytes_copied);
     assert!(r.outcome.reasons[0].contains("annulée"));
 }
@@ -837,7 +837,7 @@ fn plan_and_device_mismatch_is_refused() {
     let mut src = SliceDev::new(src_img);
     let analysis = analyze_disk(&mut src).unwrap();
     let plan = build_plan(&analysis, 256 * MIB, 512, &PlanOptions::default());
-    // La destination réellement ouverte n'a pas la taille prévue par le plan (disque remplacé entre-temps).
+    // The destination actually opened does not have the size planned (disk replaced in the meantime).
     let mut dst = MemDevice::from_vec(vec![0xA5; 200 * MIB as usize], 512);
     let ctl = Control::new();
     let rec = Recorder::default();

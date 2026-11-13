@@ -1,18 +1,18 @@
-//! Pré-vérifications de sécurité, exécutées avant chaque clonage.
+//! Safety pre-checks, run before every clone.
 //!
-//! Tout constat « bloquant » interdit le démarrage. Ces contrôles sont refaits par le
-//! moteur au moment de lancer l'opération, jamais sur la seule foi de l'interface.
+//! Any "blocking" finding forbids starting. These checks are done again by the
+//! engine when the operation is launched, never on the interface's word alone.
 
 use crate::diag::{Finding, human_size};
 use crate::model::{DiskInfo, DiskKind};
 use crate::partition::TableKind;
 use crate::plan::{CloneMode, ClonePlan, DiskAnalysis};
 
-/// Contrôles portant sur l'identité et l'état des deux disques.
+/// Checks on the identity and state of the two disks.
 pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalysis>, plan: Option<&ClonePlan>) -> Vec<Finding> {
     let mut out = Vec::new();
 
-    // --- Même disque -----------------------------------------------------------
+    // --- Same disk ---------------------------------------------------------------
     let same_path = src.path.eq_ignore_ascii_case(&dst.path);
     let same_number = src.kind == DiskKind::Physical && dst.kind == DiskKind::Physical && src.number.is_some() && src.number == dst.number;
     if src.id == dst.id || same_path || same_number {
@@ -38,7 +38,7 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
         ));
     }
 
-    // --- Destination protégée ---------------------------------------------------
+    // --- Protected destination -----------------------------------------------------
     if dst.is_system {
         out.push(
             Finding::critical(
@@ -161,7 +161,7 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
         ));
     }
 
-    // --- Données présentes sur la destination ------------------------------------
+    // --- Data present on the destination ---------------------------------------------
     let dst_used: u64 = dst.partitions.iter().filter_map(|p| p.used_bytes).sum();
     if !dst.partitions.is_empty() {
         let mounts = dst.mounts();
@@ -215,7 +215,7 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
         ));
     }
 
-    // --- Matériel -------------------------------------------------------------------
+    // --- Hardware ---------------------------------------------------------------------
     if src.bus == "USB" || dst.bus == "USB" {
         out.push(Finding::info(
             "USB_INVOLVED",
@@ -235,15 +235,15 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
         );
     }
 
-    // --- Constats issus de l'analyse et du plan -------------------------------------
+    // --- Findings from the analysis and the plan -----------------------------------
     if let Some(a) = src_analysis {
         for f in a.all_findings() {
             let mut f = f;
             if f.scope.is_none() {
                 f.scope = Some("source".into());
             }
-            // Les incohérences de table ne bloquent que le travail par partition ;
-            // le plan les reporte lui-même si elles s'appliquent au mode choisi.
+            // Table inconsistencies only block working per partition;
+            // the plan reports them itself if they apply to the chosen mode.
             f.blocking = false;
             out.push(f);
         }
@@ -272,7 +272,7 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
         }
     }
 
-    // Dédoublonne (même code + même portée + même détail).
+    // Deduplicate (same code + same scope + same detail).
     let mut seen: Vec<(String, Option<String>, String)> = Vec::new();
     out.retain(|f| {
         let key = (f.code.clone(), f.scope.clone(), f.detail.clone());
@@ -350,7 +350,7 @@ mod tests {
         let f = precheck(&a, &a.clone(), None, None);
         assert_eq!(codes(&f), vec!["SAME_DISK"]);
         assert!(has_blocking(&f));
-        // Même numéro Windows sous un autre identifiant interne.
+        // Same Windows number under another internal identifier.
         let mut b = disk(1, 1 << 40);
         b.id = "autre".into();
         assert!(has_blocking(&precheck(&a, &b, None, None)));
@@ -390,7 +390,7 @@ mod tests {
         let f = precheck(&a, &b, None, None);
         assert!(codes(&f).contains(&"DEST_HAS_DATA"));
         assert!(codes(&f).contains(&"SWAP_SUSPECTED"));
-        assert!(!has_blocking(&f), "avertissements forts, mais la décision reste à l'utilisateur");
+        assert!(!has_blocking(&f), "strong warnings, but the decision stays with the user");
         assert!(f.iter().find(|x| x.code == "DEST_HAS_DATA").unwrap().detail.contains("E:\\"));
 
         let mut a = disk(1, 1 << 40);

@@ -1,5 +1,5 @@
-// Banc d'essai : amène l'interface dans un état donné, pour les captures d'écran du README.
-// ?demo=source|review|run|result|disks  (avec le moteur simulé de mock.js ; aucun disque touché)
+// UI bench: brings the interface into a given state, for the README screenshots.
+// ?demo=source|review|run|result|disks  (with the simulated engine of mock.js; no disk touched)
 "use strict";
 (function () {
   const demo = new URLSearchParams(location.search).get("demo");
@@ -27,7 +27,7 @@
     S.confirmText = confirmWord(); render();
     await sleep(200);
     actions.start($('[data-act="start"]'));
-    // Temps écoulé cohérent avec le débit simulé (512 Mo/s).
+    // Elapsed time consistent with the simulated speed (512 MB/s).
     if (demo === "run") return void setInterval(() => { if (S.run?.progress?.done) S.run.started = Date.now() - (S.run.progress.done / 512e6) * 1000; }, 50);
     await until(() => S.step === "result");
   });

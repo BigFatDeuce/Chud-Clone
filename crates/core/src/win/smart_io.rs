@@ -1,7 +1,7 @@
-//! Lecture des données de santé sur le matériel (ATA, NVMe, ATA derrière un pont USB).
+//! Reading health data from the hardware (ATA, NVMe, ATA behind a USB bridge).
 //!
-//! Ces commandes sont en lecture seule : elles interrogent le disque sans rien y
-//! modifier. Elles exigent les droits administrateur.
+//! These commands are read-only: they query the disk without modifying
+//! anything on it. They require administrator rights.
 
 use super::{Access, Handle, ioctl, open_device, u32le};
 use crate::model::DiskInfo;
@@ -12,9 +12,9 @@ use windows_sys::Win32::System::Ioctl::IOCTL_STORAGE_QUERY_PROPERTY;
 
 const ATA_FLAGS_DRDY_REQUIRED: u16 = 0x01;
 const ATA_FLAGS_DATA_IN: u16 = 0x02;
-/// Taille de ATA_PASS_THROUGH_EX en 64 bits.
+/// Size of ATA_PASS_THROUGH_EX on 64-bit.
 const APT_SIZE: usize = 48;
-/// Taille de SCSI_PASS_THROUGH en 64 bits.
+/// Size of SCSI_PASS_THROUGH on 64-bit.
 const SPT_SIZE: usize = 56;
 const SENSE_LEN: usize = 32;
 
@@ -23,7 +23,7 @@ const SMART_READ_DATA: u8 = 0xD0;
 const SMART_READ_THRESHOLDS: u8 = 0xD1;
 const SMART_RETURN_STATUS: u8 = 0xDA;
 
-/// Commande SMART ATA par IOCTL_ATA_PASS_THROUGH. Renvoie (registres de sortie, données).
+/// ATA SMART command through IOCTL_ATA_PASS_THROUGH. Returns (output registers, data).
 fn ata_smart(h: &Handle, feature: u8, data_in: bool) -> io::Result<([u8; 8], Vec<u8>)> {
     let data_len = if data_in { 512 } else { 0 };
     let mut buf = vec![0u8; APT_SIZE + data_len];
@@ -31,9 +31,9 @@ fn ata_smart(h: &Handle, feature: u8, data_in: bool) -> io::Result<([u8; 8], Vec
     let flags = ATA_FLAGS_DRDY_REQUIRED | if data_in { ATA_FLAGS_DATA_IN } else { 0 };
     buf[2..4].copy_from_slice(&flags.to_le_bytes());
     buf[8..12].copy_from_slice(&(data_len as u32).to_le_bytes());
-    buf[12..16].copy_from_slice(&10u32.to_le_bytes()); // délai en secondes
+    buf[12..16].copy_from_slice(&10u32.to_le_bytes()); // timeout in seconds
     buf[24..32].copy_from_slice(&(APT_SIZE as u64).to_le_bytes()); // DataBufferOffset
-    // CurrentTaskFile : Features, SectorCount, LBA bas, LBA milieu, LBA haut, Device, Command, réservé.
+    // CurrentTaskFile: Features, SectorCount, LBA low, LBA mid, LBA high, Device, Command, reserved.
     let tf = [feature, if data_in { 1 } else { 0 }, 0, 0x4F, 0xC2, 0xA0, SMART_CMD, 0];
     buf[40..48].copy_from_slice(&tf);
     let input = buf.clone();
@@ -43,14 +43,14 @@ fn ata_smart(h: &Handle, feature: u8, data_in: bool) -> io::Result<([u8; 8], Vec
     }
     let mut out_tf = [0u8; 8];
     out_tf.copy_from_slice(&buf[40..48]);
-    // Registre d'état (octet 6) : bit 0 = erreur.
+    // Status register (byte 6): bit 0 = error.
     if out_tf[6] & 0x01 != 0 {
         return Err(io::Error::other(t!("le disque a rejeté la commande SMART", "the disk rejected the SMART command")));
     }
     Ok((out_tf, buf[APT_SIZE..].to_vec()))
 }
 
-/// Commande SMART ATA encapsulée en SCSI (SAT, ATA PASS-THROUGH 12) pour les ponts USB.
+/// ATA SMART command wrapped in SCSI (SAT, ATA PASS-THROUGH 12) for USB bridges.
 fn sat_smart(h: &Handle, feature: u8) -> io::Result<Vec<u8>> {
     let total = SPT_SIZE + SENSE_LEN + 512;
     let mut buf = vec![0u8; total];
@@ -62,7 +62,7 @@ fn sat_smart(h: &Handle, feature: u8) -> io::Result<Vec<u8>> {
     buf[16..20].copy_from_slice(&10u32.to_le_bytes());
     buf[24..32].copy_from_slice(&((SPT_SIZE + SENSE_LEN) as u64).to_le_bytes());
     buf[32..36].copy_from_slice(&(SPT_SIZE as u32).to_le_bytes());
-    // ATA PASS-THROUGH (12) : protocole PIO entrée, longueur dans le compteur de secteurs.
+    // ATA PASS-THROUGH (12): PIO data-in protocol, length in the sector count.
     let cdb = [0xA1u8, 4 << 1, 0x0E, feature, 1, 0, 0x4F, 0xC2, 0xA0, SMART_CMD, 0, 0];
     buf[36..48].copy_from_slice(&cdb);
     let input = buf.clone();
@@ -83,7 +83,7 @@ fn sat_smart(h: &Handle, feature: u8) -> io::Result<Vec<u8>> {
     Ok(data)
 }
 
-/// Journal de santé NVMe (page 0x02) par requête de propriété spécifique au protocole.
+/// NVMe health log (page 0x02) through a protocol-specific property query.
 fn nvme_health(h: &Handle) -> io::Result<Vec<u8>> {
     const HDR: usize = 8; // PropertyId + QueryType
     const PSD: usize = 40; // STORAGE_PROTOCOL_SPECIFIC_DATA
@@ -111,8 +111,8 @@ fn nvme_health(h: &Handle) -> io::Result<Vec<u8>> {
     Ok(buf[off..off + len].to_vec())
 }
 
-/// Lit l'état de santé d'un disque. Ne renvoie jamais d'erreur : l'indisponibilité est
-/// décrite dans le rapport, avec sa raison.
+/// Reads a disk's health. Never returns an error: unavailability is
+/// described in the report, with its reason.
 pub fn read_smart(disk: &DiskInfo) -> SmartReport {
     if disk.kind != crate::model::DiskKind::Physical {
         return SmartReport::unavailable(t!("un fichier image n'a pas de données de santé matérielle", "an image file has no hardware health data"));
@@ -121,7 +121,7 @@ pub fn read_smart(disk: &DiskInfo) -> SmartReport {
         return SmartReport::unavailable(t!("disque virtuel : pas de données de santé matérielle", "virtual disk: no hardware health data"));
     }
     if disk.bus == "NVMe" {
-        // La requête NVMe aboutit parfois sans privilège : on essaie du moins exigeant au plus exigeant.
+        // The NVMe query sometimes succeeds without privilege: try from least to most demanding.
         let mut last = String::new();
         for access in [Access::Query, Access::Read, Access::ReadWrite] {
             match open_device(&disk.path, access, 0).and_then(|h| nvme_health(&h)) {
@@ -146,7 +146,7 @@ pub fn read_smart(disk: &DiskInfo) -> SmartReport {
         Ok(h) => h,
         Err(e) => return SmartReport::unavailable(tf!("ouverture du disque impossible ({e})", "cannot open the disk ({e})")),
     };
-    // 1. Passage ATA direct (SATA, la plupart des contrôleurs AHCI).
+    // 1. Direct ATA pass-through (SATA, most AHCI controllers).
     let ata_err = match ata_smart(&h, SMART_READ_DATA, true) {
         Ok((_, data)) => {
             let thresholds = ata_smart(&h, SMART_READ_THRESHOLDS, true).ok().map(|x| x.1);

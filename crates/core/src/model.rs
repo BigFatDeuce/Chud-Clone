@@ -1,4 +1,4 @@
-//! Description d'un disque telle que présentée à l'utilisateur et aux pré-vérifications.
+//! Description of a disk as presented to the user and to the pre-checks.
 
 use crate::partition::{PartRole, TableKind};
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiskKind {
-    /// Disque vu par Windows (`\\.\PhysicalDriveN`), réel ou virtuel (VHD monté).
+    /// Disk seen by Windows (`\\.\PhysicalDriveN`), real or virtual (mounted VHD).
     Physical,
     /// Fichier image.
     Image,
@@ -38,7 +38,7 @@ impl MediaKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeInfo {
-    /// Lettres ou points de montage (`C:\`).
+    /// Drive letters or mount points (`C:\`).
     pub mounts: Vec<String>,
     pub label: Option<String>,
     pub fs: Option<String>,
@@ -56,23 +56,23 @@ pub struct PartitionInfo {
     pub role: PartRole,
     pub type_label: String,
     pub name: Option<String>,
-    /// Système de fichiers identifié (par Windows ou par lecture directe).
+    /// File system identified (by Windows or by direct reading).
     pub fs: Option<String>,
     pub label: Option<String>,
     pub used_bytes: Option<u64>,
     pub mounts: Vec<String>,
     pub active: bool,
-    /// Nom de volume Windows (`\?\Volume{…}\`), si un volume y correspond.
+    /// Windows volume name (`\?\Volume{…}\`), if a volume matches.
     #[serde(default)]
     pub volume_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskInfo {
-    /// Identifiant interne stable pendant la session (`disk:2`, `image:<chemin>`).
+    /// Internal identifier, stable during the session (`disk:2`, `image:<path>`).
     pub id: String,
     pub kind: DiskKind,
-    /// Chemin d'ouverture (`\\.\PhysicalDrive2` ou chemin de fichier).
+    /// Path used to open it (`\\.\PhysicalDrive2` or a file path).
     pub path: String,
     pub number: Option<u32>,
     pub model: String,
@@ -88,20 +88,20 @@ pub struct DiskInfo {
     pub removable: bool,
     pub read_only: bool,
     pub offline: bool,
-    /// Contient le Windows en cours d'exécution, son amorçage ou son fichier d'échange.
+    /// Holds the running Windows, its boot files or its page file.
     pub is_system: bool,
-    /// Contient le programme lui-même ou son dossier de données.
+    /// Holds the program itself or its data folder.
     pub hosts_app: bool,
     pub table: TableKind,
     pub partitions: Vec<PartitionInfo>,
     pub used_bytes: Option<u64>,
-    /// Empreinte d'identité : sert à vérifier, juste avant d'écrire, que le disque
-    /// ouvert est bien celui que l'utilisateur a choisi.
+    /// Identity fingerprint: used to check, just before writing, that the disk
+    /// opened is indeed the one the user chose.
     pub fingerprint: String,
-    /// Vrai si la description provient d'une lecture directe du disque (droits
-    /// administrateur), faux si elle se limite à ce que Windows expose sans privilège.
+    /// True if the description comes from reading the disk directly (administrator
+    /// rights), false if it is limited to what Windows exposes without privilege.
     pub deep: bool,
-    /// Remarques sur la détection (accès refusé, informations partielles…).
+    /// Notes about detection (access denied, partial information…).
     pub notes: Vec<String>,
 }
 
@@ -158,11 +158,11 @@ impl DiskInfo {
     }
 }
 
-/// Occupation totale d'un disque à partir de celle de ses partitions.
+/// Total usage of a disk from that of its partitions.
 ///
-/// N'annonce un total que s'il est représentatif : si les partitions dont l'occupation
-/// est inconnue pèsent plus de 5 % de l'espace partitionné (hors MSR), le total serait
-/// trompeur (ex. « 20 Mo utilisés » sur un disque plein dont seule l'ESP est lisible).
+/// Only reports a total if it is representative: if the partitions whose usage is
+/// unknown weigh more than 5% of the partitioned space (excluding MSR), the total would
+/// be misleading (e.g. "20 MB used" on a full disk where only the ESP is readable).
 pub fn estimate_used(parts: &[PartitionInfo]) -> Option<u64> {
     let relevant: Vec<&PartitionInfo> = parts.iter().filter(|p| p.role != PartRole::Msr).collect();
     let known: u64 = relevant.iter().filter_map(|p| p.used_bytes).sum();
@@ -171,7 +171,7 @@ pub fn estimate_used(parts: &[PartitionInfo]) -> Option<u64> {
     if relevant.iter().all(|p| p.used_bytes.is_none()) || unknown_size.saturating_mul(20) > total { None } else { Some(known) }
 }
 
-/// Empreinte d'identité d'un disque (modèle, numéro de série, taille, interface).
+/// Identity fingerprint of a disk (model, serial number, size, interface).
 pub fn fingerprint(model: &str, serial: &str, size: u64, bus: &str, sector: u32) -> String {
     let text = format!("{}|{}|{}|{}|{}", model.trim(), serial.trim(), size, bus, sector);
     blake3::hash(text.as_bytes()).to_hex()[..16].to_string()
@@ -201,9 +201,9 @@ mod tests {
     #[test]
     fn used_total_is_only_given_when_representative() {
         let g = 1u64 << 30;
-        // ESP lisible, partition principale inconnue : pas de total.
+        // Readable ESP, unknown main partition: no total.
         assert_eq!(estimate_used(&[p(PartRole::Esp, g / 10, Some(20 << 20)), p(PartRole::BasicData, 900 * g, None)]), None);
-        // Seule la petite partition de récupération est inconnue : total donné.
+        // Only the small recovery partition is unknown: total given.
         assert_eq!(
             estimate_used(&[
                 p(PartRole::Esp, g / 10, Some(1)),

@@ -1,9 +1,9 @@
-//! Détection des disques et des volumes sous Windows.
+//! Detection of disks and volumes on Windows.
 //!
-//! La détection de base n'exige aucun privilège : elle n'utilise que des requêtes de
-//! propriétés (aucune lecture de secteur). Avec les droits administrateur, une lecture
-//! directe (seule) complète les informations que Windows n'expose pas : système de
-//! fichiers et occupation des partitions sans lettre (EFI, récupération).
+//! Basic detection requires no privilege: it only uses property queries
+//! (no sector read). With administrator rights, a direct read (read-only)
+//! completes the information Windows does not expose: file system
+//! and usage of partitions without a letter (EFI, recovery).
 
 use super::rawdisk::{RawDisk, query_geometry, query_sector_sizes};
 use super::{Access, Handle, from_wide, ioctl, open_device, u32le, u64le, wide};
@@ -20,7 +20,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Ioctl::{IOCTL_DISK_GET_DISK_ATTRIBUTES, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, IOCTL_STORAGE_QUERY_PROPERTY};
 use windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 
-/// Nombre maximal de numéros de disque sondés.
+/// Maximum number of disk numbers probed.
 const MAX_DISKS: u32 = 64;
 
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ pub struct VolumeRec {
     pub fs: Option<String>,
     pub total: Option<u64>,
     pub free: Option<u64>,
-    /// (numéro de disque, décalage en octets, longueur).
+    /// (disk number, offset in bytes, length).
     pub extents: Vec<(u32, u64, u64)>,
 }
 
@@ -44,8 +44,8 @@ fn cstr_at(buf: &[u8], offset: usize) -> String {
     String::from_utf8_lossy(&buf[offset..end]).trim().to_string()
 }
 
-/// Certains pilotes renvoient le numéro de série ATA sous forme hexadécimale, octets
-/// permutés deux à deux. On le remet en clair lorsque c'est manifestement le cas.
+/// Some drivers return the ATA serial number in hexadecimal form, with bytes
+/// swapped in pairs. It is decoded back when that is clearly the case.
 fn normalize_serial(s: &str) -> String {
     let t = s.trim();
     if t.len() >= 16 && t.len().is_multiple_of(4) && t.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -89,11 +89,11 @@ fn property(h: &Handle, id: u32, out: &mut [u8]) -> Option<usize> {
     ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, out).ok()
 }
 
-/// Énumère les volumes Windows et leurs emplacements sur les disques.
+/// Enumerates the Windows volumes and their locations on the disks.
 pub fn list_volumes() -> Vec<VolumeRec> {
     let mut out = Vec::new();
     let mut name = [0u16; 260];
-    // SAFETY: tampon de 260 caractères.
+    // SAFETY: 260-character buffer.
     let find = unsafe { FindFirstVolumeW(name.as_mut_ptr(), name.len() as u32) };
     if find == INVALID_HANDLE_VALUE || find.is_null() {
         return out;
@@ -114,7 +114,7 @@ pub fn list_volumes() -> Vec<VolumeRec> {
 }
 
 fn volume_record(guid_path: &str) -> Option<VolumeRec> {
-    // Emplacement sur disque : sans lui (lecteur optique, réseau), le volume ne nous concerne pas.
+    // Location on disk: without it (optical drive, network), the volume does not concern us.
     let h = open_device(guid_path.trim_end_matches('\\'), Access::Query, 0).ok()?;
     let mut buf = vec![0u8; 8 + 24 * 32];
     let n = ioctl(&h, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, &[], &mut buf).ok()?;
@@ -175,10 +175,10 @@ fn volume_record(guid_path: &str) -> Option<VolumeRec> {
     })
 }
 
-/// Numéros des disques portant le volume qui contient `path`.
+/// Numbers of the disks holding the volume that contains `path`.
 fn disks_of_path(volumes: &[VolumeRec], path: &str) -> Vec<u32> {
     let p = path.to_ascii_lowercase();
-    // Point de montage le plus long qui préfixe le chemin.
+    // Longest mount point that prefixes the path.
     let mut best: Option<(&VolumeRec, usize)> = None;
     for v in volumes {
         for m in &v.mounts {
@@ -199,11 +199,11 @@ fn system_disks(volumes: &[VolumeRec]) -> Vec<u32> {
     if n > 0 {
         out.extend(disks_of_path(volumes, &from_wide(&buf)));
     }
-    // Volumes portant un fichier d'échange ou d'hibernation ACTIF. Un disque Windows
-    // branché en externe en contient aussi, mais inactifs : ce n'est pas un disque
-    // système et il doit pouvoir être cloné. Le noyau garde les fichiers actifs ouverts
-    // sans aucun partage : leur ouverture en lecture échoue alors par violation de
-    // partage, ce qui ne se produit pas pour un fichier inactif.
+    // Volumes holding an ACTIVE page or hibernation file. A Windows disk
+    // connected externally also contains them, but inactive: it is not a system
+    // disk and it must be clonable. The kernel keeps active files open
+    // with no sharing at all: opening them for reading then fails with a sharing
+    // violation, which does not happen for an inactive file.
     for v in volumes {
         for m in &v.mounts {
             for f in ["pagefile.sys", "swapfile.sys", "hiberfil.sys"] {
@@ -218,8 +218,8 @@ fn system_disks(volumes: &[VolumeRec]) -> Vec<u32> {
     out
 }
 
-/// Vrai si le fichier existe et qu'il est tenu ouvert sans partage (fichier d'échange
-/// ou d'hibernation en service).
+/// True if the file exists and is held open without sharing (page or
+/// hibernation file in use).
 fn file_held_by_system(path: &str) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
     const ERROR_SHARING_VIOLATION: i32 = 32;
@@ -243,7 +243,7 @@ fn app_disks(volumes: &[VolumeRec], extra_paths: &[String]) -> Vec<u32> {
     out
 }
 
-/// Chemins de volume (`\\?\Volume{…}\`, nom affichable) des volumes d'un disque.
+/// Volume paths (`\\?\Volume{…}\`, display name) of the volumes of a disk.
 pub fn volumes_of_disk(number: u32) -> Vec<(String, String)> {
     list_volumes()
         .into_iter()
@@ -330,7 +330,7 @@ fn layout_partitions(h: &Handle, number: u32, sector: u32, volumes: &[VolumeRec]
     (table, parts, notes)
 }
 
-/// Décrit le disque `\\.\PhysicalDrive<number>`, ou `None` s'il n'existe pas.
+/// Describes the disk `\\.\PhysicalDrive<number>`, or `None` if it does not exist.
 fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], deep: bool) -> Option<DiskInfo> {
     let path = format!(r"\\.\PhysicalDrive{number}");
     let h = match open_device(&path, Access::Query, 0) {
@@ -340,7 +340,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
             if code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND {
                 return None;
             }
-            // Le disque existe mais refuse même les requêtes : on le signale plutôt que de le cacher.
+            // The disk exists but refuses even queries: report it rather than hide it.
             return Some(DiskInfo {
                 id: format!("disk:{number}"),
                 kind: DiskKind::Physical,
@@ -392,7 +392,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
         notes.push(t!("Aucun support détecté (taille nulle).", "No media detected (zero size).").into());
     }
 
-    // SSD ou disque dur : pénalité de positionnement (propriété 7).
+    // SSD or hard disk: seek penalty (property 7).
     let mut seek = [0u8; 16];
     let seek_penalty = match property(&h, 7, &mut seek) {
         Some(n) if n >= 9 => Some(seek[8] != 0),
@@ -428,7 +428,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
         _ => String::new(),
     };
 
-    // Lecture directe (droits administrateur) : complète les partitions sans lettre.
+    // Direct read (administrator rights): completes the partitions without a letter.
     let mut is_deep = false;
     let mut table = table;
     if deep && size > 0 {
@@ -492,9 +492,9 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
     })
 }
 
-/// Liste les disques vus par Windows. `deep` active la lecture directe (lecture
-/// seule) et n'a d'effet qu'avec les droits administrateur. `app_paths` : dossiers
-/// du programme à protéger (données, rapports).
+/// Lists the disks seen by Windows. `deep` enables direct reading (read-only)
+/// and only has an effect with administrator rights. `app_paths`: program
+/// folders to protect (data, reports).
 pub fn list_disks(deep: bool, app_paths: &[String]) -> Vec<DiskInfo> {
     let volumes = list_volumes();
     let system = system_disks(&volumes);
@@ -503,7 +503,7 @@ pub fn list_disks(deep: bool, app_paths: &[String]) -> Vec<DiskInfo> {
     (0..MAX_DISKS).filter_map(|n| describe(n, &volumes, &system, &app, deep)).collect()
 }
 
-/// Décrit un seul disque (revalidation juste avant une opération).
+/// Describes a single disk (re-validation just before an operation).
 pub fn disk_by_number(number: u32, deep: bool, app_paths: &[String]) -> Option<DiskInfo> {
     let volumes = list_volumes();
     let system = system_disks(&volumes);
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn serial_normalisation() {
-        // « WD-WCC4E1234567 » encodé en hexadécimal avec octets permutés.
+        // "WD-WCC4E1234567" encoded in hexadecimal with swapped bytes.
         let plain = "DWW-CCE4214365 7";
         let hex: String = plain.bytes().map(|b| format!("{b:02x}")).collect();
         assert_eq!(normalize_serial(&hex), "WD-WCC4E1234567");

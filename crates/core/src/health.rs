@@ -1,9 +1,9 @@
-//! Historique de santé des disques : on garde, pour chaque disque, une suite de relevés
-//! SMART datés, et on signale ce qui S'AGGRAVE d'un relevé à l'autre.
+//! Disk health history: for each disk, a series of dated SMART readings is kept,
+//! and what GETS WORSE from one reading to the next is flagged.
 //!
-//! Un compteur élevé mais stable (ex. 8 secteurs réalloués depuis des années) n'a pas la même
-//! signification qu'un compteur qui monte : c'est l'évolution qui annonce le plus sûrement une
-//! défaillance. Les conclusions restent des indicateurs, et sont présentées comme telles.
+//! A high but stable counter (e.g. 8 sectors reallocated years ago) does not mean the same
+//! as a counter that climbs: the trend is what most reliably heralds a failure. The
+//! conclusions remain indicators, and are presented as such.
 
 use crate::diag::Finding;
 use crate::model::DiskInfo;
@@ -11,12 +11,12 @@ use crate::smart::{HealthLevel, SmartReport};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Nombre maximal de relevés conservés par disque.
+/// Maximum number of readings kept per disk.
 const MAX_SNAPSHOTS: usize = 400;
-/// Écart minimal entre deux relevés identiques enregistrés (secondes).
+/// Minimum gap between two identical saved readings (seconds).
 const MIN_INTERVAL_SECS: i64 = 6 * 3600;
 
-/// Relevé de santé daté. Les compteurs absents sur un type de disque restent `None`.
+/// Dated health reading. Counters absent on a type of disk stay `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthSnapshot {
     /// Horodatage Unix (secondes).
@@ -25,19 +25,19 @@ pub struct HealthSnapshot {
     pub temperature_c: Option<i32>,
     pub power_on_hours: Option<u64>,
     pub wear_percent_used: Option<u8>,
-    /// ATA 5 — secteurs réalloués.
+    /// ATA 5 — reallocated sectors.
     pub reallocated: Option<u64>,
-    /// ATA 197 — secteurs en attente de réallocation.
+    /// ATA 197 — sectors pending reallocation.
     pub pending: Option<u64>,
     /// ATA 198 — secteurs non corrigibles hors ligne.
     pub offline_uncorrectable: Option<u64>,
-    /// ATA 187 — erreurs non corrigibles signalées.
+    /// ATA 187 — reported uncorrectable errors.
     pub reported_uncorrectable: Option<u64>,
-    /// ATA 199 — erreurs CRC de liaison (câble, connecteur, boîtier USB).
+    /// ATA 199 — link CRC errors (cable, connector, USB enclosure).
     pub crc_errors: Option<u64>,
-    /// NVMe — erreurs de support / d'intégrité des données.
+    /// NVMe — media / data integrity errors.
     pub media_errors: Option<u64>,
-    /// NVMe — réserve disponible (%).
+    /// NVMe — available spare (%).
     pub available_spare: Option<u8>,
 }
 
@@ -63,7 +63,7 @@ impl HealthSnapshot {
         })
     }
 
-    /// Mêmes compteurs (hors température et heures, qui varient en permanence).
+    /// Same counters (except temperature and hours, which change all the time).
     fn same_counters(&self, o: &HealthSnapshot) -> bool {
         self.level == o.level
             && self.wear_percent_used == o.wear_percent_used
@@ -85,11 +85,11 @@ pub struct HealthHistory {
     pub snapshots: Vec<HealthSnapshot>,
 }
 
-/// Clé de fichier d'un disque : son identité (modèle, numéro de série, taille), pas son numéro
-/// Windows, qui change selon l'ordre de branchement.
+/// File key of a disk: its identity (model, serial number, size), not its Windows
+/// number, which changes with the plugging order.
 pub fn disk_key(d: &DiskInfo) -> Option<String> {
     if d.serial.trim().is_empty() {
-        return None; // sans numéro de série, deux disques identiques seraient confondus
+        return None; // without a serial number, two identical disks would be confused
     }
     let text = format!("{}|{}|{}", d.model.trim(), d.serial.trim(), d.size);
     Some(blake3::hash(text.as_bytes()).to_hex()[..20].to_string())
@@ -111,8 +111,8 @@ pub fn load(dir: &Path, d: &DiskInfo) -> HealthHistory {
     })
 }
 
-/// Ajoute un relevé à l'historique du disque (sauf doublon récent) et l'enregistre.
-/// Renvoie l'historique à jour. Un échec d'écriture n'empêche pas l'analyse.
+/// Adds a reading to the disk's history (unless a recent duplicate) and saves it.
+/// Returns the updated history. A write failure does not prevent the analysis.
 pub fn record(dir: &Path, d: &DiskInfo, report: &SmartReport, now: i64) -> HealthHistory {
     let mut h = load(dir, d);
     let Some(snap) = HealthSnapshot::from_report(report, now) else {
@@ -153,7 +153,7 @@ fn when(at: i64) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Compare le dernier relevé au premier et au précédent : signale tout compteur qui augmente.
+/// Compares the latest reading with the first and the previous: flags every counter that increases.
 pub fn trends(h: &HealthHistory) -> Vec<Finding> {
     let mut out = Vec::new();
     let (Some(first), Some(last)) = (h.snapshots.first(), h.snapshots.last()) else {
@@ -336,7 +336,7 @@ mod tests {
         let reloaded = load(&dir, &disk);
         assert_eq!(reloaded.snapshots.len(), 2);
         assert_eq!(reloaded.snapshots[1].pending, Some(2));
-        // Sans numéro de série : rien n'est enregistré (identité incertaine).
+        // Without a serial number: nothing is saved (uncertain identity).
         let anon = DiskInfo { serial: String::new(), ..disk.clone() };
         assert!(record(&dir, &anon, &rep(5), 4000).snapshots.len() <= 1);
         std::fs::remove_dir_all(&dir).unwrap();

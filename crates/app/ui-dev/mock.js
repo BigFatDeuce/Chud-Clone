@@ -1,18 +1,18 @@
-// Banc d'essai de l'interface : remplace l'API Tauri par un moteur simulé.
-// Les structures (plan, rapport) viennent de vraies sorties du moteur (mock-data.js) ;
-// seules les tailles et les disques sont adaptés pour ressembler à un vrai PC.
-// Rien ici ne touche un disque : ce fichier n'est jamais livré avec l'application.
+// UI bench: replaces the Tauri API with a simulated engine.
+// The structures (plan, report) come from real engine output (mock-data.js);
+// only sizes and disks are adapted to look like a real PC.
+// Nothing here touches a disk: this file is never shipped with the application.
 //
-// Paramètres d'URL : ?s=ok|bad|fail|blocked  ?admin=0  ?fast=1  ?view=disks|reports|settings  ?lang=en
+// URL parameters: ?s=ok|bad|fail|blocked  ?admin=0  ?fast=1  ?view=disks|reports|settings  ?lang=en
 "use strict";
 (function () {
   const Q = new URLSearchParams(location.search);
   const SCEN = Q.get("s") || "ok";
   const ADMIN = Q.get("admin") !== "0";
   const FAST = Q.get("fast") === "1" ? 4 : 1;
-  // Captures d'écran (?demo=…) : débits et durées d'un vrai SSD SATA.
+  // Screenshots (?demo=…): speeds and durations of a real SATA SSD.
   const DEMO = Q.has("demo");
-  // Langue du moteur simulé (comme le vrai : réglée par set_language).
+  // Language of the simulated engine (like the real one: set by set_language).
   let MLANG = "fr";
   const T = (fr, en) => (MLANG === "en" ? en : fr);
   const D = () => (MLANG === "en" && window.MOCK_DATA_EN) || window.MOCK_DATA;
@@ -51,7 +51,7 @@
     mk({ number: 3, model: "CT1000MX500SSD1", serial: "2203E5F1A2B4", bus: "SATA", media: "ssd", size: mx, table: "none" }),
     mk({ number: 4, model: "SanDisk Ultra USB 3.0", serial: "4C530001230712108543", bus: "USB", media: "unknown", size: 30752636928, removable: true, table: "mbr", partitions: [Object.assign(part(1, MiB, 30751588352, "basic_data", "FAT32 (LBA)", "FAT32", "CLE", 4.3 * GiB, ["F:\\"]), { active: true })] }),
   ];
-  // Disques reconstruits à chaque changement de langue (libellés du moteur), images ajoutées conservées.
+  // Disks rebuilt on every language change (engine labels), added images kept.
   function setDisks() {
     disks = buildDisks().concat(images);
     if (SCEN === "blocked") disks[1].is_system = true;
@@ -97,7 +97,7 @@
       const main = parts.find((p) => p.role === "basic_data");
       free = last.dst_start - (main.dst_start + main.dst_len);
     } else if (d.size > s.size) free = d.size - s.size;
-    // Agrandissement automatique de la partition Windows (NTFS) sur l'espace libéré.
+    // Automatic growth of the Windows (NTFS) partition onto the freed space.
     const mainP = parts.find((p) => p.role === "basic_data" && p.fs === "ntfs");
     let grow = null;
     if (free > 16 * MiB && mainP && params.grow_main !== false) {
@@ -129,7 +129,7 @@
     return prep;
   }
 
-  // --------------------------------------------------------- Clonage simulé
+  // --------------------------------------------------------- Simulated clone
   const handlers = {};
   const emit = (ev, payload) => (handlers[ev] || []).forEach((h) => h({ payload }));
   let job = null;
@@ -273,7 +273,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.1.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: false, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.2.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: false, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },
@@ -369,6 +369,23 @@
     get_report: async ({ id }) => clone(reports.find((r) => r.id === id)),
     export_report: async () => {},
     relaunch_elevated: async () => { location.search = location.search.replace(/admin=0&?/, ""); },
+    // ?update=1: a newer version is published; ?update=fail: its download fails the checksum.
+    update_check: async () => {
+      await wait(400);
+      const avail = Q.has("update");
+      return { current: "0.2.0", latest: avail ? "0.3.0" : "0.2.0", available: avail, title: avail ? "Chud Clone 0.3.0" : "Chud Clone 0.2.0", notes: T("Nouveautés :\n- Recherche de mises à jour et mise à jour depuis le logiciel.", "What's new:\n- Update check and in-app update."), published: "2026-11-13T12:00:00Z", page_url: "https://github.com/example/releases/tag/v0.3.0", method: "portable", download_size: 6.1e6 };
+    },
+    update_install: async () => {
+      const total = 6.1e6;
+      (async () => {
+        for (let d = 0; d <= total; d += total / 20) { emit("update-progress", { phase: "download", done: Math.round(d), total }); await wait(80); }
+        emit("update-progress", { phase: "verify", done: total, total });
+        await wait(600);
+        if (Q.get("update") === "fail") return emit("update-failed", T("le fichier téléchargé ne correspond pas à la somme de contrôle publiée : il a été supprimé", "the downloaded file does not match the published checksum: it has been deleted"));
+        emit("update-progress", { phase: "install", done: 0, total: 0 });
+      })();
+    },
+    open_release_page: async () => {},
   };
   const win = { minimize() {}, toggleMaximize() {}, close() { if (job) emit("close-blocked", null); } };
   window.__MOCK__ = {

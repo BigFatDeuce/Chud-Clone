@@ -1,7 +1,7 @@
-//! Chud Clone — ligne de commande.
+//! Chud Clone — command line.
 //!
-//! Même moteur que l'application graphique. Utile pour les tests, l'automatisation et
-//! les environnements sans interface (environnement de secours).
+//! Same engine as the graphical application. Useful for tests, automation and
+//! environments without an interface (rescue environment).
 
 use chud_clone_core::clone::FinalStatus;
 use chud_clone_core::diag::{Finding, human_size};
@@ -607,8 +607,8 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
     }
 }
 
-/// Langue des messages : `--lang fr|en` (retiré des arguments), sinon `CHUD_LANG`,
-/// sinon la langue de Windows.
+/// Message language: `--lang fr|en` (removed from the arguments), otherwise `CHUD_LANG`,
+/// otherwise the Windows language.
 fn take_lang(raw: &mut Vec<String>) {
     use chud_clone_core::i18n::{Lang, set_lang, system_lang};
     let mut lang = std::env::var("CHUD_LANG").ok().filter(|v| !v.trim().is_empty()).map(|v| Lang::from_tag(&v)).unwrap_or_else(system_lang);

@@ -1,4 +1,4 @@
-//! GUID au format disque (GPT) : les trois premiers champs sont en petit-boutiste.
+//! GUID in on-disk (GPT) format: the first three fields are little-endian.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -19,7 +19,7 @@ impl Guid {
         self.0 == [0; 16]
     }
 
-    /// Analyse la forme canonique `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`.
+    /// Parses the canonical form `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().trim_start_matches('{').trim_end_matches('}');
         let hex: String = s.chars().filter(|c| *c != '-').collect();
@@ -30,7 +30,7 @@ impl Guid {
         for i in 0..16 {
             raw[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
         }
-        // Texte → disque : inversion des champs 1 (4 o), 2 (2 o) et 3 (2 o).
+        // Text → disk: fields 1 (4 B), 2 (2 B) and 3 (2 B) are byte-swapped.
         let mut d = raw;
         d[0..4].reverse();
         d[4..6].reverse();
@@ -38,8 +38,8 @@ impl Guid {
         Some(Guid(d))
     }
 
-    /// Constante à partir de la forme canonique ; panique si la chaîne est invalide
-    /// (réservé aux constantes du programme).
+    /// Constant from the canonical form; panics if the string is invalid
+    /// (reserved for the program's constants).
     pub fn must(s: &str) -> Self {
         Self::parse(s).expect("GUID constant invalide")
     }
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn roundtrip_and_disk_order() {
         let g = Guid::must("C12A7328-F81F-11D2-BA4B-00A0C93EC93B");
-        // Octets sur disque de la partition système EFI (référence : spécification UEFI).
+        // On-disk bytes of the EFI system partition (reference: UEFI specification).
         assert_eq!(g.0, [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B]);
         assert_eq!(g.to_string(), "C12A7328-F81F-11D2-BA4B-00A0C93EC93B");
         assert_eq!(Guid::parse("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"), Some(g));

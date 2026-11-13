@@ -1,6 +1,6 @@
-//! Journal d'opération et rapport final (JSON, TXT, HTML).
+//! Operation log and final report (JSON, TXT, HTML).
 //!
-//! Le rapport est enregistré localement. Rien n'est jamais envoyé sur le réseau.
+//! The report is saved locally. Nothing is ever sent over the network.
 
 use crate::clone::{CloneOutcome, FinalStatus};
 use crate::diag::{Finding, Severity, human_size};
@@ -18,7 +18,7 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
-    /// Millisecondes depuis le début de l'opération.
+    /// Milliseconds since the start of the operation.
     pub t_ms: u64,
     /// Heure locale (HH:MM:SS).
     pub time: String,
@@ -26,8 +26,8 @@ pub struct LogEntry {
     pub message: String,
 }
 
-/// Observateur qui consigne le journal (en mémoire et, si demandé, dans un fichier
-/// écrit au fil de l'eau) puis relaie à un autre observateur.
+/// Observer that records the log (in memory and, if requested, in a file written
+/// as it goes) then relays to another observer.
 pub struct Journal<'a> {
     inner: &'a dyn Observer,
     start: Instant,
@@ -45,7 +45,7 @@ impl<'a> Journal<'a> {
         self.entries.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Ajoute une ligne au journal sans passer par le moteur.
+    /// Adds a line to the log without going through the engine.
     pub fn note(&self, level: LogLevel, msg: &str) {
         self.log(level, msg);
     }
@@ -117,7 +117,7 @@ pub struct Report {
     pub log: Vec<LogEntry>,
 }
 
-/// Résumé d'un rapport, pour les listes.
+/// Summary of a report, for lists.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub id: String,
@@ -143,7 +143,7 @@ impl Report {
     }
 }
 
-/// Identifiant de rapport fondé sur la date locale (`2026-11-13_142233`).
+/// Report identifier based on the local date (`2026-11-13_142233`).
 pub fn new_report_id() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H%M%S").to_string()
 }
@@ -873,7 +873,7 @@ pre{{background:#03040b;border:1px solid var(--line);border-radius:10px;padding:
     h
 }
 
-/// Résumé d'un agrandissement pour les rapports.
+/// Summary of a growth for the reports.
 fn grow_text(g: &crate::clone::GrowOutcome) -> String {
     match (&g.summary, g.done, &g.error) {
         (Some(x), true, _) => tf!(

@@ -1,6 +1,6 @@
-//! Déroulement complet d'une opération, partagé par l'interface graphique et la ligne
-//! de commande : description des disques, préparation (lecture seule), puis exécution
-//! avec revalidation de tout ce qui a été montré à l'utilisateur.
+//! Complete flow of an operation, shared by the graphical interface and the command
+//! line: description of the disks, preparation (read-only), then execution with
+//! re-validation of everything that was shown to the user.
 
 use crate::boot::{BootAssessment, assess_boot};
 use crate::clone::{CloneRequest, run_clone};
@@ -17,7 +17,7 @@ use crate::smart::SmartReport;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Désignation d'un disque : numéro Windows ou fichier image.
+/// Designation of a disk: Windows number or image file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Target {
@@ -26,7 +26,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// `disk:3` ou chemin de fichier.
+    /// `disk:3` or a file path.
     pub fn parse(s: &str) -> Result<Self, String> {
         let t = s.trim();
         if let Some(n) = t.strip_prefix("disk:").or_else(|| t.strip_prefix("disque:")) {
@@ -55,20 +55,20 @@ pub struct JobConfig {
     pub destination: Target,
     pub plan: PlanOptions,
     pub engine: EngineOptions,
-    /// Taille de l'image de destination à créer si le fichier n'existe pas
-    /// (`None` : même taille que la source).
+    /// Size of the destination image to create if the file does not exist
+    /// (`None`: same size as the source).
     pub new_image_size: Option<u64>,
-    /// Accord explicite pour écrire sur un disque physique réel alors que cette voie
-    /// n'est pas encore validée (voir `win::PHYSICAL_WRITE_VALIDATED`).
+    /// Explicit consent to write to a real physical disk while that path is not
+    /// validated yet (see `win::PHYSICAL_WRITE_VALIDATED`).
     pub allow_unvalidated_physical_write: bool,
-    /// Empreintes relevées au moment de la sélection ; comparées avant d'écrire.
+    /// Fingerprints taken at selection time; compared before writing.
     pub expected_source_fingerprint: Option<String>,
     pub expected_destination_fingerprint: Option<String>,
-    /// Dossiers du programme à protéger (jamais sur la destination).
+    /// Program folders to protect (never on the destination).
     pub app_paths: Vec<String>,
 }
 
-/// Tout ce qui est présenté à l'utilisateur avant confirmation. Lecture seule.
+/// Everything shown to the user before confirmation. Read-only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preparation {
     pub source: DiskInfo,
@@ -84,7 +84,7 @@ pub struct Preparation {
 
 #[derive(Debug)]
 pub enum JobError {
-    /// Les pré-vérifications interdisent l'opération.
+    /// The pre-checks forbid the operation.
     Blocked(Vec<Finding>),
     Failed(String),
 }
@@ -108,13 +108,13 @@ fn fail(e: impl std::fmt::Display) -> JobError {
     JobError::Failed(e.to_string())
 }
 
-/// Identifiant stable d'un fichier image : chemin canonique, sans préfixe `\\?\`, en
-/// minuscules. Deux désignations du même fichier (relative, absolue, avant et après sa
-/// création) donnent le même identifiant : c'est ce qui permet de refuser une source
-/// et une destination identiques.
+/// Stable identifier of an image file: canonical path, without the `\\?\` prefix, in
+/// lowercase. Two designations of the same file (relative, absolute, before and after
+/// its creation) give the same identifier: that is what allows refusing identical
+/// source and destination.
 pub fn image_id(path: &Path) -> String {
     let canon = std::fs::canonicalize(path).ok().or_else(|| {
-        // Fichier pas encore créé : on canonise le dossier parent.
+        // File not created yet: canonicalise the parent folder.
         let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::canonicalize(parent).ok().and_then(|p| path.file_name().map(|n| p.join(n)))
     });
@@ -123,8 +123,8 @@ pub fn image_id(path: &Path) -> String {
     format!("image:{}", text.to_lowercase())
 }
 
-/// Décrit une cible. Pour une image de destination inexistante, renvoie une
-/// description « à créer » de la taille prévue.
+/// Describes a target. For a destination image that does not exist yet, returns a
+/// "to be created" description of the planned size.
 pub fn describe(target: &Target, deep: bool, app_paths: &[String], missing_image_size: Option<u64>) -> Result<DiskInfo, String> {
     match target {
         Target::Image(path) => {
@@ -180,7 +180,7 @@ fn describe_disk(_n: u32, _deep: bool, _app_paths: &[String]) -> Result<DiskInfo
     Err(t!("les disques physiques ne sont pris en charge que sous Windows", "physical disks are only supported on Windows").into())
 }
 
-/// Liste des disques visibles. Lecture seule.
+/// List of the visible disks. Read-only.
 pub fn list_disks(deep: bool, app_paths: &[String]) -> Vec<DiskInfo> {
     #[cfg(windows)]
     {
@@ -193,7 +193,7 @@ pub fn list_disks(deep: bool, app_paths: &[String]) -> Vec<DiskInfo> {
     }
 }
 
-/// Lit l'état de santé d'un disque (lecture seule).
+/// Reads a disk's health (read-only).
 pub fn read_smart(info: &DiskInfo) -> SmartReport {
     #[cfg(windows)]
     {
@@ -217,7 +217,7 @@ pub fn is_elevated() -> bool {
     }
 }
 
-/// Ouvre une cible en lecture seule.
+/// Opens a target read-only.
 pub fn open_read_only(target: &Target) -> Result<Box<dyn BlockDevice>, String> {
     match target {
         Target::Image(p) => FileDevice::open_read_only(p, 512)
@@ -246,7 +246,7 @@ pub fn open_read_only(target: &Target) -> Result<Box<dyn BlockDevice>, String> {
     }
 }
 
-/// Analyse une cible (table de partitions, systèmes de fichiers, démarrage). Lecture seule.
+/// Analyses a target (partition table, file systems, boot). Read-only.
 pub fn inspect(target: &Target) -> Result<(DiskAnalysis, BootAssessment), String> {
     let mut dev = ReadOnly(open_read_only(target)?);
     let analysis = analyze_disk(&mut dev).map_err(|e| tf!("analyse impossible : {e}", "analysis failed: {e}"))?;
@@ -254,8 +254,8 @@ pub fn inspect(target: &Target) -> Result<(DiskAnalysis, BootAssessment), String
     Ok((analysis, boot))
 }
 
-/// Scan de surface d'une cible, en lecture seule (le périphérique est enveloppé dans
-/// `ReadOnly`, qui refuse toute écriture).
+/// Read-only surface scan of a target (the device is wrapped in
+/// `ReadOnly`, which refuses any write).
 pub fn surface_scan(
     target: &Target,
     app_paths: &[String],
@@ -269,14 +269,14 @@ pub fn surface_scan(
     Ok((info, result))
 }
 
-/// Prépare un clonage sans rien écrire : analyse de la source, plan, pré-vérifications.
+/// Prepares a clone without writing anything: source analysis, plan, pre-checks.
 pub fn prepare(cfg: &JobConfig, with_smart: bool) -> Result<Preparation, String> {
     let source = describe(&cfg.source, true, &cfg.app_paths, None)?;
-    // Disque externe dont les volumes sont montés (un Windows branché en USB, par
-    // exemple) : un volume NTFS monté a un journal « en cours d'utilisation », ce qui
-    // fausserait l'aperçu (copie intégrale, pas d'agrandissement). Comme au lancement,
-    // on le verrouille et le démonte le temps de l'analyse — une seule tentative, sans
-    // rien écrire. Si un programme l'utilise, l'aperçu se fait volume monté.
+    // External disk whose volumes are mounted (a Windows connected over USB, for
+    // example): a mounted NTFS volume has an "in use" journal, which would distort
+    // the preview (full copy, no growth). As when cloning, it is locked and
+    // dismounted for the analysis — a single attempt, writing nothing. If a program
+    // is using it, the preview is made with the volume mounted.
     #[cfg(windows)]
     let mut in_use = false;
     #[cfg(windows)]
@@ -374,11 +374,11 @@ fn volumes_for_lock(info: &DiskInfo) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Exécute le clonage. Tout est revérifié ici : identité des disques, analyse, plan
-/// et pré-vérifications, quelle que soit la préparation affichée auparavant.
+/// Runs the clone. Everything is checked again here: disk identities, analysis, plan
+/// and pre-checks, whatever preparation was displayed before.
 ///
-/// OPÉRATION DESTRUCTRICE pour la destination : l'appelant doit avoir obtenu la
-/// confirmation explicite de l'utilisateur.
+/// DESTRUCTIVE OPERATION for the destination: the caller must have obtained the
+/// user's explicit confirmation.
 pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Observer) -> Result<Report, JobError> {
     let started_at = now_string();
     let id = new_report_id();
@@ -387,7 +387,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     let journal = Journal::new(obs, Some(&reports_dir.join(format!("{id}.log"))));
     journal.note(LogLevel::Info, &tf!("{} {} — rapport {id}", "{} {} — report {id}", crate::APP_NAME, crate::APP_VERSION));
 
-    // 1. Identité des disques, relue maintenant.
+    // 1. Disk identities, read again now.
     let source = describe(&cfg.source, true, &cfg.app_paths, None).map_err(fail)?;
     if let Some(fp) = &cfg.expected_source_fingerprint
         && *fp != source.fingerprint
@@ -402,12 +402,12 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         &tf!("Source : {} — {} — {}", "Source: {} — {} — {}", source.title(), crate::diag::human_size(source.size), serial_text(&source)),
     );
 
-    // 2. Ouverture de la source (lecture seule), volumes verrouillés pour une image cohérente.
+    // 2. Opening the source (read-only), volumes locked for a consistent image.
     #[cfg(windows)]
     let mut locks = Vec::new();
     #[cfg(windows)]
     if let Target::Disk(_) = cfg.source {
-        // Un disque système est refusé plus bas par les pré-vérifications : inutile de le verrouiller.
+        // A system disk is refused below by the pre-checks: no need to lock it.
         if !source.is_system {
             locks = crate::win::rawdisk::lock_disk_volumes(&source, &volumes_for_lock(&source)).map_err(fail)?;
             if !locks.is_empty() {
@@ -426,7 +426,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     let analysis = analyze_disk(&mut src).map_err(|e| fail(tf!("analyse de la source impossible : {e}", "source analysis failed: {e}")))?;
     let boot_src = assess_boot(&mut src, &analysis);
 
-    // 3. Destination : description, plan et pré-vérifications.
+    // 3. Destination: description, plan and pre-checks.
     let wanted_size = cfg.new_image_size.unwrap_or(analysis.size);
     let destination = describe(&cfg.destination, true, &cfg.app_paths, Some(wanted_size)).map_err(fail)?;
     if let Some(fp) = &cfg.expected_destination_fingerprint
@@ -479,7 +479,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         journal.note(level, &tf!("Pré-vérification [{}] {} — {}", "Pre-check [{}] {} — {}", f.severity.label(), f.title, f.detail));
     }
 
-    // 4. Santé des disques (lecture seule), avant l'opération.
+    // 4. Disk health (read-only), before the operation.
     let smart_source = Some(read_smart(&source));
     let smart_destination = Some(read_smart(&destination));
     for (who, s) in [("source", &smart_source), ("destination", &smart_destination)] {
@@ -493,7 +493,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         }
     }
 
-    // 5. Ouverture de la destination. À partir d'ici, son contenu est modifié.
+    // 5. Opening the destination. From here on, its content is modified.
     let mut opened = Opened {
         src: Box::new(src),
         dst: open_destination(&cfg.destination, &destination, cfg.allow_unvalidated_physical_write)?,
@@ -516,7 +516,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         obs: &journal,
     });
 
-    // 6. Windows relit la table de partitions de la destination.
+    // 6. Windows re-reads the destination's partition table.
     #[cfg(windows)]
     if let Some(n) = opened.dst_number {
         match crate::win::rawdisk::RawDisk::open_read_write(&format!(r"\\.\PhysicalDrive{n}")).and_then(|d| crate::win::rawdisk::refresh_disk(&d)) {
@@ -538,7 +538,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     }
     drop(opened);
 
-    // Le fichier image existe désormais : le rapport le nomme simplement.
+    // The image file now exists: the report simply names it.
     let mut destination = destination;
     if let Some(name) = destination.model.strip_suffix(t!(" (à créer)", " (to be created)")) {
         destination.model = name.to_string();

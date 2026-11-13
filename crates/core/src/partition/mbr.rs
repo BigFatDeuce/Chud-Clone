@@ -1,4 +1,4 @@
-//! Table de partitions MBR (y compris la chaîne EBR des partitions logiques).
+//! MBR partition table (including the EBR chain of logical partitions).
 
 use super::{MbrMeta, PartInfo, Partition, le16, le32};
 use crate::device::{BlockDevice, read_vec};
@@ -7,15 +7,15 @@ use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MbrKind {
-    /// Pas de signature 0x55AA : secteur 0 vide ou inconnu.
+    /// No 0x55AA signature: sector 0 empty or unknown.
     Empty,
     /// Table MBR classique.
     Classic,
-    /// MBR de protection GPT (une seule entrée 0xEE).
+    /// GPT protective MBR (a single 0xEE entry).
     Protective,
-    /// Entrée 0xEE accompagnée d'autres partitions.
+    /// 0xEE entry together with other partitions.
     Hybrid,
-    /// Le secteur 0 est le secteur d'amorçage d'un système de fichiers.
+    /// Sector 0 is the boot sector of a file system.
     Superfloppy,
 }
 
@@ -43,7 +43,7 @@ fn is_extended(t: u8) -> bool {
     matches!(t, 0x05 | 0x0F | 0x85)
 }
 
-/// Reconnaît un secteur d'amorçage de système de fichiers (NTFS, exFAT, FAT).
+/// Recognises a file system boot sector (NTFS, exFAT, FAT).
 pub fn looks_like_fs_boot_sector(s: &[u8]) -> bool {
     if s.len() < 512 {
         return false;
@@ -160,7 +160,7 @@ pub fn read_mbr(dev: &mut dyn BlockDevice) -> io::Result<MbrRead> {
             let raw = read_vec(dev, ebr_lba * ss as u64, ss)?;
             let ebr = &raw[..ss];
             if ebr[510] != 0x55 || ebr[511] != 0xAA {
-                // Une partition étendue vide peut ne pas contenir d'EBR initialisé.
+                // An empty extended partition may not contain an initialised EBR.
                 if rank > 0 || ebr.iter().any(|b| *b != 0) {
                     findings.push(
                         Finding::error(
@@ -236,8 +236,8 @@ pub fn read_mbr(dev: &mut dyn BlockDevice) -> io::Result<MbrRead> {
     Ok(MbrRead { kind: MbrKind::Classic, partitions, meta: Some(meta), findings })
 }
 
-/// Reconstruit le secteur 0 pour la destination à partir de celui de la source.
-/// `resized` : (indice d'entrée primaire, nouveau nombre de secteurs).
+/// Rebuilds sector 0 for the destination from the source's.
+/// `resized`: (primary entry index, new number of sectors).
 pub fn build_sector0(src_sector0: &[u8], resized: &[(u32, u64)]) -> Result<Vec<u8>, String> {
     if src_sector0.len() < 512 {
         return Err(t!("secteur 0 source incomplet", "incomplete source sector 0").into());
@@ -257,7 +257,7 @@ pub fn build_sector0(src_sector0: &[u8], resized: &[(u32, u64)]) -> Result<Vec<u
             .into());
         }
         out[o + 12..o + 16].copy_from_slice(&(*sectors as u32).to_le_bytes());
-        // CHS de fin : valeur conventionnelle « au-delà de la limite CHS ».
+        // Ending CHS: conventional "beyond the CHS limit" value.
         out[o + 5] = 0xFE;
         out[o + 6] = 0xFF;
         out[o + 7] = 0xFF;
@@ -265,13 +265,13 @@ pub fn build_sector0(src_sector0: &[u8], resized: &[(u32, u64)]) -> Result<Vec<u
     Ok(out)
 }
 
-/// MBR de protection GPT. Le code d'amorçage éventuel de la source est conservé.
+/// GPT protective MBR. Any boot code of the source is kept.
 pub fn build_protective(src_sector0: Option<&[u8]>, sector_size: u32, disk_sectors: u64) -> Vec<u8> {
     let mut out = vec![0u8; sector_size as usize];
     if let Some(src) = src_sector0
         && src.len() >= 446
     {
-        // Code d'amorçage et signature de disque (octets 0–445), table remise à zéro.
+        // Boot code and disk signature (bytes 0–445), table reset to zero.
         out[..446].copy_from_slice(&src[..446]);
     }
     let o = 446;
@@ -327,7 +327,7 @@ mod tests {
             put_entry(s, 1, 0x00, 0x05, 22528, 100000);
             sign(s);
         }
-        // EBR 1 au début de l'étendue : logique à +2048, puis EBR suivant à +40000.
+        // EBR 1 at the start of the extended partition: logical at +2048, then next EBR at +40000.
         {
             let o = 22528 * 512;
             let s = &mut d.data[o..o + 512];
@@ -369,7 +369,7 @@ mod tests {
             let o = 2048 * 512;
             let s = &mut d.data[o..o + 512];
             put_entry(s, 0, 0, 0x07, 63, 1000);
-            // Pointe sur lui-même (décalage 0 interdit) puis en arrière.
+            // Points to itself (offset 0 forbidden), then backwards.
             put_entry(s, 1, 0, 0x05, 70000, 100);
             sign(s);
         }

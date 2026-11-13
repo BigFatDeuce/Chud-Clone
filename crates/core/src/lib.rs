@@ -1,13 +1,13 @@
-//! Chud Clone — moteur de clonage et de diagnostic de disques.
+//! Chud Clone — disk cloning and diagnostics engine.
 //!
-//! Ce crate contient toute la logique indépendante de l'interface : accès aux
-//! périphériques, tables de partitions, systèmes de fichiers, planification, copie,
-//! vérification, diagnostic et rapports.
+//! This crate holds all the logic that is independent of the interface: device
+//! access, partition tables, file systems, planning, copy, verification,
+//! diagnostics and reports.
 //!
-//! Tous les messages destinés à l'utilisateur existent en français et en anglais
-//! (`t!` / `tf!`, langue choisie par `i18n::set_lang`).
+//! Every message meant for the user exists in French and in English
+//! (`t!` / `tf!`, language chosen with `i18n::set_lang`).
 
-/// Texte fixe bilingue : `t!("français", "English")` → `&'static str` dans la langue active.
+/// Fixed bilingual text: `t!("français", "English")` → `&'static str` in the active language.
 #[macro_export]
 macro_rules! t {
     ($fr:literal, $en:literal) => {
@@ -15,8 +15,8 @@ macro_rules! t {
     };
 }
 
-/// Texte mis en forme bilingue : `tf!("{n} disque", "{n} disk")` → `String`, comme `format!`.
-/// Les deux formats reçoivent les mêmes arguments.
+/// Formatted bilingual text: `tf!("{n} disque", "{n} disk")` → `String`, like `format!`.
+/// Both formats receive the same arguments.
 #[macro_export]
 macro_rules! tf {
     ($fr:literal, $en:literal $(,)?) => {

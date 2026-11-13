@@ -1,8 +1,8 @@
-//! Abstraction de périphérique bloc.
+//! Block device abstraction.
 //!
-//! Tout le moteur (tables de partitions, systèmes de fichiers, copie, vérification)
-//! travaille uniquement à travers [`BlockDevice`]. Cela permet de tester exactement le
-//! même code sur des fichiers image que celui qui s'exécute sur un disque physique.
+//! The whole engine (partition tables, file systems, copy, verification) works
+//! only through [`BlockDevice`]. This makes it possible to test on image files exactly
+//! the same code that runs on a physical disk.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::fs::{File, OpenOptions};
@@ -10,26 +10,26 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
-/// Classe d'une erreur d'E/S, indépendante de la plateforme.
+/// Class of an I/O error, independent of the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IoErrorClass {
-    /// Erreur de support : secteur illisible, CRC, défaut de lecture/écriture.
+    /// Media error: unreadable sector, CRC, read/write fault.
     Media,
-    /// Le périphérique a disparu (déconnexion, câble, alimentation).
+    /// The device disappeared (disconnection, cable, power).
     DeviceGone,
-    /// Accès refusé (privilèges, verrouillage par un autre processus).
+    /// Access denied (privileges, locked by another process).
     AccessDenied,
-    /// Support protégé en écriture.
+    /// Write-protected media.
     WriteProtected,
-    /// Délai dépassé : souvent un disque en difficulté ou un pont USB instable.
+    /// Timeout: often a struggling disk or an unstable USB bridge.
     Timeout,
     /// Autre erreur.
     Other,
 }
 
-/// Marqueur attaché à une `io::Error` pour forcer sa classe (utilisé par les
-/// périphériques simulés et par la couche Windows).
+/// Marker attached to an `io::Error` to force its class (used by the
+/// simulated devices and by the Windows layer).
 #[derive(Debug, Clone, Copy)]
 pub struct DevFault(pub IoErrorClass);
 
@@ -48,12 +48,12 @@ impl std::fmt::Display for DevFault {
 }
 impl std::error::Error for DevFault {}
 
-/// Construit une `io::Error` portant une classe explicite.
+/// Builds an `io::Error` carrying an explicit class.
 pub fn fault(class: IoErrorClass) -> io::Error {
     io::Error::other(DevFault(class))
 }
 
-/// Détermine la classe d'une erreur d'E/S.
+/// Determines the class of an I/O error.
 pub fn classify(err: &io::Error) -> IoErrorClass {
     if let Some(inner) = err.get_ref()
         && let Some(f) = inner.downcast_ref::<DevFault>()
@@ -73,7 +73,7 @@ pub fn classify(err: &io::Error) -> IoErrorClass {
     }
 }
 
-/// Codes d'erreur Win32 pertinents pour les disques.
+/// Win32 error codes relevant to disks.
 #[cfg(windows)]
 fn classify_os_code(code: i32) -> Option<IoErrorClass> {
     Some(match code {
@@ -107,15 +107,15 @@ fn classify_os_code(code: i32) -> Option<IoErrorClass> {
     })
 }
 
-/// Périphérique bloc : disque physique, fichier image ou périphérique simulé.
+/// Block device: physical disk, image file or simulated device.
 ///
-/// Contrat : `offset` et la longueur du tampon sont des multiples de
-/// [`BlockDevice::sector_size`]. Une lecture ou une écriture est soit complète, soit en
-/// erreur (jamais partielle).
+/// Contract: `offset` and the buffer length are multiples of
+/// [`BlockDevice::sector_size`]. A read or a write is either complete or an
+/// error (never partial).
 pub trait BlockDevice: Send {
-    /// Taille totale en octets.
+    /// Total size in bytes.
     fn size(&self) -> u64;
-    /// Taille de secteur logique (unité d'adressage LBA).
+    /// Logical sector size (LBA addressing unit).
     fn sector_size(&self) -> u32;
     /// Taille de secteur physique (≥ logique).
     fn physical_sector_size(&self) -> u32 {
@@ -125,7 +125,7 @@ pub trait BlockDevice: Send {
     fn write_at(&mut self, offset: u64, buf: &[u8]) -> io::Result<()>;
     fn flush(&mut self) -> io::Result<()>;
     fn is_read_only(&self) -> bool;
-    /// Description lisible, pour les journaux.
+    /// Readable description, for the logs.
     fn label(&self) -> String;
 }
 
@@ -152,12 +152,12 @@ fn check_io_args(dev_size: u64, sector: u32, offset: u64, len: usize) -> io::Res
     }
 }
 
-/// Vérifie alignement et bornes ; à appeler par chaque implémentation.
+/// Checks alignment and bounds; to be called by every implementation.
 pub fn validate_io(dev: &dyn BlockDevice, offset: u64, len: usize) -> io::Result<()> {
     check_io_args(dev.size(), dev.sector_size(), offset, len)
 }
 
-/// Fichier image utilisé comme périphérique bloc.
+/// Image file used as a block device.
 pub struct FileDevice {
     file: File,
     path: PathBuf,
@@ -167,19 +167,19 @@ pub struct FileDevice {
 }
 
 impl FileDevice {
-    /// Ouvre une image en lecture seule.
+    /// Opens an image read-only.
     pub fn open_read_only(path: &Path, sector: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).open(path)?;
         Self::from_file(file, path, sector, true)
     }
 
-    /// Ouvre une image existante en lecture/écriture.
+    /// Opens an existing image read/write.
     pub fn open_read_write(path: &Path, sector: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         Self::from_file(file, path, sector, false)
     }
 
-    /// Crée (ou tronque) une image de la taille demandée, remplie de zéros.
+    /// Creates (or truncates) an image of the requested size, filled with zeros.
     pub fn create(path: &Path, size: u64, sector: u32) -> io::Result<Self> {
         if !size.is_multiple_of(sector as u64) {
             return Err(io::Error::new(
@@ -197,8 +197,8 @@ impl FileDevice {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, t!("taille de secteur invalide", "invalid sector size")));
         }
         let len = file.metadata()?.len();
-        // Une image dont la taille n'est pas un multiple du secteur est tronquée au
-        // dernier secteur complet (le reliquat n'est pas adressable en LBA).
+        // An image whose size is not a multiple of the sector is truncated to the
+        // last complete sector (the remainder is not LBA-addressable).
         let size = len - (len % sector as u64);
         Ok(Self { file, path: path.to_path_buf(), size, sector, read_only })
     }
@@ -242,7 +242,7 @@ impl BlockDevice for FileDevice {
     }
 }
 
-/// Périphérique en mémoire (tests unitaires).
+/// In-memory device (unit tests).
 pub struct MemDevice {
     pub data: Vec<u8>,
     sector: u32,
@@ -295,8 +295,8 @@ impl BlockDevice for MemDevice {
     }
 }
 
-/// Enveloppe garantissant qu'aucune écriture n'atteint le périphérique sous-jacent.
-/// Le disque source d'un clonage est toujours manipulé à travers cette enveloppe.
+/// Wrapper guaranteeing that no write reaches the underlying device.
+/// The source disk of a clone is always handled through this wrapper.
 pub struct ReadOnly<D: BlockDevice>(pub D);
 
 impl<D: BlockDevice> BlockDevice for ReadOnly<D> {
@@ -353,7 +353,7 @@ impl BlockDevice for Box<dyn BlockDevice> {
     }
 }
 
-/// Tampon aligné sur 4096 octets (exigé par les E/S non tamponnées sous Windows).
+/// Buffer aligned on 4096 bytes (required by unbuffered I/O on Windows).
 pub struct AlignedBuf {
     ptr: *mut u8,
     len: usize,
@@ -377,7 +377,7 @@ impl AlignedBuf {
 impl Drop for AlignedBuf {
     fn drop(&mut self) {
         let layout = Layout::from_size_align(self.len, BUF_ALIGN).expect("layout");
-        // SAFETY: alloué par alloc_zeroed avec le même layout.
+        // SAFETY: allocated by alloc_zeroed with the same layout.
         unsafe { dealloc(self.ptr, layout) };
     }
 }
@@ -385,28 +385,28 @@ impl Drop for AlignedBuf {
 impl Deref for AlignedBuf {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
-        // SAFETY: ptr valide pour len octets, initialisés à zéro.
+        // SAFETY: ptr valid for len bytes, zero-initialised.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 impl DerefMut for AlignedBuf {
     fn deref_mut(&mut self) -> &mut [u8] {
-        // SAFETY: idem, accès exclusif via &mut self.
+        // SAFETY: same, exclusive access through &mut self.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
-// SAFETY: le tampon possède sa mémoire, sans alias.
+// SAFETY: the buffer owns its memory, without aliasing.
 unsafe impl Send for AlignedBuf {}
 
-/// Lecture alignée de `len` octets à `offset` (tous deux multiples du secteur).
+/// Aligned read of `len` bytes at `offset` (both multiples of the sector).
 pub fn read_vec(dev: &mut dyn BlockDevice, offset: u64, len: usize) -> io::Result<AlignedBuf> {
     let mut buf = AlignedBuf::new(len.max(1));
     dev.read_at(offset, &mut buf[..len])?;
     Ok(buf)
 }
 
-/// Vue `Read + Seek` (lecture seule) sur une fenêtre d'un périphérique, avec cache de
-/// blocs alignés. Sert aux analyseurs de systèmes de fichiers.
+/// `Read + Seek` view (read-only) of a window of a device, with a cache of
+/// aligned blocks. Used by the file system parsers.
 pub struct DeviceReader<'a> {
     dev: &'a mut dyn BlockDevice,
     base: u64,
@@ -420,7 +420,7 @@ pub struct DeviceReader<'a> {
 const READER_CACHE: usize = 128 * 1024;
 
 impl<'a> DeviceReader<'a> {
-    /// `base` et `len` en octets, multiples du secteur.
+    /// `base` and `len` in bytes, multiples of the sector.
     pub fn new(dev: &'a mut dyn BlockDevice, base: u64, len: u64) -> Self {
         Self { dev, base, len, pos: 0, cache: AlignedBuf::new(READER_CACHE), cache_start: u64::MAX, cache_len: 0 }
     }
@@ -433,7 +433,7 @@ impl<'a> DeviceReader<'a> {
         let sector = self.dev.sector_size() as u64;
         let block = READER_CACHE as u64;
         let start = pos - (pos % block);
-        // Borne à la fenêtre, arrondie au secteur supérieur (la fenêtre est alignée).
+        // Clamp to the window, rounded up to the sector (the window is aligned).
         let mut end = (start + block).min(self.len);
         end = end.div_ceil(sector) * sector;
         let abs = self.base + start;
@@ -490,8 +490,8 @@ impl Seek for DeviceReader<'_> {
     }
 }
 
-/// Les analyseurs qui exigent `Write` (fatfs) reçoivent une implémentation qui refuse
-/// toute écriture : aucune modification ne peut atteindre le disque.
+/// Parsers that require `Write` (fatfs) get an implementation that refuses
+/// any write: no modification can reach the disk.
 impl Write for DeviceReader<'_> {
     fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
         Err(io::Error::new(io::ErrorKind::PermissionDenied, t!("vue en lecture seule", "read-only view")))
@@ -513,8 +513,8 @@ mod tests {
         let mut back = vec![0u8; 1024];
         d.read_at(512, &mut back).unwrap();
         assert_eq!(back, data);
-        assert!(d.read_at(100, &mut back).is_err(), "offset non aligné refusé");
-        assert!(d.read_at(3584, &mut back).is_err(), "dépassement refusé");
+        assert!(d.read_at(100, &mut back).is_err(), "unaligned offset refused");
+        assert!(d.read_at(3584, &mut back).is_err(), "out-of-range read refused");
     }
 
     #[test]

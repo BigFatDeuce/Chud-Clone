@@ -1,8 +1,8 @@
-//! Périphérique à défauts simulés.
+//! Device with simulated defects.
 //!
-//! Sert aux tests du moteur : secteurs illisibles permanents ou intermittents,
-//! déconnexion en cours de copie, erreurs d'écriture, corruption silencieuse.
-//! Aucun disque réel n'est impliqué.
+//! Used by the engine tests: permanent or intermittent unreadable sectors,
+//! disconnection during the copy, write errors, silent corruption.
+//! No real disk is involved.
 
 use crate::device::{BlockDevice, IoErrorClass, fault};
 use std::collections::HashMap;
@@ -10,27 +10,27 @@ use std::io;
 
 #[derive(Default)]
 pub struct FaultPlan {
-    /// Plages (octets) définitivement illisibles.
+    /// Ranges (bytes) permanently unreadable.
     pub bad_read: Vec<(u64, u64)>,
-    /// Plages illisibles pendant les `n` premières tentatives les touchant.
+    /// Ranges unreadable during the first `n` attempts touching them.
     pub flaky_read: Vec<(u64, u64, u32)>,
-    /// Le périphérique disparaît après ce nombre d'octets lus.
+    /// The device disappears after this number of bytes read.
     pub vanish_after_read: Option<u64>,
-    /// Le périphérique disparaît après ce nombre d'octets écrits.
+    /// The device disappears after this number of bytes written.
     pub vanish_after_write: Option<u64>,
-    /// Plages où toute écriture échoue (erreur de support).
+    /// Ranges where every write fails (media error).
     pub bad_write: Vec<(u64, u64)>,
-    /// Plages où l'écriture « réussit » mais n'est pas enregistrée fidèlement.
+    /// Ranges where the write "succeeds" but is not recorded faithfully.
     pub corrupt_write: Vec<(u64, u64)>,
-    /// Refus d'accès sur toute lecture.
+    /// Access denied on every read.
     pub deny_read: bool,
-    /// Protection en écriture.
+    /// Write protection.
     pub write_protected: bool,
-    /// Plages dont le contenu change à chaque lecture (source instable).
+    /// Ranges whose content changes on every read (unstable source).
     pub unstable_read: Vec<(u64, u64)>,
-    /// Demande l'annulation une fois ce nombre d'octets lus (simule un clic sur « Annuler »).
+    /// Requests cancellation once this number of bytes has been read (simulates a click on "Cancel").
     pub cancel_after_read: Option<(u64, &'static crate::engine::Control)>,
-    /// Plages lentes : toute lecture qui les touche prend ce nombre de millisecondes.
+    /// Slow ranges: every read touching them takes this number of milliseconds.
     pub slow_read: Vec<(u64, u64, u64)>,
 }
 

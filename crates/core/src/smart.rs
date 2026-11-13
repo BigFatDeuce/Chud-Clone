@@ -1,9 +1,9 @@
-//! Interprétation des données de santé SMART (ATA) et du journal de santé NVMe.
+//! Interpretation of SMART (ATA) health data and of the NVMe health log.
 //!
-//! Ce module ne fait qu'analyser des tampons bruts ; leur lecture sur le matériel est
-//! faite par la couche Windows. Les conclusions sont des INDICATEURS : un disque aux
-//! compteurs irréprochables peut tomber en panne, et un compteur dégradé ne prédit pas
-//! une date de panne. Les libellés le disent.
+//! This module only parses raw buffers; reading them from the hardware is done by
+//! the Windows layer. The conclusions are INDICATORS: a disk with flawless
+//! counters can fail, and a degraded counter does not predict a failure
+//! date. The labels say so.
 
 use crate::diag::{Finding, Severity, max_severity};
 use serde::{Deserialize, Serialize};
@@ -11,13 +11,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthLevel {
-    /// Aucun indicateur défavorable relevé.
+    /// No unfavourable indicator found.
     Good,
-    /// Indicateurs à surveiller.
+    /// Indicators to watch.
     Watch,
-    /// Indicateurs de défaillance ou de dégradation sérieuse.
+    /// Indicators of failure or serious degradation.
     Bad,
-    /// Données de santé indisponibles.
+    /// Health data unavailable.
     Unknown,
 }
 
@@ -40,9 +40,9 @@ pub struct SmartAttribute {
     pub worst: u8,
     pub threshold: Option<u8>,
     pub raw: u64,
-    /// Attribut de type « pré-défaillance » (son franchissement de seuil annonce une panne).
+    /// "Pre-failure" attribute (crossing its threshold announces a failure).
     pub prefail: bool,
-    /// Valeur normalisée au niveau du seuil ou en dessous.
+    /// Normalised value at or below the threshold.
     pub below_threshold: bool,
 }
 
@@ -62,15 +62,15 @@ pub struct NvmeHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartReport {
     pub available: bool,
-    /// Protocole utilisé : « ATA », « NVMe », « ATA via USB (SAT) ».
+    /// Protocol used: "ATA", "NVMe", "ATA via USB (SAT)".
     pub protocol: String,
     pub level: HealthLevel,
-    /// Verdict du disque lui-même (commande SMART RETURN STATUS), si obtenu.
+    /// Verdict of the disk itself (SMART RETURN STATUS command), if obtained.
     pub drive_reports_failure: Option<bool>,
     pub temperature_c: Option<i32>,
     pub power_on_hours: Option<u64>,
     pub power_cycles: Option<u64>,
-    /// Usure estimée par le constructeur (SSD), en pourcentage consommé.
+    /// Wear estimated by the manufacturer (SSD), as a percentage used.
     pub wear_percent_used: Option<u8>,
     pub attributes: Vec<SmartAttribute>,
     pub nvme: Option<NvmeHealth>,
@@ -150,8 +150,8 @@ fn attr_name(id: u8) -> &'static str {
     }
 }
 
-/// Analyse la table d'attributs SMART ATA (512 octets), la table des seuils
-/// (512 octets, facultative) et le verdict du disque (facultatif).
+/// Parses the ATA SMART attribute table (512 bytes), the threshold table
+/// (512 bytes, optional) and the disk's verdict (optional).
 pub fn parse_ata(data: &[u8], thresholds: Option<&[u8]>, drive_reports_failure: Option<bool>, protocol: &str) -> SmartReport {
     let mut r = SmartReport::unavailable("");
     r.unavailable_reason = None;
@@ -194,7 +194,7 @@ pub fn parse_ata(data: &[u8], thresholds: Option<&[u8]>, drive_reports_failure: 
     r.power_on_hours = raw(9).map(|v| v & 0xFFFF_FFFF);
     r.power_cycles = raw(12).map(|v| v & 0xFFFF_FFFF);
     r.temperature_c = raw(194).or(raw(190)).map(|v| (v & 0xFF) as i32).filter(|t| (1..=120).contains(t));
-    // Usure SSD : valeur normalisée « restante » selon l'attribut que le constructeur renseigne.
+    // SSD wear: normalised "remaining" value from whichever attribute the manufacturer fills in.
     r.wear_percent_used = [231u8, 233, 177, 173].iter().find_map(|id| cur(*id)).filter(|v| (1..=100).contains(v)).map(|v| 100 - v);
 
     let mut f = Vec::new();
@@ -318,7 +318,7 @@ fn le128(b: &[u8], o: usize) -> u128 {
     u128::from_le_bytes(a)
 }
 
-/// Analyse le journal « SMART / Health Information » NVMe (page 0x02, 512 octets).
+/// Parses the NVMe "SMART / Health Information" log (page 0x02, 512 bytes).
 pub fn parse_nvme(log: &[u8]) -> SmartReport {
     if log.len() < 192 {
         return SmartReport::unavailable(t!("journal de santé NVMe tronqué", "truncated NVMe health log"));
@@ -335,7 +335,7 @@ pub fn parse_nvme(log: &[u8]) -> SmartReport {
         available_spare: log[3],
         spare_threshold: log[4],
         percentage_used: log[5],
-        // Unités de 1000 blocs de 512 octets.
+        // Units of 1000 blocks of 512 bytes.
         data_read_bytes: le128(log, 32).saturating_mul(512_000),
         data_written_bytes: le128(log, 48).saturating_mul(512_000),
         unsafe_shutdowns: sat(le128(log, 144)),
@@ -485,7 +485,7 @@ mod tests {
         for c in ["SMART_FAILING", "SMART_THRESHOLD", "SMART_PENDING", "SMART_UNCORRECTABLE", "SMART_REALLOCATED", "SMART_CRC"] {
             assert!(codes.contains(&c), "{c} manquant dans {codes:?}");
         }
-        // Une erreur CRC seule (câble) ne dégrade pas le niveau de santé du disque.
+        // A CRC error alone (cable) does not lower the disk's health level.
         let mut d2 = vec![0u8; 512];
         put_attr(&mut d2, 0, 199, 0x3E, 200, 200, 41);
         let r2 = parse_ata(&d2, None, None, "ATA");
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(r.nvme.as_ref().unwrap().data_written_bytes, 2_000_000u128 * 512_000);
         assert_eq!(r.drive_reports_failure, Some(false));
 
-        l[0] = 0x05; // réserve basse + fiabilité dégradée
+        l[0] = 0x05; // low spare + degraded reliability
         l[160..168].copy_from_slice(&9u64.to_le_bytes());
         l[5] = 104;
         let r = parse_nvme(&l);

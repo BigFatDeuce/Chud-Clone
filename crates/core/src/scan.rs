@@ -1,16 +1,16 @@
-//! Scan de surface en LECTURE SEULE.
+//! READ-ONLY surface scan.
 //!
-//! Lit tout le disque bloc par bloc et mesure le temps de chaque lecture. Un disque dur qui
-//! peine à relire une zone met beaucoup plus longtemps à répondre (relectures internes) bien
-//! avant que la zone ne devienne illisible : les blocs lents sont donc un signe précoce. Les
-//! blocs en erreur sont ensuite cernés par sous-blocs de 64 Kio puis secteur par secteur, pour
-//! donner la position exacte (LBA) de chaque secteur illisible.
+//! Reads the whole disk block by block and measures the time of each read. A hard disk
+//! struggling to read an area takes much longer to answer (internal re-reads) well
+//! before the area becomes unreadable: slow blocks are therefore an early sign. Failing
+//! blocks are then narrowed down by 64 KiB sub-blocks, then sector by sector, to give
+//! the exact position (LBA) of each unreadable sector.
 //!
-//! Rien n'est jamais écrit : « réparer » un secteur reviendrait à le réécrire (ce qui force le
-//! disque à le réallouer) et détruirait son contenu. Ce module ne le fait pas.
+//! Nothing is ever written: "repairing" a sector would mean rewriting it (which forces the
+//! disk to reallocate it) and would destroy its content. This module does not do that.
 //!
-//! Sur un disque qui meurt, chaque lecture ratée peut prendre plusieurs secondes et l'user
-//! davantage : le scan s'arrête de lui-même après un nombre limité de blocs en erreur.
+//! On a dying disk, each failed read can take several seconds and wear it further:
+//! the scan stops on its own after a limited number of failing blocks.
 
 use crate::device::{AlignedBuf, BlockDevice, IoErrorClass, classify};
 use crate::diag::Finding;
@@ -18,7 +18,7 @@ use crate::engine::Control;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-/// Libellés des classes de temps de réponse (index = classe).
+/// Labels of the response time classes (index = class).
 pub fn class_labels() -> [&'static str; 7] {
     if crate::i18n::is_fr() {
         ["< 5 ms", "5 à 20 ms", "20 à 50 ms", "50 à 150 ms", "150 à 500 ms", "≥ 500 ms", "Illisible"]
@@ -26,9 +26,9 @@ pub fn class_labels() -> [&'static str; 7] {
         ["< 5 ms", "5 to 20 ms", "20 to 50 ms", "50 to 150 ms", "150 to 500 ms", "≥ 500 ms", "Unreadable"]
     }
 }
-/// Classe des blocs en erreur.
+/// Class of the failing blocks.
 pub const CLASS_ERROR: u8 = 6;
-/// Valeur d'une cellule de la carte pas encore lue.
+/// Value of a map cell not read yet.
 pub const CELL_UNREAD: u8 = 255;
 const LIMITS_MS: [f64; 5] = [5.0, 20.0, 50.0, 150.0, 500.0];
 const PROBE: usize = 64 * 1024;
@@ -39,13 +39,13 @@ pub fn class_of(ms: f64) -> u8 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanOptions {
-    /// Taille des lectures (octets) ; arrondie à un multiple du secteur.
+    /// Read size (bytes); rounded to a multiple of the sector.
     pub block_size: u32,
-    /// Nombre de cellules de la carte affichée.
+    /// Number of cells of the displayed map.
     pub cells: u32,
-    /// Nouvelles tentatives par secteur en erreur.
+    /// Retries per failing sector.
     pub sector_retries: u32,
-    /// Arrêt après ce nombre de blocs en erreur (protection d'un disque mourant).
+    /// Stop after this number of failing blocks (protection of a dying disk).
     pub max_bad_blocks: u32,
 }
 
@@ -73,11 +73,11 @@ pub struct SlowBlock {
 pub enum ScanEnd {
     Completed,
     Cancelled,
-    /// Le disque a cessé de répondre.
+    /// The disk stopped responding.
     DeviceLost(String),
-    /// Trop de blocs en erreur : arrêt pour ne pas user davantage le disque.
+    /// Too many failing blocks: stopped so as not to wear the disk further.
     TooManyErrors,
-    /// Lecture refusée (droits, verrou…).
+    /// Read refused (rights, lock…).
     Denied(String),
 }
 
@@ -90,7 +90,7 @@ pub struct ScanProgress {
     pub counts: [u64; 7],
     pub bad_sectors: u64,
     pub current_lba: u64,
-    /// Cellules modifiées depuis le dernier envoi : (index, classe).
+    /// Cells changed since the last update: (index, class).
     pub cells: Vec<(u32, u8)>,
 }
 
@@ -100,15 +100,15 @@ pub struct ScanResult {
     pub sector_size: u32,
     pub block_size: u32,
     pub scanned_bytes: u64,
-    /// Pire classe relevée dans chaque cellule (`CELL_UNREAD` si non lue).
+    /// Worst class found in each cell (`CELL_UNREAD` if not read).
     pub cells: Vec<u8>,
     /// Nombre de blocs par classe.
     pub counts: [u64; 7],
     pub bad: Vec<ScanBad>,
     pub bad_sectors: u64,
-    /// Blocs dont la lecture a échoué une fois mais qui se sont relus par morceaux.
+    /// Blocks whose read failed once but that could be re-read in pieces.
     pub recovered_blocks: u64,
-    /// Blocs les plus lents (≥ 150 ms), du plus lent au moins lent, 100 au plus.
+    /// Slowest blocks (≥ 150 ms), slowest first, at most 100.
     pub slowest: Vec<SlowBlock>,
     pub duration_ms: u64,
     pub avg_bps: u64,
@@ -149,7 +149,7 @@ enum Probe {
     Lost(String),
 }
 
-/// Cerne les secteurs illisibles d'un bloc en erreur : sous-blocs de 64 Kio, puis secteurs.
+/// Narrows down the unreadable sectors of a failing block: 64 KiB sub-blocks, then sectors.
 #[allow(clippy::too_many_arguments)]
 fn probe_block(
     dev: &mut dyn BlockDevice,
@@ -201,7 +201,7 @@ fn probe_block(
     Probe::Done
 }
 
-/// Lit toute la surface du périphérique (lecture seule) et mesure les temps de réponse.
+/// Reads the whole surface of the device (read-only) and measures response times.
 pub fn scan(dev: &mut dyn BlockDevice, opts: &ScanOptions, ctl: &Control, obs: &dyn ScanObserver) -> ScanResult {
     let size = dev.size();
     let sector = dev.sector_size().max(512) as usize;
@@ -264,8 +264,8 @@ pub fn scan(dev: &mut dyn BlockDevice, opts: &ScanOptions, ctl: &Control, obs: &
                         break;
                     }
                     if bad.total == before {
-                        // Le bloc a échoué d'un coup mais chaque morceau se relit : zone difficile,
-                        // pas illisible. Classée parmi les plus lentes.
+                        // The block failed in one go but each piece reads back: difficult area,
+                        // not unreadable. Ranked among the slowest.
                         recovered_blocks += 1;
                         counts[5] += 1;
                         mark(&mut cells, &mut dirty, idx, 5);
@@ -408,14 +408,14 @@ mod tests {
         assert_eq!(r.scanned_bytes, 16 * MIB);
         assert_eq!(r.counts.iter().sum::<u64>(), 16);
         assert!(r.cells.iter().all(|c| *c != CELL_UNREAD && *c < CLASS_ERROR));
-        assert_eq!(dev.write_calls, 0, "un scan n'écrit jamais");
+        assert_eq!(dev.write_calls, 0, "a scan never writes");
         assert!(r.findings.iter().any(|f| f.code == "SCAN_CLEAN"));
         assert_eq!(obs.0.lock().unwrap().1, 16 * MIB);
     }
 
     #[test]
     fn bad_sectors_are_located_exactly() {
-        // Secteurs 10 000 à 10 002 et 20 480 illisibles.
+        // Sectors 10,000 to 10,002 and 20,480 unreadable.
         let plan = FaultPlan { bad_read: vec![(10_000 * 512, 3 * 512), (20_480 * 512, 512)], ..Default::default() };
         let mut dev = FaultyDevice::new(MemDevice::new(16 * MIB, 512), plan);
         let r = scan(&mut dev, &ScanOptions::default(), &Control::new(), &NullScanObserver);
@@ -463,7 +463,7 @@ mod tests {
         let r = scan(&mut dev, &ScanOptions { max_bad_blocks: 2, sector_retries: 0, ..Default::default() }, &Control::new(), &NullScanObserver);
         assert_eq!(r.end, ScanEnd::TooManyErrors);
         assert_eq!(r.bad_sectors, 2 * 2048);
-        assert_eq!(r.bad.len(), 1, "plage fusionnée");
+        assert_eq!(r.bad.len(), 1, "merged range");
     }
 
     #[test]

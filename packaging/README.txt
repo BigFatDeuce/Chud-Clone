@@ -23,7 +23,7 @@ REQUIREMENTS
     administrator.
 
 PRIVACY
-  No network connection, no telemetry. Reports stay on this computer:
+  No telemetry. Reports stay on this computer:
   - installed version: %APPDATA%\ChudClone\reports
   - portable version:  ChudClone-data\reports, next to the program
 
@@ -38,7 +38,7 @@ WHAT YOU CAN CLONE
     key (scripts\make-winpe.ps1 in the source repository).
 
 BEFORE CLONING TO A REAL DISK - PLEASE READ
-  - In this version 0.1, writing to a real physical disk has not yet been validated on
+  - In this version 0.2, writing to a real physical disk has not yet been validated on
     hardware. It is disabled by default (Settings > Advanced). Cloning to an image file
     or to a virtual disk (VHD/VHDX) works without that setting.
   - The destination's content is permanently erased. Always keep the source disk intact

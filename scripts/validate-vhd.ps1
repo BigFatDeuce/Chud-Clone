@@ -1,40 +1,40 @@
 ﻿<#
 .SYNOPSIS
-  Valide la voie d'écriture « disque » de Chud Clone sur des DISQUES VIRTUELS (VHDX) uniquement.
+  Validates the Chud Clone "disk" write path on VIRTUAL DISKS (VHDX) only.
 
 .DESCRIPTION
-  Le moteur est validé sur des fichiers image. Ce script éprouve en plus la voie réservée aux
-  disques (\\.\PhysicalDriveN : verrouillage des volumes, effacement de la table, écriture non
-  tamponnée, relecture de la table par Windows), sans jamais toucher un disque réel :
+  The engine is validated on image files. This script additionally exercises the path reserved
+  for disks (\\.\PhysicalDriveN: volume locking, table wipe, unbuffered writes, table re-read
+  by Windows), without ever touching a real disk:
 
-    1. crée deux fichiers VHDX dans un dossier de travail et les attache ;
-    2. vérifie, pour chacun, que le disque Windows obtenu est bien ce fichier
-       (type de bus « File Backed Virtual » + chemin du fichier) ;
-    3. écrit l'image de test GPT (Windows UEFI factice) sur le VHDX « source » ;
-       puis, comme pour un disque Windows branché en externe, monte sa partition Windows avec
-       une lettre, y place des fichiers d'échange et d'hibernation inactifs, et la clone vers un
-       fichier image (pas pris pour un disque système, copie intelligente, démarrage retrouvé) ;
-    4. clone le VHDX source vers le VHDX destination (plus grand), avec vérification complète
-       et agrandissement automatique de la partition Windows (NTFS) ;
-    5. détache la source (comme on débranche l'ancien disque), remet la destination en ligne,
-       puis contrôle le résultat avec les outils de Windows : partitions, chkdsk en lecture seule,
-       empreintes de tous les fichiers comparées à celles de la source ; sur la partition
-       agrandie (VHDX de test uniquement), « chkdsk /f » doit ne trouver aucune erreur ;
-    6. détache tout ; les VHDX sont supprimés sauf avec -Keep.
+    1. creates two VHDX files in a working folder and attaches them;
+    2. checks, for each one, that the resulting Windows disk really is that file
+       (bus type "File Backed Virtual" + file path);
+    3. writes the GPT test image (simulated UEFI Windows) to the "source" VHDX;
+       then, as for a Windows disk connected externally, mounts its Windows partition with
+       a drive letter, places inactive page and hibernation files on it, and clones it to an
+       image file (not treated as a system disk, smart copy, boot configuration found);
+    4. clones the source VHDX to the (larger) destination VHDX, with full verification
+       and automatic growth of the Windows (NTFS) partition;
+    5. detaches the source (as when the old disk is unplugged), brings the destination online,
+       then checks the result with the Windows tools: partitions, read-only chkdsk,
+       hashes of every file compared with those of the source; on the grown partition
+       (test VHDX only), "chkdsk /f" must find no error;
+    6. detaches everything; the VHDX files are deleted unless -Keep is given.
 
-  Chaque clonage passe --only-virtual au moteur : il refuse toute destination qui n'est pas une
-  image ou un disque virtuel. Le script s'arrête au moindre doute sur l'identité d'un disque.
+  Every clone passes --only-virtual to the engine: it refuses any destination that is not an
+  image or a virtual disk. The script stops at the slightest doubt about a disk's identity.
 
-  Nécessite une invite PowerShell ADMINISTRATEUR (attacher un VHDX et écrire dessus l'exigent).
+  Requires an ADMINISTRATOR PowerShell prompt (attaching a VHDX and writing to it require it).
 
 .PARAMETER Cli
-  Chemin de chud-clone-cli.exe (défaut : target\release, sinon target\debug).
+  Path of chud-clone-cli.exe (default: target\release, otherwise target\debug).
 
 .PARAMETER WorkDir
-  Dossier de travail (défaut : %TEMP%\ChudClone-vhd).
+  Working folder (default: %TEMP%\ChudClone-vhd).
 
 .PARAMETER Keep
-  Conserver les VHDX et les rapports à la fin.
+  Keep the VHDX files and the reports at the end.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\validate-vhd.ps1
@@ -48,29 +48,31 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-# Les programmes appelés (chud-clone-cli) écrivent en UTF-8 : sans cela, PowerShell 5.1 décode
-# leur sortie avec la page de code OEM et les accents sont illisibles.
+# chud-clone-cli writes UTF-8: without this, PowerShell 5.1 decodes its output with the OEM
+# code page and non-ASCII characters are garbled.
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+# Engine messages in English, whatever the Windows language.
+$env:CHUD_LANG = 'en'
 $root = Split-Path -Parent $PSScriptRoot
 
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
-function Fail($m) { throw "ÉCHEC : $m" }
+function Fail($m) { throw "FAILED: $m" }
 
-# ------------------------------------------------------------------ Préalables
+# ------------------------------------------------------------------ Prerequisites
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Say 'Ce script doit être lancé depuis une invite PowerShell ouverte en administrateur.' Yellow
+  Say 'This script must be run from a PowerShell prompt opened as administrator.' Yellow
   exit 2
 }
 if (-not $Cli) {
   $Cli = @('target\release\chud-clone-cli.exe', 'target\debug\chud-clone-cli.exe') |
     ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
-if (-not $Cli -or -not (Test-Path $Cli)) { Fail 'chud-clone-cli.exe introuvable (compilez avec « cargo build --release »).' }
+if (-not $Cli -or -not (Test-Path $Cli)) { Fail 'chud-clone-cli.exe not found (build it with "cargo build --release").' }
 
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
 $WorkDir = (Resolve-Path $WorkDir).Path
-$reports = Join-Path $WorkDir 'rapports'
+$reports = Join-Path $WorkDir 'reports'
 $fixture = Join-Path $WorkDir 'gpt-win.img'
 if (-not (Test-Path $fixture)) {
   $gz = Join-Path $root 'crates\core\tests\fixtures\gpt-win.img.gz'
@@ -84,7 +86,7 @@ if (-not (Test-Path $fixture)) {
 
 $srcVhd = Join-Path $WorkDir 'source.vhdx'
 $dstVhd = Join-Path $WorkDir 'destination.vhdx'
-$mnt = Join-Path $WorkDir 'montages'
+$mnt = Join-Path $WorkDir 'mounts'
 $attached = @()
 $accessPaths = @()
 
@@ -93,10 +95,10 @@ function New-Vhdx($path, $mb) {
   $script = Join-Path $WorkDir 'diskpart.txt'
   "create vdisk file=`"$path`" maximum=$mb type=expandable" | Set-Content -Encoding ascii $script
   $o = & diskpart.exe /s $script 2>&1
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $path)) { Fail "création de $path impossible :`n$o" }
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $path)) { Fail "cannot create $path`:`n$o" }
 }
 
-# Attache un VHDX et renvoie le numéro de disque Windows, après avoir vérifié que c'est bien lui.
+# Attaches a VHDX and returns its Windows disk number, after checking that it really is that file.
 function Mount-Checked($path) {
   Mount-DiskImage -ImagePath $path -StorageType VHDX -Access ReadWrite -NoDriveLetter | Out-Null
   $script:attached += $path
@@ -105,25 +107,25 @@ function Mount-Checked($path) {
     $n = (Get-DiskImage -ImagePath $path).Number
     if ($null -eq $n) { Start-Sleep -Milliseconds 500 }
   }
-  if ($null -eq $n) { Fail "numéro de disque de $path introuvable" }
+  if ($null -eq $n) { Fail "disk number of $path not found" }
   Assert-OurVhd $n $path
   return [int]$n
 }
 
-# Triple contrôle d'identité avant toute écriture sur le disque n.
+# Triple identity check before any write to disk n.
 function Assert-OurVhd([int]$n, $path) {
   $d = Get-Disk -Number $n
-  if ($d.BusType -ne 'File Backed Virtual') { Fail "le disque $n n'est pas un disque virtuel (bus : $($d.BusType)). Arrêt." }
-  if ($d.Location -and ($d.Location -ne $path)) { Fail "le disque $n correspond à « $($d.Location) », pas à $path. Arrêt." }
-  if ($d.IsSystem -or $d.IsBoot) { Fail "le disque $n est un disque système. Arrêt." }
+  if ($d.BusType -ne 'File Backed Virtual') { Fail "disk $n is not a virtual disk (bus: $($d.BusType)). Stopping." }
+  if ($d.Location -and ($d.Location -ne $path)) { Fail "disk $n maps to '$($d.Location)', not to $path. Stopping." }
+  if ($d.IsSystem -or $d.IsBoot) { Fail "disk $n is a system disk. Stopping." }
   $img = Get-DiskImage -ImagePath $path
-  if ($img.Number -ne $n) { Fail "incohérence : $path est attaché comme disque $($img.Number), pas $n. Arrêt." }
-  # PowerShell 5.1 : ConvertFrom-Json transmet un tableau JSON comme UN seul objet ; on le
-  # range d'abord dans une variable pour que le filtre voie chaque disque séparément.
+  if ($img.Number -ne $n) { Fail "mismatch: $path is attached as disk $($img.Number), not $n. Stopping." }
+  # PowerShell 5.1: ConvertFrom-Json passes a JSON array down the pipeline as ONE object; it is
+  # stored in a variable first so that the filter sees each disk separately.
   $all = & $Cli list --json | Out-String | ConvertFrom-Json
   $listed = @($all) | Where-Object { $_.id -eq "disk:$n" }
-  if (@($listed).Count -ne 1) { Fail "Chud Clone ne liste pas le disque $n (ou le liste plusieurs fois). Arrêt." }
-  if (-not $listed -or $listed.media -ne 'virtual') { Fail "Chud Clone ne voit pas le disque $n comme virtuel. Arrêt." }
+  if (@($listed).Count -ne 1) { Fail "Chud Clone does not list disk $n (or lists it more than once). Stopping." }
+  if (-not $listed -or $listed.media -ne 'virtual') { Fail "Chud Clone does not see disk $n as virtual. Stopping." }
 }
 
 function Invoke-Clone($from, $to, $label, [string[]]$extra = @()) {
@@ -134,17 +136,17 @@ function Invoke-Clone($from, $to, $label, [string[]]$extra = @()) {
   $rep = $null
   try { $rep = ($json | Out-String) | ConvertFrom-Json } catch { }
   if ($rep) {
-    Say ("Résultat : {0}" -f $rep.outcome.status) $(if ($rep.outcome.status -eq 'success_verified') { 'Green' } else { 'Red' })
-    $rep.outcome.reasons | ForEach-Object { Say "  · $_" }
+    Say ("Result: {0}" -f $rep.outcome.status) $(if ($rep.outcome.status -eq 'success_verified') { 'Green' } else { 'Red' })
+    $rep.outcome.reasons | ForEach-Object { Say "  - $_" }
   }
-  if ($code -ne 0 -or -not $rep -or $rep.outcome.status -ne 'success_verified') { Fail "$label (code $code)" }
+  if ($code -ne 0 -or -not $rep -or $rep.outcome.status -ne 'success_verified') { Fail "$label (exit code $code)" }
   return $rep
 }
 
 function Add-Mounts([int]$n, $tag) {
   $res = @{}
   foreach ($p in Get-Partition -DiskNumber $n) {
-    if ($p.GptType -ne '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}') { continue } # données de base uniquement
+    if ($p.GptType -ne '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}') { continue } # basic data only
     $dir = Join-Path $mnt "$tag-p$($p.PartitionNumber)"
     New-Item -ItemType Directory -Force $dir | Out-Null
     Add-PartitionAccessPath -DiskNumber $n -PartitionNumber $p.PartitionNumber -AccessPath "$dir\"
@@ -171,80 +173,79 @@ function Remove-Mounts {
 
 $ok = $false
 try {
-  Say "Chud Clone — validation sur disques virtuels`nOutil : $Cli`nDossier : $WorkDir" Cyan
+  Say "Chud Clone - validation on virtual disks`nCLI: $Cli`nFolder: $WorkDir" Cyan
   New-Vhdx $srcVhd 256
   New-Vhdx $dstVhd 512
   $s = Mount-Checked $srcVhd
   $d = Mount-Checked $dstVhd
-  Say "VHDX source      : disque $s ($srcVhd)"
-  Say "VHDX destination : disque $d ($dstVhd)"
+  Say "Source VHDX      : disk $s ($srcVhd)"
+  Say "Destination VHDX : disk $d ($dstVhd)"
 
-  # 1. Image de test -> VHDX source (écriture par la voie « disque »).
+  # 1. Test image -> source VHDX (written through the "disk" path).
   Assert-OurVhd $s $srcVhd
-  # Sans agrandissement : la source doit rester un volume « propre », comme un vrai disque système.
-  Invoke-Clone "image:$fixture" "disk:$s" 'Image de test → VHDX source' @('--no-grow') | Out-Null
+  # No growth: the source must stay a "clean" volume, like a real system disk.
+  Invoke-Clone "image:$fixture" "disk:$s" 'Test image -> source VHDX' @('--no-grow') | Out-Null
   Start-Sleep -Seconds 2
 
-  # 1 bis. Disque Windows branché en externe : sa partition Windows reçoit une lettre (volume
-  # monté, utilisable dans l'Explorateur) et porte des fichiers d'échange et d'hibernation
-  # INACTIFS, comme un disque retiré d'un autre PC. Chud Clone ne doit pas le prendre pour un
-  # disque système, et doit le cloner vers un fichier image en copie intelligente : volumes
-  # verrouillés et démontés, puis analysés propres.
-  Say "`n=== Disque Windows externe (volume monté) → fichier image" Cyan
+  # 1b. Windows disk connected externally: its Windows partition gets a drive letter (mounted
+  # volume, usable in Explorer) and holds INACTIVE page and hibernation files, like a disk
+  # taken out of another PC. Chud Clone must not treat it as a system disk, and must clone it
+  # to an image file with a smart copy: volumes locked and dismounted, then analysed as clean.
+  Say "`n=== External Windows disk (mounted volume) -> image file" Cyan
   $winPart = Get-Partition -DiskNumber $s | Where-Object { $_.GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' } |
     Sort-Object Size -Descending | Select-Object -First 1
-  if (-not $winPart) { Fail 'partition Windows introuvable sur la source' }
+  if (-not $winPart) { Fail 'Windows partition not found on the source' }
   Add-PartitionAccessPath -DiskNumber $s -PartitionNumber $winPart.PartitionNumber -AssignDriveLetter
   Start-Sleep -Seconds 2
   $letter = (Get-Partition -DiskNumber $s -PartitionNumber $winPart.PartitionNumber).DriveLetter
-  if (-not $letter -or $letter -eq [char]0) { Fail 'aucune lettre attribuée à la partition Windows de la source' }
-  Say "Partition Windows de la source montée en ${letter}:"
+  if (-not $letter -or $letter -eq [char]0) { Fail 'no drive letter assigned to the Windows partition of the source' }
+  Say "Windows partition of the source mounted as ${letter}:"
   foreach ($f in 'pagefile.sys', 'hiberfil.sys', 'swapfile.sys') {
     $fs = [IO.File]::Create("${letter}:\$f")
     try { $fs.SetLength(1MB) } finally { $fs.Dispose() }
   }
   $all = & $Cli list --json | Out-String | ConvertFrom-Json
   $listed = @($all) | Where-Object { $_.id -eq "disk:$s" }
-  if ($listed.is_system) { Fail "le disque externe $s est pris pour un disque système (fichiers d'échange inactifs)" }
-  Say 'Non pris pour un disque système : correct' Green
-  $extImg = Join-Path $WorkDir 'externe.img'
+  if ($listed.is_system) { Fail "external disk $s is treated as a system disk (inactive page files)" }
+  Say 'Not treated as a system disk: correct' Green
+  $extImg = Join-Path $WorkDir 'external.img'
   if (Test-Path $extImg) { Remove-Item -Force $extImg }
   $prep = & $Cli plan "disk:$s" "image:$extImg" --json | Out-String | ConvertFrom-Json
   $ntfs = @($prep.plan.partitions | Where-Object { $_.fs -eq 'ntfs' })
-  if (-not $ntfs.Count) { Fail "aperçu : aucune partition NTFS dans le plan" }
+  if (-not $ntfs.Count) { Fail 'preview: no NTFS partition in the plan' }
   foreach ($p in $ntfs) {
-    if ($p.method -ne 'smart') { Fail "aperçu : partition $($p.number) en copie « $($p.method) » ($($p.method_reason))" }
+    if ($p.method -ne 'smart') { Fail "preview: partition $($p.number) uses '$($p.method)' copy ($($p.method_reason))" }
   }
-  Say 'Aperçu (volume monté) : copie intelligente prévue' Green
-  $rep = Invoke-Clone "disk:$s" "image:$extImg" 'Disque externe → fichier image'
+  Say 'Preview (mounted volume): smart copy planned' Green
+  $rep = Invoke-Clone "disk:$s" "image:$extImg" 'External disk -> image file'
   foreach ($p in @($rep.plan.partitions | Where-Object { $_.fs -eq 'ntfs' })) {
-    if ($p.method -ne 'smart') { Fail "clonage : partition $($p.number) en copie « $($p.method) » ($($p.method_reason))" }
+    if ($p.method -ne 'smart') { Fail "clone: partition $($p.number) uses '$($p.method)' copy ($($p.method_reason))" }
   }
   $insp = & $Cli inspect "image:$extImg" --json | Out-String | ConvertFrom-Json
-  if ($insp.boot.style -ne 'windows_uefi') { Fail "image : démarrage Windows UEFI non retrouvé ($($insp.boot.style))" }
-  Say 'Image : copie intelligente vérifiée, démarrage Windows UEFI retrouvé' Green
+  if ($insp.boot.style -ne 'windows_uefi') { Fail "image: UEFI Windows boot not found ($($insp.boot.style))" }
+  Say 'Image: smart copy verified, UEFI Windows boot found' Green
   Remove-PartitionAccessPath -DiskNumber $s -PartitionNumber $winPart.PartitionNumber -AccessPath "${letter}:\"
   if (-not $Keep) { Remove-Item -Force $extImg -ErrorAction SilentlyContinue }
   Start-Sleep -Seconds 1
 
-  # Empreintes de référence, lues sur la source telle que Windows la voit.
+  # Reference hashes, read from the source as Windows sees it.
   $srcMounts = Add-Mounts $s 'src'
-  if ($srcMounts.Count -eq 0) { Fail 'aucune partition de données visible sur la source' }
+  if ($srcMounts.Count -eq 0) { Fail 'no data partition visible on the source' }
   $ref = @{}
   foreach ($k in $srcMounts.Keys) { $ref[$k] = Get-Tree $srcMounts[$k] }
   Remove-Mounts
 
-  # 2. VHDX source -> VHDX destination (plus grand).
+  # 2. Source VHDX -> destination VHDX (larger).
   Assert-OurVhd $s $srcVhd
   Assert-OurVhd $d $dstVhd
-  $rep = Invoke-Clone "disk:$s" "disk:$d" 'VHDX source → VHDX destination'
+  $rep = Invoke-Clone "disk:$s" "disk:$d" 'Source VHDX -> destination VHDX'
   $grown = $null
   if ($rep.outcome.grow -and $rep.outcome.grow.done) {
     $grown = [int]$rep.outcome.grow.number
-    Say ("Partition {0} agrandie : {1:N0} → {2:N0} octets" -f $grown, $rep.outcome.grow.summary.old_size, $rep.outcome.grow.summary.new_size) Green
-  } else { Fail 'la partition Windows aurait dû être agrandie (destination deux fois plus grande)' }
+    Say ("Partition {0} grown: {1:N0} -> {2:N0} bytes" -f $grown, $rep.outcome.grow.summary.old_size, $rep.outcome.grow.summary.new_size) Green
+  } else { Fail 'the Windows partition should have been grown (destination twice as large)' }
 
-  # 3. Comme après un vrai clonage : on « débranche » la source, la destination revient en ligne.
+  # 3. As after a real clone: the source is "unplugged", the destination comes back online.
   Dismount-DiskImage -ImagePath $srcVhd | Out-Null
   $script:attached = @($script:attached | Where-Object { $_ -ne $srcVhd })
   Start-Sleep -Seconds 1
@@ -253,55 +254,55 @@ try {
   if ($disk.IsOffline) { Set-Disk -Number $d -IsOffline $false }
   Update-Disk -Number $d
 
-  Say "`n=== Contrôles par Windows" Cyan
+  Say "`n=== Checks by Windows" Cyan
   $parts = Get-Partition -DiskNumber $d
-  $parts | Format-Table PartitionNumber, Type, @{n = 'Taille (Mo)'; e = { [math]::Round($_.Size / 1MB) } }, Offset -AutoSize | Out-String | Write-Host
-  if ($disk.PartitionStyle -ne 'GPT') { Fail "style de partition inattendu : $($disk.PartitionStyle)" }
-  if (@($parts).Count -ne 4) { Fail "4 partitions attendues, $(@($parts).Count) trouvées" }
+  $parts | Format-Table PartitionNumber, Type, @{n = 'Size (MB)'; e = { [math]::Round($_.Size / 1MB) } }, Offset -AutoSize | Out-String | Write-Host
+  if ($disk.PartitionStyle -ne 'GPT') { Fail "unexpected partition style: $($disk.PartitionStyle)" }
+  if (@($parts).Count -ne 4) { Fail "4 partitions expected, $(@($parts).Count) found" }
 
   $dstMounts = Add-Mounts $d 'dst'
   foreach ($k in $ref.Keys) {
-    if (-not $dstMounts.ContainsKey($k)) { Fail "partition $k absente ou non montable sur la destination" }
+    if (-not $dstMounts.ContainsKey($k)) { Fail "partition $k missing or not mountable on the destination" }
     $dir = $dstMounts[$k]
     $o = & chkdsk.exe $dir.TrimEnd('\') 2>&1
-    if ($LASTEXITCODE -ne 0) { Fail "chkdsk signale un problème sur la partition $k :`n$($o | Out-String)" }
-    Say "chkdsk (lecture seule), partition $k : aucun problème" Green
+    if ($LASTEXITCODE -ne 0) { Fail "chkdsk reports a problem on partition $k`:`n$($o | Out-String)" }
+    Say "chkdsk (read-only), partition $k`: no problem" Green
     if ($k -eq $grown) {
-      # fsutil exige un chemin de volume (lettre ou \\?\Volume{GUID}), pas un dossier de montage.
+      # fsutil requires a volume path (letter or \\?\Volume{GUID}), not a mount folder.
       $guid = @((Get-Partition -DiskNumber $d -PartitionNumber $k).AccessPaths | Where-Object { $_ -like '\\?\Volume*' })[0]
       if ($guid) {
         $q = & fsutil.exe dirty query $guid.TrimEnd('\') 2>&1
-        Say ("Avant réparation, fsutil dirty query : " + ($q | Out-String).Trim())
+        Say ("Before repair, fsutil dirty query: " + ($q | Out-String).Trim())
       }
-      # VHDX de test uniquement : réparation autorisée, elle ne doit rien trouver à corriger.
+      # Test VHDX only: repair is allowed, and it must find nothing to fix.
       $o = & chkdsk.exe $dir.TrimEnd('\') /f /x 2>&1
       $code = $LASTEXITCODE
       $o | Out-String | Write-Host
-      if ($code -ne 0) { Fail "chkdsk /f a dû corriger la partition agrandie $k (code $code)" }
-      Say "chkdsk /f, partition agrandie $k : aucune erreur à corriger" Green
+      if ($code -ne 0) { Fail "chkdsk /f had to fix the grown partition $k (exit code $code)" }
+      Say "chkdsk /f, grown partition $k`: no error to fix" Green
       $p = Get-Partition -DiskNumber $d -PartitionNumber $k
       $v = $p | Get-Volume
-      Say ("Volume {0} : {1:N0} octets, {2:N0} libres (partition de {3:N0} octets)" -f $k, $v.Size, $v.SizeRemaining, $p.Size)
-      if ($v.Size -lt $p.Size - 1MB) { Fail "le volume n'occupe pas toute la partition agrandie" }
+      Say ("Volume {0}: {1:N0} bytes, {2:N0} free (partition of {3:N0} bytes)" -f $k, $v.Size, $v.SizeRemaining, $p.Size)
+      if ($v.Size -lt $p.Size - 1MB) { Fail 'the volume does not fill the whole grown partition' }
     }
     $got = Get-Tree $dir
     $diff = @($ref[$k].Keys | Where-Object { $got[$_] -ne $ref[$k][$_] }) + @($got.Keys | Where-Object { -not $ref[$k].ContainsKey($_) })
-    if ($diff.Count) { Fail "partition $k : fichiers différents : $($diff -join ', ')" }
-    Say ("Partition {0} : {1} fichiers, empreintes SHA-256 identiques à la source" -f $k, $ref[$k].Count) Green
+    if ($diff.Count) { Fail "partition $k`: files differ: $($diff -join ', ')" }
+    Say ("Partition {0}: {1} files, SHA-256 hashes identical to the source" -f $k, $ref[$k].Count) Green
   }
   Remove-Mounts
 
   $insp = & $Cli inspect "disk:$d" --json | ConvertFrom-Json
-  Say ("Démarrage du clone : {0}" -f $insp.boot.style)
-  if ($insp.boot.style -ne 'windows_uefi') { Fail 'éléments de démarrage Windows UEFI non retrouvés sur le clone' }
+  Say ("Clone boot configuration: {0}" -f $insp.boot.style)
+  if ($insp.boot.style -ne 'windows_uefi') { Fail 'UEFI Windows boot files not found on the clone' }
 
   $ok = $true
-  Say "`nVALIDATION SUR DISQUES VIRTUELS : RÉUSSIE" Green
-  Say "Rapports : $reports"
+  Say "`nVALIDATION ON VIRTUAL DISKS: PASSED" Green
+  Say "Reports: $reports"
 }
 catch {
   Say "`n$($_.Exception.Message)" Red
-  Say 'VALIDATION SUR DISQUES VIRTUELS : ÉCHOUÉE' Red
+  Say 'VALIDATION ON VIRTUAL DISKS: FAILED' Red
 }
 finally {
   Remove-Mounts

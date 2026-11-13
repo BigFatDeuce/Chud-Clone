@@ -1,23 +1,23 @@
-//! Agrandissement hors ligne d'un système de fichiers NTFS (sur la destination d'un clone).
+//! Offline growth of an NTFS file system (on the destination of a clone).
 //!
-//! Reproduit les modifications de l'outil de référence `ntfsresize` (ntfs-3g) lors d'un
-//! agrandissement, relevées octet par octet sur des volumes de test :
+//! Reproduces the changes made by the reference tool `ntfsresize` (ntfs-3g) when
+//! growing a volume, recorded byte by byte on test volumes:
 //!
-//! - `$Volume` (enregistrement 3, et sa copie dans `$MFTMirr`) : indicateur « à vérifier »,
-//!   pour que Windows contrôle le volume (chkdsk) à son premier montage ;
-//! - `$Bitmap` (enregistrement 6) : carte d'allocation étendue aux nouveaux clusters
-//!   (libres), bits de remplissage au-delà du dernier cluster positionnés à 1 ;
-//! - `$BadClus:$Bad` (enregistrement 8) : flux creux étendu à la nouvelle taille ;
-//! - secteur d'amorçage : nombre total de secteurs, plus une copie de secours écrite
-//!   dans le dernier secteur de la partition.
+//! - `$Volume` (record 3, and its copy in `$MFTMirr`): "needs checking" flag, so that
+//!   Windows checks the volume (chkdsk) the first time it mounts it;
+//! - `$Bitmap` (record 6): allocation map extended to the new (free) clusters,
+//!   padding bits beyond the last cluster set to 1;
+//! - `$BadClus:$Bad` (record 8): sparse stream extended to the new size;
+//! - boot sector: total number of sectors, plus a backup copy written to the
+//!   last sector of the partition.
 //!
-//! Aucune donnée de fichier n'est déplacée. Tout est lu, contrôlé et calculé AVANT la
-//! première écriture ; le secteur d'amorçage principal est écrit en dernier : tant qu'il
-//! ne l'est pas, le volume garde sa taille d'origine.
+//! No file data is moved. Everything is read, checked and computed BEFORE the first
+//! write; the main boot sector is written last: until it is, the volume keeps its
+//! original size.
 
 use crate::device::{AlignedBuf, BlockDevice};
 
-/// Pas des tableaux de correction (« update sequence ») : toujours 512 octets.
+/// Stride of the fixup arrays ("update sequence"): always 512 bytes.
 const USA_BLOCK: usize = 512;
 const ATTR_ATTRIBUTE_LIST: u32 = 0x20;
 const ATTR_VOLUME_INFORMATION: u32 = 0x70;
@@ -48,13 +48,13 @@ fn align_up(v: u64, a: u64) -> u64 {
     v.div_ceil(a) * a
 }
 
-/// Géométrie lue dans le secteur d'amorçage.
+/// Geometry read from the boot sector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
     pub sector: u64,
     pub spc: u64,
     pub cluster: u64,
-    /// Secteurs du volume (le secteur d'amorçage de secours n'en fait pas partie).
+    /// Sectors of the volume (the backup boot sector is not part of it).
     pub total_sectors: u64,
     pub mft_lcn: u64,
     pub mftmirr_lcn: u64,
@@ -265,7 +265,7 @@ fn push_run(runs: &mut Vec<Run>, r: Run) {
     runs.push(r);
 }
 
-/// Convertit la plage d'octets `[off, off+len)` d'un flux en plages du volume.
+/// Converts the byte range `[off, off+len)` of a stream into volume ranges.
 fn map_range(runs: &[Run], cluster: u64, off: u64, len: u64) -> Result<Vec<(u64, u64)>, String> {
     let mut out: Vec<(u64, u64)> = Vec::new();
     let (mut pos, end) = (off, off + len);
@@ -367,8 +367,8 @@ fn nonres(rec: &[u8], a: &Attr) -> Result<NonRes, String> {
     })
 }
 
-/// Remplace un attribut non résident par une version aux tailles et extensions mises à
-/// jour, en décalant les attributs suivants.
+/// Replaces a non-resident attribute with a version whose sizes and extents are
+/// updated, shifting the following attributes.
 fn rewrite_nonres(rec: &mut Vec<u8>, a: &Attr, nr: &NonRes) -> Result<(), String> {
     let old = &rec[a.off..a.off + a.len];
     let ro = le16(old, 0x20) as usize;
@@ -406,7 +406,7 @@ fn total_len(runs: &[Run]) -> u64 {
     runs.iter().map(|r| r.len).sum()
 }
 
-// --- Accès au volume ------------------------------------------------------------
+// --- Volume access ---------------------------------------------------------------
 
 struct Record {
     number: u64,
@@ -416,7 +416,7 @@ struct Record {
 struct Volume<'a> {
     dev: &'a mut dyn BlockDevice,
     base: u64,
-    /// Octets accessibles à partir de `base` (taille de la partition).
+    /// Bytes accessible from `base` (size of the partition).
     len: u64,
     geo: Geometry,
     boot: Vec<u8>,
@@ -457,7 +457,7 @@ impl<'a> Volume<'a> {
             )
             .into());
         }
-        // Enregistrement 0 ($MFT), lu à sa position fixe, pour connaître les extensions de la MFT.
+        // Record 0 ($MFT), read at its fixed position, to learn the MFT's extents.
         let rs = v.geo.record_size;
         let mut r0 = v.read_bytes(v.geo.mft_lcn * v.geo.cluster, rs as usize)?;
         check_record(&mut r0, 0)?;
@@ -543,7 +543,7 @@ impl<'a> Volume<'a> {
     }
 }
 
-/// Contrôle et décode (corrections appliquées) un enregistrement MFT de base.
+/// Checks and decodes (fixups applied) a base MFT record.
 fn check_record(rec: &mut [u8], n: u64) -> Result<(), String> {
     if &rec[0..4] != b"FILE" {
         return Err(tf!("enregistrement MFT {n} invalide (signature)", "MFT record {n} invalid (signature)"));
@@ -589,7 +589,7 @@ fn data_runs(rec: &[u8], name: &str) -> Result<NonRes, String> {
 
 // --- Agrandissement --------------------------------------------------------------
 
-/// Bilan d'un agrandissement.
+/// Outcome of a growth.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GrowSummary {
     pub old_size: u64,
@@ -597,7 +597,7 @@ pub struct GrowSummary {
     pub cluster_size: u64,
     pub old_clusters: u64,
     pub new_clusters: u64,
-    /// Clusters ajoutés à `$Bitmap` lui-même (comptés comme utilisés).
+    /// Clusters added to `$Bitmap` itself (counted as used).
     pub bitmap_extra_clusters: u64,
 }
 
@@ -607,7 +607,7 @@ struct Prepared {
     rec6: Record,
     rec8: Record,
     bitmap_runs: Vec<Run>,
-    /// Octet de `$Bitmap` à partir duquel le contenu est réécrit, et sa valeur d'origine.
+    /// Byte of `$Bitmap` from which the content is rewritten, and its original value.
     first_byte: u64,
     first_byte_old: u8,
     bitmap_data: u64,
@@ -626,7 +626,7 @@ fn prepare(v: &mut Volume, new_len: u64) -> Result<Prepared, String> {
         return Err(t!("la nouvelle taille n'ajoute aucun cluster", "the new size adds no cluster").into());
     }
 
-    // $Volume : indicateur « à vérifier ».
+    // $Volume: "needs checking" flag.
     let mut rec3 = v.read_record(3)?;
     let list = attrs(&rec3.data)?;
     let vi = list
@@ -666,8 +666,8 @@ fn prepare(v: &mut Volume, new_len: u64) -> Result<Prepared, String> {
     let data_new = align_up(nc.div_ceil(8), 8).max(bm.data);
     let alloc_new = align_up(data_new, g.cluster).max(bm.alloc);
     let extra = (alloc_new - bm.alloc) / g.cluster;
-    // Les clusters supplémentaires de $Bitmap sont pris au début de l'espace ajouté,
-    // libre par construction.
+    // The extra clusters of $Bitmap are taken at the start of the added space,
+    // free by construction.
     let ext = (oc, extra);
     if oc + extra > nc {
         return Err(t!("agrandissement trop faible pour loger la carte d'allocation", "growth too small to hold the allocation map").into());
@@ -681,11 +681,11 @@ fn prepare(v: &mut Volume, new_len: u64) -> Result<Prepared, String> {
     bm.init = data_new;
     rewrite_nonres(&mut rec6.data, &a6, &bm)?;
     let first_byte = oc / 8;
-    // Octet partagé entre anciens et nouveaux clusters (seulement si `oc` n'est pas un
-    // multiple de 8 ; sinon il peut se trouver juste après la fin de l'ancien $Bitmap).
+    // Byte shared between old and new clusters (only if `oc` is not a multiple
+    // of 8; otherwise it may lie just after the end of the old $Bitmap).
     let first_byte_old = if oc % 8 == 0 { 0 } else { v.read_stream(&old_runs, first_byte, 1)?[0] };
 
-    // $BadClus:$Bad : flux creux couvrant tout le volume.
+    // $BadClus:$Bad: sparse stream covering the whole volume.
     let mut rec8 = v.read_record(8)?;
     let list = attrs(&rec8.data)?;
     let a8 = find_data(&list, "$Bad")?.clone();
@@ -727,7 +727,7 @@ fn prepare(v: &mut Volume, new_len: u64) -> Result<Prepared, String> {
     })
 }
 
-/// Contenu de `$Bitmap` pour les octets `[from, from+len)` (≥ `first_byte`).
+/// Content of `$Bitmap` for the bytes `[from, from+len)` (≥ `first_byte`).
 fn bitmap_chunk(p: &Prepared, from: u64, len: u64) -> Vec<u8> {
     let oc = p.summary.old_clusters;
     let nc = p.summary.new_clusters;
@@ -738,13 +738,13 @@ fn bitmap_chunk(p: &Prepared, from: u64, len: u64) -> Vec<u8> {
         if b >= p.bitmap_data {
             continue;
         }
-        // Cas courants traités par octet entier (volumes de plusieurs To).
+        // Common cases handled by whole byte (volumes of several TB).
         let (lo, hi) = (b * 8, b * 8 + 8);
         if lo >= oc && hi <= nc && (hi <= ext_start || lo >= ext_start + ext_len) {
             continue; // nouveaux clusters libres
         }
         if lo >= nc {
-            *byte = 0xFF; // remplissage au-delà du dernier cluster
+            *byte = 0xFF; // padding beyond the last cluster
             continue;
         }
         let mut v = 0u8;
@@ -768,11 +768,11 @@ fn bitmap_chunk(p: &Prepared, from: u64, len: u64) -> Vec<u8> {
 
 fn apply(v: &mut Volume, p: &Prepared) -> Result<(), String> {
     let flush = |v: &mut Volume| v.dev.flush().map_err(|e| tf!("vidage des écritures : {e}", "flushing writes: {e}"));
-    // 1. Volume marqué « à vérifier » : toute interruption ultérieure sera rattrapée
-    //    par chkdsk au prochain montage.
+    // 1. Volume marked "needs checking": any later interruption will be caught up
+    //    by chkdsk at the next mount.
     v.write_record(&p.rec3)?;
     flush(v)?;
-    // 2. Carte d'allocation (octets touchés uniquement).
+    // 2. Allocation map (touched bytes only).
     let runs = p.bitmap_runs.clone();
     let mut pos = p.first_byte;
     while pos < p.bitmap_alloc {
@@ -781,11 +781,11 @@ fn apply(v: &mut Volume, p: &Prepared) -> Result<(), String> {
         v.write_stream(&runs, pos, &data)?;
         pos += n;
     }
-    // 3. Enregistrements $BadClus puis $Bitmap.
+    // 3. $BadClus records, then $Bitmap.
     v.write_record(&p.rec8)?;
     v.write_record(&p.rec6)?;
     flush(v)?;
-    // 4. Secteur d'amorçage : secours (dernier secteur de la partition), puis principal.
+    // 4. Boot sector: backup (last sector of the partition), then primary.
     let ss = v.geo.sector;
     let boot = p.boot.clone();
     v.write_bytes(p.new_total_sectors * ss, &boot)?;
@@ -794,18 +794,18 @@ fn apply(v: &mut Volume, p: &Prepared) -> Result<(), String> {
     flush(v)
 }
 
-/// Vérifie, sans rien écrire, qu'un volume NTFS peut être agrandi par ce module.
+/// Checks, without writing anything, that an NTFS volume can be grown by this module.
 pub fn preflight(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Result<(), String> {
     let mut v = Volume::open(dev, base, len)?;
-    // Taille hypothétique : quatre fois plus grand (au moins +64 Gio), pour éprouver
-    // tous les calculs ; seules des lectures ont lieu.
+    // Hypothetical size: four times larger (at least +64 GiB), to exercise every
+    // computation; only reads take place.
     let fake = len.saturating_mul(4).max(len.saturating_add(1 << 36));
     prepare(&mut v, fake).map(|_| ())
 }
 
-/// Agrandit le volume NTFS situé à `base` pour occuper `new_len` octets (la partition
-/// doit déjà avoir cette taille). Toutes les vérifications sont faites avant la
-/// première écriture.
+/// Grows the NTFS volume at `base` to occupy `new_len` bytes (the partition
+/// must already have that size). Every check is done before the
+/// first write.
 pub fn grow(dev: &mut dyn BlockDevice, base: u64, new_len: u64) -> Result<GrowSummary, GrowError> {
     let before = |message: String| GrowError { message, modified: false };
     let after = |message: String| GrowError { message, modified: true };
@@ -817,15 +817,15 @@ pub fn grow(dev: &mut dyn BlockDevice, base: u64, new_len: u64) -> Result<GrowSu
     Ok(p.summary)
 }
 
-/// Échec d'un agrandissement.
+/// Failure of a growth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrowError {
     pub message: String,
-    /// Des écritures avaient déjà eu lieu (le volume est alors marqué « à vérifier »).
+    /// Writes had already happened (the volume is then marked "needs checking").
     pub modified: bool,
 }
 
-/// Relit le volume agrandi et contrôle les structures modifiées.
+/// Reads the grown volume back and checks the modified structures.
 pub fn verify(dev: &mut dyn BlockDevice, base: u64, new_len: u64, s: &GrowSummary) -> Result<(), String> {
     let mut v = Volume::open(dev, base, new_len).map_err(|e| tf!("relecture après agrandissement : {e}", "read-back after growing: {e}"))?;
     let g = v.geo;
@@ -842,7 +842,7 @@ pub fn verify(dev: &mut dyn BlockDevice, base: u64, new_len: u64, s: &GrowSummar
     if bad.last_vcn + 1 != s.new_clusters || bad.alloc != s.new_clusters * g.cluster {
         return Err(t!("relecture après agrandissement : taille de $BadClus inattendue", "read-back after growing: unexpected $BadClus size").into());
     }
-    // Les bits des nouveaux clusters : seuls ceux de $Bitmap lui-même sont utilisés.
+    // Bits of the new clusters: only those of $Bitmap itself are used.
     let from = s.old_clusters / 8;
     let to = bm.data;
     let bytes = v.read_stream(&bm.runs, from, to - from)?;
@@ -883,14 +883,14 @@ mod tests {
             Run { len: 1, lcn: Some(4) },
             Run { len: 300, lcn: Some(70000) },
             Run { len: 5, lcn: None },
-            Run { len: 2, lcn: Some(12) }, // déplacement négatif
+            Run { len: 2, lcn: Some(12) }, // negative offset
             Run { len: 1 << 40, lcn: Some(1 << 35) },
         ];
         let enc = encode_runs(&runs);
         assert_eq!(decode_runs(&enc).unwrap(), runs);
-        // Exemple de référence : 0x11 longueur 0x30, décalage 0x60.
+        // Reference example: 0x11 length 0x30, offset 0x60.
         assert_eq!(decode_runs(&[0x11, 0x30, 0x60, 0x00]).unwrap(), vec![Run { len: 0x30, lcn: Some(0x60) }]);
-        // Décalage négatif sur un octet (0xF0 = -16).
+        // Negative one-byte offset (0xF0 = -16).
         let r = decode_runs(&[0x11, 0x01, 0x40, 0x11, 0x01, 0xF0, 0x00]).unwrap();
         assert_eq!(r[1].lcn, Some(0x30));
         assert!(decode_runs(&[0x11, 0x01]).is_err());
@@ -927,7 +927,7 @@ mod tests {
         assert_eq!(rec[..0x30], orig[..0x30]);
         rec[511] ^= 1;
         fixup(&mut rec);
-        rec[1022] ^= 0xFF; // écriture partielle simulée
+        rec[1022] ^= 0xFF; // simulated partial write
         assert!(unfixup(&mut rec).is_err());
     }
 

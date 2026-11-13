@@ -1,7 +1,7 @@
-//! Outils partagés par les tests d'intégration : accès aux images de test.
+//! Helpers shared by the integration tests: access to the test images.
 //!
-//! Les images sont de vrais disques virtuels (GPT/MBR, NTFS, FAT) produits par
-//! `scripts/make-fixtures.sh`. Aucun test ne touche à un disque physique.
+//! The images are real virtual disks (GPT/MBR, NTFS, FAT) produced by
+//! `scripts/make-fixtures.sh`. No test touches a physical disk.
 #![allow(dead_code)]
 
 use chud_clone_core::device::{BlockDevice, FileDevice};
@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// Chemin de l'image décompressée (mise en cache dans le dossier temporaire de cargo).
+/// Path of the decompressed image (cached in cargo's temporary folder).
 pub fn fixture(name: &str) -> PathBuf {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let gz = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(format!("{name}.gz"));
@@ -44,17 +44,17 @@ pub fn fixture(name: &str) -> PathBuf {
     out
 }
 
-/// Ouvre une image de test en lecture seule.
+/// Opens a test image read-only.
 pub fn open_fixture(name: &str) -> FileDevice {
     FileDevice::open_read_only(&fixture(name), 512).unwrap()
 }
 
-/// Charge une image de test entièrement en mémoire.
+/// Loads a test image entirely into memory.
 pub fn load_fixture(name: &str) -> Vec<u8> {
     std::fs::read(fixture(name)).unwrap()
 }
 
-/// Lit tout un périphérique en mémoire.
+/// Reads a whole device into memory.
 pub fn dump(dev: &mut dyn BlockDevice) -> Vec<u8> {
     let mut out = vec![0u8; dev.size() as usize];
     let chunk = 1 << 20;

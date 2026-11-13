@@ -395,19 +395,21 @@ dependencies = [
 
 [[package]]
 name = "chud-clone-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chud-clone-core",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "chud-clone-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chud-clone-core",
  "serde_json",
@@ -416,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "chud-clone-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "chrono",

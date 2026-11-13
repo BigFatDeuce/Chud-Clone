@@ -16,6 +16,12 @@ tauri-build = { version = "2", features = [] }
 chud-clone-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# « custom-protocol » : l'interface est embarquée dans l'exécutable (aucun serveur de développement).
+# "custom-protocol": the interface is embedded in the executable (no development server).
 tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-dialog = "2"
+# Checksum of downloaded updates.
+sha2 = "0.10"
+
+[target."cfg(windows)".dependencies]
+# Update check (WinHTTP: system TLS and proxy settings) and installer launch.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

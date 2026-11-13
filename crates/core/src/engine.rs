@@ -1,17 +1,17 @@
-//! Moteur de copie et de vérification.
+//! Copy and verification engine.
 //!
-//! Principes, inspirés de ddrescue :
-//! 1. Copier d'abord tout ce qui se lit sans difficulté, par gros blocs. Une zone qui
-//!    échoue est mise de côté au lieu de bloquer la copie : un disque qui se dégrade
-//!    doit livrer un maximum de données saines avant qu'on insiste sur ses défauts.
-//! 2. Revenir ensuite sur les zones mises de côté, secteur par secteur, avec un nombre
-//!    borné de tentatives.
-//! 3. Ne jamais passer sous silence un secteur illisible : chaque plage est
-//!    enregistrée (position, tentatives, erreur) et la suite dépend d'une décision
-//!    explicite.
+//! Principles, inspired by ddrescue:
+//! 1. First copy everything that reads without trouble, in large blocks. An area that
+//!    fails is set aside instead of blocking the copy: a degrading disk must deliver
+//!    as much healthy data as possible before its defects are insisted on.
+//! 2. Then come back to the areas set aside, sector by sector, with a bounded number
+//!    of attempts.
+//! 3. Never hide an unreadable sector: every range is recorded (position, attempts,
+//!    error) and what happens next depends on an explicit
+//!    decision.
 //!
-//! Une erreur d'écriture sur la destination n'est jamais contournée : la copie
-//! s'arrête.
+//! A write error on the destination is never worked around: the copy
+//! stops.
 
 use crate::device::{AlignedBuf, BlockDevice, IoErrorClass, classify};
 use crate::plan::CopyTask;
@@ -23,11 +23,11 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnreadablePolicy {
-    /// Arrêter : le clone est déclaré incomplet (comportement par défaut).
+    /// Stop: the clone is reported incomplete (default behaviour).
     Stop,
-    /// Demander à l'utilisateur, une fois la récupération tentée.
+    /// Ask the user, once recovery has been attempted.
     Ask,
-    /// Remplacer les secteurs illisibles par des zéros et poursuivre.
+    /// Replace the unreadable sectors with zeros and continue.
     ZeroFill,
 }
 
@@ -36,9 +36,9 @@ pub enum UnreadablePolicy {
 pub enum VerifyMode {
     /// Aucune relecture.
     None,
-    /// Relit la destination et la compare aux empreintes des données lues sur la source.
+    /// Reads the destination back and compares it with the checksums of the data read from the source.
     Hash,
-    /// Relit la source ET la destination et les compare.
+    /// Reads the source AND the destination back and compares them.
     Full,
 }
 
@@ -57,13 +57,13 @@ impl VerifyMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineOptions {
-    /// Taille des blocs de copie (octets, multiple de 4096).
+    /// Size of the copy blocks (bytes, multiple of 4096).
     pub chunk_size: usize,
-    /// Taille des sous-blocs utilisés pour isoler une zone en erreur.
+    /// Size of the sub-blocks used to isolate a failing area.
     pub retry_block: usize,
-    /// Nouvelles tentatives par secteur pendant la phase de récupération.
+    /// Retries per sector during the recovery phase.
     pub read_retries: u32,
-    /// Nouvelles tentatives d'écriture avant abandon.
+    /// Write retries before giving up.
     pub write_retries: u32,
     pub unreadable: UnreadablePolicy,
     pub verify: VerifyMode,
@@ -109,7 +109,7 @@ pub enum Phase {
     Recovering,
     WritingTable,
     Verifying,
-    /// Agrandissement du système de fichiers de la partition principale.
+    /// Growth of the main partition's file system.
     Growing,
     Checking,
     Done,
@@ -133,23 +133,23 @@ impl Phase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Progress {
     pub phase: Phase,
-    /// Avancement dans la phase courante (octets).
+    /// Progress in the current phase (bytes).
     pub done: u64,
     pub total: u64,
     pub elapsed_ms: u64,
-    /// Débit instantané lissé (octets/s).
+    /// Smoothed instantaneous speed (bytes/s).
     pub speed_bps: u64,
-    /// Débit moyen depuis le début de la phase.
+    /// Average speed since the start of the phase.
     pub avg_bps: u64,
     pub eta_secs: Option<u64>,
-    /// Événements d'erreur de lecture rencontrés.
+    /// Read error events encountered.
     pub read_errors: u64,
-    /// Octets actuellement tenus pour illisibles.
+    /// Bytes currently considered unreadable.
     pub bad_bytes: u64,
-    /// Octets récupérés après nouvelle tentative.
+    /// Bytes recovered after a retry.
     pub recovered_bytes: u64,
     pub write_errors: u64,
-    /// Position courante sur la source (LBA).
+    /// Current position on the source (LBA).
     pub current_lba: u64,
 }
 
@@ -172,36 +172,36 @@ pub enum Decision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BadOutcome {
-    /// Décision en attente.
+    /// Decision pending.
     Pending,
-    /// Non copié : la destination ne contient pas ces données.
+    /// Not copied: the destination does not contain this data.
     NotCopied,
-    /// Remplacé par des zéros sur la destination.
+    /// Replaced with zeros on the destination.
     ZeroFilled,
 }
 
-/// Plage définitivement illisible sur la source.
+/// Range permanently unreadable on the source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BadRange {
     pub src_offset: u64,
     pub dst_offset: u64,
     pub len: u64,
-    /// LBA de début sur la source.
+    /// Starting LBA on the source.
     pub lba: u64,
     pub sectors: u64,
-    /// Tentatives de lecture effectuées par secteur.
+    /// Read attempts made per sector.
     pub attempts: u32,
     pub error: String,
     pub class: IoErrorClass,
     pub outcome: BadOutcome,
 }
 
-/// Plage lue avec succès après au moins un échec.
+/// Range read successfully after at least one failure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveredRange {
     pub lba: u64,
     pub sectors: u64,
-    /// Tentative qui a réussi (1 = première relecture en phase de récupération).
+    /// Attempt that succeeded (1 = first re-read in the recovery phase).
     pub attempt: u32,
 }
 
@@ -211,7 +211,7 @@ pub struct HashEntry {
     pub dst: u64,
     pub len: u64,
     pub hash: [u8; 32],
-    /// Plage remplie de zéros (aucune donnée source correspondante).
+    /// Range filled with zeros (no corresponding source data).
     pub zero_fill: bool,
 }
 
@@ -220,16 +220,16 @@ pub struct HashEntry {
 pub enum StopReason {
     Completed,
     Cancelled,
-    /// La source a disparu ou refuse l'accès.
+    /// The source disappeared or refuses access.
     SourceLost(String),
-    /// Erreur d'écriture sur la destination.
+    /// Write error on the destination.
     DestinationFailed(String),
-    /// Secteurs illisibles et décision d'arrêt.
+    /// Unreadable sectors and a decision to stop.
     Unreadable,
     Internal(String),
 }
 
-/// Informations fournies au moment de décider du sort des secteurs illisibles.
+/// Information given when deciding what to do with unreadable sectors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnreadableInfo {
     pub ranges: Vec<BadRange>,
@@ -241,8 +241,8 @@ pub struct UnreadableInfo {
 pub trait Observer: Send + Sync {
     fn progress(&self, _p: &Progress) {}
     fn log(&self, _level: LogLevel, _msg: &str) {}
-    /// Appelé une seule fois par passe, après la phase de récupération, si des
-    /// secteurs restent illisibles et que la politique est `Ask`.
+    /// Called once per pass, after the recovery phase, if sectors remain
+    /// unreadable and the policy is `Ask`.
     fn decide_unreadable(&self, _info: &UnreadableInfo) -> Decision {
         Decision::Abort
     }
@@ -252,7 +252,7 @@ pub trait Observer: Send + Sync {
 pub struct NullObserver;
 impl Observer for NullObserver {}
 
-/// Commande d'annulation partagée entre l'interface et le moteur.
+/// Cancellation control shared between the interface and the engine.
 #[derive(Default)]
 pub struct Control {
     cancel: AtomicBool,
@@ -287,7 +287,7 @@ impl Meter {
 #[derive(Debug, Clone, Default)]
 pub struct CopyStats {
     pub bytes_total: u64,
-    /// Octets lus sur la source et écrits sur la destination.
+    /// Bytes read from the source and written to the destination.
     pub bytes_copied: u64,
     pub bytes_zero_filled: u64,
     pub read_error_events: u64,
@@ -305,8 +305,8 @@ impl CopyStats {
     }
 }
 
-/// Exécute les copies. Un même `Copier` peut enchaîner plusieurs lots de tâches ;
-/// les statistiques s'accumulent.
+/// Runs the copies. One `Copier` can chain several batches of tasks;
+/// the statistics accumulate.
 pub struct Copier<'a> {
     src: &'a mut dyn BlockDevice,
     dst: &'a mut dyn BlockDevice,
@@ -363,7 +363,7 @@ impl<'a> Copier<'a> {
         let elapsed = now.duration_since(self.meter.start);
         let avg = if elapsed.as_secs_f64() > 0.0 { self.done as f64 / elapsed.as_secs_f64() } else { 0.0 };
         let remaining = self.stats.bytes_total.saturating_sub(self.done);
-        // L'estimation s'appuie sur la moyenne, plus stable, tempérée par le débit récent.
+        // The estimate relies on the average, which is steadier, tempered by the recent speed.
         let basis = if self.meter.ema > 0.0 && avg > 0.0 { 0.5 * self.meter.ema + 0.5 * avg } else { avg.max(self.meter.ema) };
         let eta = if basis > 1.0 && elapsed.as_millis() > 1500 { Some((remaining as f64 / basis).ceil() as u64) } else { None };
         let p = Progress {
@@ -383,8 +383,8 @@ impl<'a> Copier<'a> {
         self.obs.progress(&p);
     }
 
-    /// Lecture sur la source. Une disparition du périphérique est retentée brièvement :
-    /// un pont USB qui se réinitialise revient souvent en une seconde.
+    /// Read from the source. A device disappearing is retried briefly:
+    /// a USB bridge that resets often comes back within a second.
     fn read_src(&mut self, off: u64, buf: &mut [u8]) -> io::Result<()> {
         let mut tries = 0;
         loop {
@@ -461,9 +461,9 @@ impl<'a> Copier<'a> {
         StopReason::SourceLost(msg)
     }
 
-    /// Copie un lot de tâches, dans l'ordre. Renvoie `Completed` si toutes les données
-    /// du lot se trouvent sur la destination (les plages remplies de zéros sont
-    /// consignées dans `stats.bad_ranges`).
+    /// Copies a batch of tasks, in order. Returns `Completed` if all the batch's data
+    /// is on the destination (ranges filled with zeros are recorded in
+    /// `stats.bad_ranges`).
     pub fn run(&mut self, tasks: &[CopyTask]) -> StopReason {
         let started = Instant::now();
         let r = self.run_inner(tasks);
@@ -512,7 +512,7 @@ impl<'a> Copier<'a> {
                                 s / ss
                             ),
                         );
-                        // Isole la zone fautive par sous-blocs ; le reste est copié tout de suite.
+                        // Isolate the faulty area by sub-blocks; the rest is copied right away.
                         let mut p = 0usize;
                         while p < n {
                             if self.ctl.is_cancelled() {
@@ -550,7 +550,7 @@ impl<'a> Copier<'a> {
             return StopReason::Completed;
         }
 
-        // --- Phase de récupération : secteur par secteur ------------------------
+        // --- Recovery phase: sector by sector -----------------------------------------
         self.phase = Phase::Recovering;
         let deferred_bytes: u64 = deferred.iter().map(|d| d.len).sum();
         self.obs.log(
@@ -605,7 +605,7 @@ impl<'a> Copier<'a> {
                         self.done += m as u64;
                     }
                     None => {
-                        let e = last.expect("échec sans erreur");
+                        let e = last.expect("failure without an error");
                         let class = classify(&e);
                         let attempts = self.opts.read_retries + 2; // lecture initiale + sous-bloc + reprises
                         let mergeable = self.stats.bad_ranges.len() > first_new_bad;
@@ -707,26 +707,26 @@ impl<'a> Copier<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Vérification des données
+// Data verification
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MismatchKind {
-    /// La destination ne restitue pas ce qui y a été écrit.
+    /// The destination does not return what was written to it.
     DestinationDiffers,
-    /// La destination n'a pas pu être relue.
+    /// The destination could not be read back.
     DestinationUnreadable,
-    /// La source a renvoyé un contenu différent à la seconde lecture.
+    /// The source returned different content on the second read.
     SourceChanged,
-    /// La source n'a pas pu être relue.
+    /// The source could not be read back.
     SourceUnreadable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mismatch {
     pub kind: MismatchKind,
-    /// LBA sur la destination (ou la source pour les cas `Source*`).
+    /// LBA on the destination (or the source for the `Source*` cases).
     pub lba: u64,
     pub sectors: u64,
     pub detail: String,
@@ -737,7 +737,7 @@ pub struct DataVerification {
     pub mode: VerifyMode,
     pub total_bytes: u64,
     pub checked_bytes: u64,
-    /// Vrai si toutes les plages prévues ont été examinées.
+    /// True if all the planned ranges were examined.
     pub completed: bool,
     pub mismatches: Vec<Mismatch>,
     pub duration_ms: u64,
@@ -752,10 +752,10 @@ impl DataVerification {
     }
 }
 
-/// Nombre maximal d'écarts détaillés conservés (le total reste exact dans les journaux).
+/// Maximum number of detailed differences kept (the total stays exact in the logs).
 const MAX_MISMATCHES: usize = 1000;
 
-/// Relit la destination (et la source en mode complet) et compare aux empreintes.
+/// Reads the destination back (and the source in full mode) and compares with the checksums.
 pub fn verify_data(
     src: &mut dyn BlockDevice,
     dst: &mut dyn BlockDevice,
@@ -840,7 +840,7 @@ pub fn verify_data(
             match src.read_at(h.src, &mut sbuf[..n]) {
                 Ok(()) => {
                     if dst_ok && sbuf[..n] != dbuf[..n] {
-                        // Localise le premier secteur différent pour un rapport précis.
+                        // Locate the first differing sector for a precise report.
                         let first =
                             (0..n).step_by(ss as usize).find(|o| sbuf[*o..*o + ss as usize] != dbuf[*o..*o + ss as usize]).unwrap_or(0) as u64;
                         push(

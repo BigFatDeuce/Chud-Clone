@@ -1,4 +1,4 @@
-//! FAT12/16/32 : géométrie, carte des clusters utilisés et recherche de fichiers.
+//! FAT12/16/32: geometry, map of used clusters and file lookup.
 
 use super::{Extent, FsAnalysis, FsKind, normalize};
 use crate::device::{BlockDevice, DeviceReader, read_vec};
@@ -29,7 +29,7 @@ impl FatGeometry {
     }
 }
 
-/// Analyse le BPB d'un secteur d'amorçage FAT. `None` si ce n'en est pas un.
+/// Parses the BPB of a FAT boot sector. `None` if it is not one.
 pub fn parse_bpb(s: &[u8]) -> Option<FatGeometry> {
     if s.len() < 512 || s[510] != 0x55 || s[511] != 0xAA {
         return None;
@@ -69,14 +69,14 @@ pub fn parse_bpb(s: &[u8]) -> Option<FatGeometry> {
     } else {
         FsKind::Fat32
     };
-    // Cohérence : une FAT32 n'a pas de répertoire racine fixe ni de champ FAT16.
+    // Consistency: a FAT32 has neither a fixed root directory nor a FAT16 field.
     if kind == FsKind::Fat32 && (fat16 != 0 || root_entries != 0) {
         return None;
     }
     if kind != FsKind::Fat32 && root_entries == 0 {
         return None;
     }
-    // La FAT doit pouvoir décrire tous les clusters.
+    // The FAT must be able to describe every cluster.
     let bits = match kind {
         FsKind::Fat12 => 12,
         FsKind::Fat16 => 16,
@@ -182,7 +182,7 @@ fn analyze_inner(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut FsAna
         ));
     }
 
-    // Lecture de la première FAT.
+    // Read the first FAT.
     let fat_bytes = g.fat_sectors * g.bytes_per_sector;
     let fat_off = g.reserved_sectors * g.bytes_per_sector;
     let mut fat = vec![0u8; fat_bytes as usize + 4];
@@ -256,8 +256,8 @@ fn analyze_inner(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut FsAna
     Ok(())
 }
 
-/// Taille d'un fichier d'un volume FAT, ou `None` s'il n'existe pas.
-/// `path` utilise `/` comme séparateur. Lecture seule garantie par `DeviceReader`.
+/// Size of a file on a FAT volume, or `None` if it does not exist.
+/// `path` uses `/` as separator. Read-only guaranteed by `DeviceReader`.
 pub fn file_size(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &str) -> Result<Option<u64>, String> {
     let reader = DeviceReader::new(dev, base, len);
     let fs = fatfs::FileSystem::new(reader, fatfs::FsOptions::new().update_accessed_date(false)).map_err(|e| e.to_string())?;
@@ -284,7 +284,7 @@ pub fn file_size(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &str) -> 
     Ok(None)
 }
 
-/// Lit un fichier complet d'un volume FAT (tests et vérifications).
+/// Reads a whole file from a FAT volume (tests and verifications).
 pub fn read_file(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &str) -> Result<Option<Vec<u8>>, String> {
     let reader = DeviceReader::new(dev, base, len);
     let fs = fatfs::FileSystem::new(reader, fatfs::FsOptions::new().update_accessed_date(false)).map_err(|e| e.to_string())?;
@@ -305,7 +305,7 @@ mod tests {
     use crate::device::MemDevice;
     use std::io::{Cursor, Write};
 
-    /// Formate un volume FAT avec une implémentation indépendante (crate fatfs).
+    /// Formats a FAT volume with an independent implementation (fatfs crate).
     fn make_fat(size: usize, fat_type: fatfs::FatType) -> Vec<u8> {
         let mut cur = Cursor::new(vec![0u8; size]);
         fatfs::format_volume(&mut cur, fatfs::FormatVolumeOptions::new().fat_type(fat_type).volume_label(*b"TESTVOL    ")).unwrap();
@@ -337,13 +337,13 @@ mod tests {
             let a = crate::fs::analyze(&mut dev, 0, size as u64);
             assert_eq!(a.kind, kind);
             assert_eq!(a.label.as_deref(), Some("TESTVOL"));
-            let ext = a.used_extents.clone().expect("volume propre : étendues disponibles");
+            let ext = a.used_extents.clone().expect("clean volume: extents available");
             let used: u64 = ext.iter().map(|e| e.len).sum();
             assert_eq!(Some(used), a.used_bytes);
-            assert!(used < size as u64 / 2, "seule une fraction du volume est utilisée");
+            assert!(used < size as u64 / 2, "only a fraction of the volume is used");
 
-            // Preuve de suffisance : une image ne contenant QUE les étendues utilisées
-            // doit redonner exactement les mêmes fichiers avec le lecteur indépendant.
+            // Proof of sufficiency: an image containing ONLY the used extents must give back
+            // exactly the same files with the independent reader.
             let mut sparse = vec![0xEEu8; size];
             for e in &ext {
                 let (o, l) = (e.offset as usize, e.len as usize);
@@ -355,7 +355,7 @@ mod tests {
             assert_eq!(file_size(&mut dev2, 0, size as u64, "efi/A.BIN").unwrap(), Some(300_000));
             assert_eq!(file_size(&mut dev2, 0, size as u64, "b.txt").unwrap(), None);
             assert_eq!(file_size(&mut dev2, 0, size as u64, "nope/x").unwrap(), None);
-            assert_eq!(dev2.writes, 0, "aucune écriture pendant l'analyse");
+            assert_eq!(dev2.writes, 0, "no write during the analysis");
         }
     }
 
@@ -363,7 +363,7 @@ mod tests {
     fn dirty_fat32_falls_back_to_raw() {
         let mut img = make_fat(64 << 20, fatfs::FatType::Fat32);
         let g = parse_bpb(&img).unwrap();
-        // Efface le bit « démonté proprement » de FAT[1].
+        // Clear the "cleanly unmounted" bit of FAT[1].
         let o = (g.reserved_sectors * g.bytes_per_sector) as usize + 4;
         let v = le32(&img, o) & !0x0800_0000;
         img[o..o + 4].copy_from_slice(&v.to_le_bytes());

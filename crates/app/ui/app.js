@@ -1,6 +1,6 @@
-// Chud Clone — logique de l'interface.
-// L'interface ne décide de rien de dangereux : elle affiche ce que le moteur a analysé et
-// lui transmet les choix de l'utilisateur. Toutes les protections sont refaites côté moteur.
+// Chud Clone — interface logic.
+// The interface decides nothing dangerous: it shows what the engine analysed and
+// passes the user's choices on. Every protection is enforced again by the engine.
 "use strict";
 
 const T = window.__TAURI__;
@@ -18,12 +18,12 @@ const $ = (s, r) => (r || document).querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const store = {
   get(k, d) { try { return Object.assign({}, d, JSON.parse(localStorage.getItem("chudclone." + k) || "{}")); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("chudclone." + k, JSON.stringify(v)); } catch { /* stockage indisponible */ } },
+  set(k, v) { try { localStorage.setItem("chudclone." + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
 };
 
-// ------------------------------------------------------------------- Langue
-// Deux langues : français et anglais. `L("texte", "text")` rend le texte de la langue
-// active ; les tables de libellés sont reconstruites par applyLang().
+// ----------------------------------------------------------------- Language
+// Two languages: French and English. `L("texte", "text")` returns the text of the active
+// language; the label tables are rebuilt by applyLang().
 let LANG = "fr";
 let langReady = Promise.resolve();
 const L = (fr, en) => (LANG === "en" ? en : fr);
@@ -87,7 +87,7 @@ function buildTables() {
 buildTables();
 const ROLE_CLASS = { esp: "p-esp", msr: "p-msr", basic_data: "p-data", recovery: "p-rec", linux_fs: "p-linux", linux_swap: "p-linux", linux_lvm: "p-linux" };
 
-// --------------------------------------------------------------------- État
+// -------------------------------------------------------------------- State
 const S = {
   env: null,
   disks: [],
@@ -101,7 +101,8 @@ const S = {
   prepError: null,
   confirmText: "",
   opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3, allow_unvalidated: false }),
-  ui: store.get("ui", { motion: "full", lang: null }),
+  ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null }),
+  update: { info: null, checking: false, error: null, checkedAt: null, installing: false },
   run: null,
   report: null,
   runError: null,
@@ -302,7 +303,7 @@ function viewReview() {
     const ready = !p.blocked;
     const word = confirmWord();
     const good = S.confirmText.trim().toUpperCase() === word;
-    // Un problème sérieux (disque source dégradé…) remonte en haut de page.
+    // A serious problem (degraded source disk…) is raised to the top of the page.
     const urgent = others.some((f) => f.severity === "error" || f.severity === "critical");
     const attention = `<div class="panel"><h2>${L("Points d'attention", "Points of attention")}</h2>${findingsHtml(others)}</div>`;
     body = `
@@ -346,7 +347,7 @@ function checkRow(c) {
   return `<div class="check ${m[0]}"><span class="s">${m[1]}</span><span>${esc(c.label)}${c.state === "unknown" ? ` <span class="dim">— ${L("non vérifiable", "not verifiable")}</span>` : c.state === "missing" ? ` <span class="dim">— ${L("absent", "missing")}${c.required ? "" : L(" (facultatif)", " (optional)")}</span>` : ""}</span></div>`;
 }
 
-// ------------------------------------------------------ Vue : clonage en cours
+// --------------------------------------------------------- View: clone running
 function viewRun() {
   const s = S.run.source, d = S.run.destination;
   return `<div class="page">${flight()}
@@ -430,7 +431,7 @@ function askUnreadable(info) {
     <div class="actions"><button class="btn" data-act="unreadable-stop">${L("Arrêter le clonage", "Stop cloning")}</button><button class="btn danger" data-act="unreadable-zero">${L("Poursuivre malgré les données perdues", "Continue despite the lost data")}</button></div>`);
 }
 
-// ------------------------------------------------------------ Vue : résultat
+// ---------------------------------------------------------------- View: result
 function outcomeHtml(rep, error, opts) {
   opts = opts || {};
   if (!rep) {
@@ -443,7 +444,7 @@ function outcomeHtml(rep, error, opts) {
   const dataTxt = dc.mode === "none" ? L("Non vérifiées (relecture désactivée ou clonage interrompu)", "Not verified (read-back disabled or cloning interrupted)") : !dc.completed ? L(`Vérification interrompue (${size(dc.checked_bytes)} sur ${size(dc.total_bytes)})`, `Verification interrupted (${size(dc.checked_bytes)} of ${size(dc.total_bytes)})`) : dc.mismatches.length ? L(`${dc.mismatches.length} différence(s) sur ${size(dc.checked_bytes)} relus`, `${dc.mismatches.length} difference(s) in ${size(dc.checked_bytes)} read back`) : L(`${size(dc.checked_bytes)} relus, aucune différence`, `${size(dc.checked_bytes)} read back, no differences`);
   const good = o.status === "success_verified" || o.status === "completed_with_warnings";
   const physical = rep.destination.kind === "physical";
-  // Clone allé au bout mais avec des secteurs remplacés par des zéros : utilisable, abîmé.
+  // Clone finished but with sectors replaced by zeros: usable, damaged.
   const zeroed = o.table_written && o.bad_ranges.some((b) => b.outcome === "zero_filled");
   const next = [];
   if (zeroed) { const z = num(o.bad_ranges.reduce((a, b) => a + b.sectors, 0)); next.push(L(`Le clone est complet à l'exception de ${z} secteur(s) remplacé(s) par des zéros (liste ci-dessous). Relancer le clonage ne les récupérera probablement pas : le disque source est endommagé, évitez de le solliciter davantage.`, `The clone is complete except for ${z} sector(s) replaced with zeros (list below). Cloning again will probably not recover them: the source disk is damaged, avoid stressing it further.`)); }
@@ -495,7 +496,7 @@ function badge(kind) {
   return `<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="46" fill="${col}" opacity=".12"/><circle class="${twin ? "" : "twinkle"}" cx="50" cy="50" r="46" fill="none" stroke="${col}" stroke-opacity=".5" stroke-dasharray="${twin ? "none" : "4 7"}"/><circle cx="50" cy="50" r="30" fill="${col}"/>${mark}</svg>`;
 }
 
-// ------------------------------------------------------ Vue : disques et santé
+// ------------------------------------------------------- View: disks & health
 function viewDisks() {
   if (S.loadingDisks) return `<div class="page"><div class="empty"><div class="orbit-loader"></div>${L("Recherche des disques…", "Looking for disks…")}</div></div>`;
   const sel = disk(S.diskSel) || S.disks[0];
@@ -579,7 +580,7 @@ function scanHtml(d) {
     <p class="dim" style="margin-top:6px">${L("Chaque étoile représente une zone du disque, du début (en haut à gauche) à la fin. Plus elle est chaude et grosse, plus la lecture a été difficile.", "Each star is an area of the disk, from the start (top left) to the end. The hotter and bigger it is, the harder the read was.")}</p>${bad}${slow}${r && sc.saved ? `<p class="dim" style="margin-top:8px">${L("Résultat enregistré : ", "Result saved: ")}<code>${esc(sc.saved)}</code></p>` : ""}`;
 }
 
-// Mise à jour du seul panneau de scan (pas de rendu complet toutes les 200 ms).
+// Updates only the scan panel (no full render every 200 ms).
 function refreshScanPanel() {
   const panel = $("#scan-panel");
   if (!panel || S.view !== "disks" || panel.dataset.id !== S.scan?.id) return;
@@ -605,7 +606,7 @@ function drawScanMap() {
   g.clearRect(0, 0, w, h);
   for (let i = 0; i < n; i++) {
     const c = sc.cells[i];
-    // Léger décalage pseudo-aléatoire et stable : un champ d'étoiles plutôt qu'un quadrillage.
+    // Slight stable pseudo-random offset: a star field rather than a grid.
     const jx = ((i * 2654435761) % 1000) / 1000 - 0.5, jy = ((i * 40503) % 1000) / 1000 - 0.5;
     const x = (i % cols) * gap + gap / 2 + jx * gap * 0.35, y = Math.floor(i / cols) * gap + gap / 2 + jy * gap * 0.35;
     if (c === 255) { g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(x - 0.6, y - 0.6, 1.2, 1.2); continue; }
@@ -624,7 +625,7 @@ function drawScanMap() {
   }
 }
 
-// Évolution de la santé : température (courbe) et compteurs de défauts (paliers).
+// Health over time: temperature (curve) and defect counters (steps).
 function healthHistoryHtml(h, d) {
   if (!d.serial) return `<p class="dim" style="margin-top:12px">${L("Sans numéro de série, ce disque ne peut pas être reconnu d'une fois sur l'autre : son historique n'est pas conservé.", "Without a serial number this disk cannot be recognised from one time to the next: its history is not kept.")}</p>`;
   if (!h) return "";
@@ -666,7 +667,7 @@ function viewReports() {
   return `<div class="page"><div class="page-head"><div><h1>${L("Rapports", "Reports")}</h1><p>${L("Enregistrés localement dans", "Saved locally in")} <code>${esc(S.env?.reports_dir || "")}</code>. ${L("Rien n'est envoyé sur Internet.", "Nothing is sent over the Internet.")}</p></div></div>${body}</div>`;
 }
 
-// ------------------------------------------------------------ Vue : réglages
+// -------------------------------------------------------------- View: settings
 function viewSettings() {
   const e = S.env || {};
   return `<div class="page"><div class="page-head"><div><h1>${L("Réglages", "Settings")}</h1></div></div>
@@ -678,19 +679,114 @@ function viewSettings() {
     <div class="panel"><h2>${L("Avancé", "Advanced")}</h2>
       <div class="finding warning" style="margin-bottom:12px"><div class="ico">!</div><div><b>${L("Écriture sur disque physique : pas encore validée sur du matériel", "Writing to a physical disk: not yet validated on hardware")}</b><p>${L(`Le moteur de Chud Clone ${esc(e.version || "")} a été testé sur des images disque (tables GPT/MBR, NTFS, FAT, secteurs illisibles, pannes simulées) et vérifié par des outils indépendants. L'écriture sur un vrai disque sous Windows, elle, n'a pas encore été éprouvée. Tant que ce n'est pas fait, elle reste désactivée par défaut. Le clonage vers un fichier image ou un disque virtuel (VHDX) fonctionne sans ce réglage.`, `The Chud Clone ${esc(e.version || "")} engine has been tested on disk images (GPT/MBR tables, NTFS, FAT, unreadable sectors, simulated failures) and checked by independent tools. Writing to a real disk under Windows has not been proven yet. Until it is, it stays disabled by default. Cloning to an image file or a virtual disk (VHDX) works without this setting.`)}</p></div></div>
       <label class="toggle"><input type="checkbox" data-opt="allow_unvalidated" ${S.opts.allow_unvalidated ? "checked" : ""} ${e.physical_write_validated ? "disabled" : ""}><span>${L("Autoriser l'écriture sur un disque physique réel, en connaissance de cause", "Allow writing to a real physical disk, knowingly")}</span></label></div>
-    <div class="panel"><h2>${L("À propos", "About")}</h2>${kv([["Version", `${esc(e.name)} ${esc(e.version)}`], ["Mode", e.portable ? L("Portable (données à côté du programme)", "Portable (data next to the program)") : L("Installé", "Installed")], [L("Droits", "Rights"), e.elevated ? L("Administrateur", "Administrator") : L("Limités (lecture des propriétés uniquement)", "Limited (properties only)")], [L("Données", "Data"), `<code>${esc(e.data_dir)}</code>`], [L("Rapports", "Reports"), `<code>${esc(e.reports_dir)}</code>`], [L("Confidentialité", "Privacy"), L("Aucune télémétrie, aucune connexion réseau.", "No telemetry, no network connection.")]])}</div></div>`;
+    ${updatePanel()}
+    <div class="panel"><h2>${L("À propos", "About")}</h2>${kv([["Version", `${esc(e.name)} ${esc(e.version)}`], ["Mode", e.portable ? L("Portable (données à côté du programme)", "Portable (data next to the program)") : L("Installé", "Installed")], [L("Droits", "Rights"), e.elevated ? L("Administrateur", "Administrator") : L("Limités (lecture des propriétés uniquement)", "Limited (properties only)")], [L("Données", "Data"), `<code>${esc(e.data_dir)}</code>`], [L("Rapports", "Reports"), `<code>${esc(e.reports_dir)}</code>`], [L("Confidentialité", "Privacy"), L("Aucune télémétrie. Seule connexion réseau : la recherche de mises à jour sur GitHub, désactivable ci-dessus.", "No telemetry. Only network connection: the update check on GitHub, which can be turned off above.")]])}</div></div>`;
 }
 
-// ------------------------------------------------------------------- Rendu
-// Transition « glitch » de la nouvelle page : la page apparaît découpée en bandes qui se
-// décalent horizontalement avec une aberration chromatique, le titre se dédouble, et des
-// bandes lumineuses traversent la zone. Tout est retiré à la fin : un rendu ultérieur du
-// même écran ne rejoue rien.
+// ------------------------------------------------------------------ Updates
+function updateStatus() {
+  const u = S.update;
+  if (u.checking) return `<span class="muted">${L("Recherche en cours…", "Checking…")}</span>`;
+  if (u.error) return `<span style="color:var(--warn)">${esc(u.error)}</span>`;
+  if (!u.info) return `<span class="muted">${L("Pas encore vérifié.", "Not checked yet.")}</span>`;
+  const when = u.checkedAt ? new Date(u.checkedAt).toLocaleTimeString(LOCALE(), { hour: "2-digit", minute: "2-digit" }) : "";
+  if (!u.info.available) return `<span style="color:var(--ok)">${L(`Chud Clone est à jour (vérifié à ${when}).`, `Chud Clone is up to date (checked at ${when}).`)}</span>`;
+  return `<b style="color:var(--cyan)">${L(`Version ${esc(u.info.latest)} disponible.`, `Version ${esc(u.info.latest)} is available.`)}</b>`;
+}
+
+function updatePanel() {
+  const u = S.update, i = u.info;
+  const install = i?.available
+    ? i.method === "manual"
+      ? `<button class="btn primary small" data-act="update-page">${L("Télécharger depuis GitHub", "Download from GitHub")}</button>`
+      : `<button class="btn primary small" data-act="update-confirm" ${u.installing ? "disabled" : ""}>${L("Mettre à jour", "Update now")}</button><button class="btn ghost small" data-act="update-page">${L("Notes de version", "Release notes")}</button>`
+    : "";
+  return `<div class="panel"><h2>${L("Mises à jour", "Updates")}</h2>
+      <div class="opt"><div><label>${L("Version installée", "Installed version")}</label><small>${L("Les nouvelles versions sont publiées sur GitHub.", "New versions are published on GitHub.")}</small></div>
+      <div><div style="margin-bottom:8px">${esc(S.env?.version || "")} · ${updateStatus()}</div><div class="row wrap"><button class="btn small" data-act="update-check" ${u.checking || u.installing ? "disabled" : ""}>${L("Rechercher maintenant", "Check now")}</button>${install}</div></div></div>
+      <div class="opt"><div><label>${L("Recherche automatique", "Automatic check")}</label><small>${L("Au démarrage, une seule requête vers GitHub. Aucune information sur l'ordinateur ou les disques n'est envoyée.", "At startup, a single request to GitHub. No information about the computer or the disks is sent.")}</small></div>
+      <label class="toggle"><input type="checkbox" data-uicheck="autoUpdate" ${S.ui.autoUpdate !== false ? "checked" : ""}><span>${L("Rechercher les mises à jour au démarrage", "Check for updates at startup")}</span></label></div></div>`;
+}
+
+async function checkUpdate(manual) {
+  const u = S.update;
+  if (u.checking || u.installing) return;
+  u.checking = true; u.error = null;
+  if (S.view === "settings") render();
+  try {
+    u.info = await api.invoke("update_check");
+    u.checkedAt = Date.now();
+    if (manual && !u.info.available) toast(L("Chud Clone est à jour.", "Chud Clone is up to date."));
+    if (!manual && u.info.available && S.ui.skipVersion !== u.info.latest) showUpdateToast();
+  } catch (e) {
+    u.error = typeof e === "string" ? e : String(e);
+    if (manual) fail(e);
+  }
+  u.checking = false;
+  if (S.view === "settings") render();
+}
+
+function showUpdateToast() {
+  $("#update-toast")?.remove();
+  const t = document.createElement("div");
+  t.id = "update-toast";
+  t.className = "update-note";
+  t.setAttribute("role", "status");
+  t.innerHTML = `<div><b>${L(`Chud Clone ${esc(S.update.info.latest)} est disponible`, `Chud Clone ${esc(S.update.info.latest)} is available`)}</b><br><span class="muted">${L(`Version actuelle : ${esc(S.update.info.current)}.`, `Current version: ${esc(S.update.info.current)}.`)}</span></div>
+    <div class="row wrap"><button class="btn primary small" data-act="update-confirm">${L("Voir", "View")}</button><button class="btn ghost small" data-act="update-later">${L("Plus tard", "Later")}</button><button class="btn ghost small" data-act="update-skip">${L("Ignorer cette version", "Skip this version")}</button></div>`;
+  document.body.appendChild(t);
+}
+
+// Release notes as plain text (Markdown images and markup stripped).
+const releaseNotes = (md) => String(md || "").replace(/!\[[^\]]*\]\([^)]*\)\s*/g, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\r/g, "").trim();
+
+function updateConfirm() {
+  const i = S.update.info;
+  if (!i) return;
+  $("#update-toast")?.remove();
+  const manual = i.method === "manual";
+  const how = i.method === "installer"
+    ? L("Le paquet est vérifié avec la somme de contrôle SHA-256 publiée, puis installé dans le même dossier. Windows demandera l'autorisation administrateur. Chud Clone se ferme puis redémarre sur la nouvelle version ; vos réglages et rapports sont conservés.", "The package is checked against the published SHA-256 checksum, then installed in the same folder. Windows will ask for administrator permission. Chud Clone closes and restarts on the new version; your settings and reports are kept.")
+    : i.method === "portable"
+      ? L("L'archive est vérifiée avec la somme de contrôle SHA-256 publiée, puis les programmes de ce dossier sont remplacés. Le dossier ChudClone-data (réglages, rapports) est conservé. Chud Clone redémarre ensuite.", "The archive is checked against the published SHA-256 checksum, then the programs in this folder are replaced. The ChudClone-data folder (settings, reports) is kept. Chud Clone then restarts.")
+      : L("Cette copie de Chud Clone ne peut pas être mise à jour automatiquement : téléchargez la nouvelle version depuis la page de publication.", "This copy of Chud Clone cannot be updated automatically: download the new version from the release page.");
+  const notes = releaseNotes(i.notes);
+  modal(`<h2>${esc(i.title)}</h2><p>${L(`Version installée : ${esc(i.current)}. Nouvelle version : <b>${esc(i.latest)}</b>`, `Installed version: ${esc(i.current)}. New version: <b>${esc(i.latest)}</b>`)}${i.download_size ? ` (${size(i.download_size)})` : ""}.</p>
+    <p class="muted">${how}</p>${notes ? `<div class="notes">${esc(notes)}</div>` : ""}
+    <div class="actions"><button class="btn ghost" data-act="modal-close">${L("Plus tard", "Later")}</button><button class="btn" data-act="update-page">${L("Page de publication", "Release page")}</button>${manual ? "" : `<button class="btn primary" data-act="update-install">${L("Installer maintenant", "Install now")}</button>`}</div>`);
+}
+
+function updateProgress(p) {
+  const bar = $("#update-bar"), txt = $("#update-text");
+  if (!bar || !txt) return;
+  if (p.phase === "download" && p.total) {
+    bar.classList.remove("busy");
+    bar.firstElementChild.style.width = Math.min(100, (100 * p.done) / p.total).toFixed(1) + "%";
+    txt.textContent = L(`Téléchargement : ${size(p.done)} sur ${size(p.total)}`, `Downloading: ${size(p.done)} of ${size(p.total)}`);
+  } else {
+    bar.classList.add("busy");
+    txt.textContent = p.phase === "verify" ? L("Vérification de la somme de contrôle…", "Verifying the checksum…") : p.phase === "install" ? L("Installation… Chud Clone va redémarrer.", "Installing… Chud Clone will restart.") : L("Téléchargement…", "Downloading…");
+  }
+}
+
+async function updateInstall() {
+  if (S.step === "run" || S.scan?.running) { toast(L("Une opération est en cours : la mise à jour attendra qu'elle soit terminée.", "An operation is running: the update will wait until it has finished."), true); return; }
+  S.update.installing = true;
+  modal(`<h2>${L("Mise à jour de Chud Clone", "Updating Chud Clone")}</h2><p class="muted">${L(`Version ${esc(S.update.info.latest)}.`, `Version ${esc(S.update.info.latest)}.`)}</p>
+    <div class="ubar busy" id="update-bar"><i></i></div><p id="update-text" class="dim">${L("Connexion…", "Connecting…")}</p>`);
+  try { await api.invoke("update_install"); } catch (e) { S.update.installing = false; closeModal(); fail(e); }
+}
+
+// -------------------------------------------------------------------- Render
+// "Glitch" transition of the new page: the page appears cut into bands that shift
+// horizontally with a chromatic aberration, the title splits in two, and bright bands
+// sweep across the area. Everything is removed at the end: a later render of the
+// same screen replays nothing.
 let glitchTimer = 0;
 let glitchStart = -1;
 const GLITCH_MS = 650;
-// Dédouble le titre ; `elapsed` reprend l'animation là où elle en était si la page a été
-// redessinée pendant la transition.
+// Splits the title; `elapsed` resumes the animation where it was if the page was
+// redrawn during the transition.
 function glitchTitle(view, elapsed) {
   const h = view.querySelector(".page h1");
   if (!h || document.documentElement.classList.contains("reduced-motion")) return;
@@ -749,8 +845,8 @@ function render() {
   view.innerHTML = { clone: viewClone, disks: viewDisks, reports: viewReports, settings: viewSettings }[S.view]();
   view.dataset.screen = screen;
   view.scrollTop = sameScreen ? scroll : 0;
-  // Transition seulement quand l'écran change : les rafraîchissements (chargement, SMART,
-  // progression) remplacent le contenu sans rien rejouer.
+  // Transition only when the screen changes: refreshes (loading, SMART, progress)
+  // replace the content without replaying anything.
   if (!sameScreen) glitchIn(view);
   else if (glitchStart >= 0) glitchTitle(view, performance.now() - glitchStart);
   document.querySelectorAll(".titlebar nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === S.view));
@@ -872,6 +968,12 @@ const actions = {
   },
   "cancel-yes"() { closeModal(); api.invoke("cancel_clone"); const b = $("#btn-cancel"); if (b) { b.disabled = true; b.textContent = L("Annulation en cours…", "Cancelling…"); } },
   "modal-close"() { closeModal(); },
+  "update-check"() { checkUpdate(true); },
+  "update-confirm"() { updateConfirm(); },
+  "update-install"() { updateInstall(); },
+  "update-page"() { api.invoke("open_release_page").catch(fail); },
+  "update-later"() { $("#update-toast")?.remove(); },
+  "update-skip"() { S.ui.skipVersion = S.update.info?.latest || null; store.set("ui", S.ui); $("#update-toast")?.remove(); },
   "unreadable-stop"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: false }); },
   "unreadable-zero"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: true }); },
   restart() { S.step = "source"; S.prep = null; S.report = null; S.runError = null; S.run = null; S.confirmText = ""; S.dstId = null; loadDisks(); },
@@ -913,8 +1015,8 @@ const actions = {
   },
 };
 
-// Lecture de santé (commande en lecture seule) + historique : chaque relevé est conservé
-// pour signaler ensuite ce qui s'aggrave.
+// Health reading (read-only command) + history: every reading is kept so that
+// what gets worse can be flagged later.
 async function readHealth(id, quiet) {
   S.busy["smart:" + id] = true;
   if (!quiet) render();
@@ -927,7 +1029,7 @@ async function readHealth(id, quiet) {
   if (S.view === "disks") render();
 }
 
-// À la première visite de « Disques et santé », relève la santé de tous les disques.
+// On the first visit to "Disks & health", reads the health of every disk.
 async function surveyHealth() {
   if (S.surveyed) return;
   S.surveyed = true;
@@ -939,7 +1041,7 @@ async function surveyHealth() {
 async function goto(view) {
   if (S.view === "clone" && S.step === "run" && view !== "clone") { toast(L("Un clonage est en cours : restez sur cet écran pour le suivre.", "A clone is running: stay on this screen to follow it.")); return; }
   S.view = view;
-  // Analyse affichée dans une autre langue : elle est refaite.
+  // Analysis shown in another language: it is redone.
   if (view === "clone" && S.step === "review" && !S.prepBusy && S.prepLang !== LANG) return void prepare();
   if (view === "reports") { S.reportOpen = null; S.reports = null; render(); try { S.reports = await api.invoke("list_reports"); } catch (e) { S.reports = []; fail(e); } }
   render();
@@ -957,8 +1059,12 @@ document.addEventListener("change", (ev) => {
   if (t.dataset.opt) {
     S.opts[t.dataset.opt] = t.type === "checkbox" ? t.checked : t.value;
     store.set("opts", S.opts);
-    // Une option qui change le plan impose de refaire l'analyse affichée.
+    // An option that changes the plan requires redoing the displayed analysis.
     if (S.view === "clone" && S.step === "review" && ["mode", "optimize_layout", "grow_main"].includes(t.dataset.opt)) prepare();
+  }
+  if (t.dataset.uicheck) {
+    S.ui[t.dataset.uicheck] = t.checked;
+    store.set("ui", S.ui);
   }
   if (t.dataset.ui) {
     S.ui[t.dataset.ui] = t.value;
@@ -967,13 +1073,13 @@ document.addEventListener("change", (ev) => {
     else Cosmos.setQuality(S.ui.motion);
   }
 });
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && $("#modal-root .overlay") && !$('[data-act="unreadable-stop"]')) closeModal(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && $("#modal-root .overlay") && !$('[data-act="unreadable-stop"]') && !S.update.installing) closeModal(); });
 
-// Mot à saisir pour confirmer l'effacement (le moteur accepte les deux).
+// Word to type to confirm erasing (the engine accepts both).
 const confirmWord = () => L("EFFACER", "ERASE");
 
-// Change de langue : libellés, textes fixes de la page et messages du moteur. Ce que le
-// moteur a déjà produit (analyses, santé) est relu pour être affiché dans la nouvelle langue.
+// Changes language: labels, fixed page texts and engine messages. What the engine
+// already produced (analyses, health) is read again to be shown in the new language.
 function applyLang(lang, reload) {
   LANG = lang === "en" ? "en" : "fr";
   document.documentElement.lang = LANG;
@@ -989,7 +1095,7 @@ function applyLang(lang, reload) {
   render();
 }
 
-// -------------------------------------------------------------- Démarrage
+// ------------------------------------------------------------------- Startup
 async function boot() {
   applyLang(S.ui.lang || (/^fr/i.test(navigator.language || "") ? "fr" : "en"));
   Cosmos.startSky($("#cosmos"), S.ui.motion);
@@ -1006,7 +1112,7 @@ async function boot() {
     const { report, error, blocked } = e.payload;
     S.report = report; S.runError = error; S.runBlocked = blocked;
     const st = report ? STATUS[report.outcome.status][0] : "failed";
-    // Laisse voir l'état final du faisceau avant d'afficher le rapport.
+    // Lets the final state of the beam show before displaying the report.
     if (beam) beam.set({ ok: "ok", warn: "warn", incomplete: "incomplete", failed: "fail" }[st], 0.3, false);
     setTimeout(() => { S.step = "result"; S.run = null; render(); loadDisks(true); }, document.documentElement.classList.contains("no-motion") ? 0 : 1600);
   });
@@ -1026,11 +1132,20 @@ async function boot() {
     if (S.view === "disks") render();
   });
   await api.listen("close-blocked", () => toast(L("Un clonage est en cours. Annulez-le d'abord si vous voulez vraiment fermer.", "A clone is running. Cancel it first if you really want to close."), true));
+  await api.listen("update-progress", (e) => updateProgress(e.payload));
+  await api.listen("update-failed", (e) => {
+    S.update.installing = false;
+    closeModal();
+    toast(L(`Mise à jour impossible : ${e.payload}`, `Update failed: ${e.payload}`), true);
+    if (S.view === "settings") render();
+  });
   setInterval(() => { if (S.step === "run" && S.run) updateRun(); }, 1000);
   try { S.env = await api.invoke("env_info"); } catch (e) { fail(e); }
-  // Sans choix enregistré : langue de Windows.
+  // No saved choice: Windows language.
   if (!S.ui.lang && S.env?.system_lang) applyLang(S.env.system_lang);
   render();
   await loadDisks();
+  // Quiet update check shortly after startup (can be turned off in Settings).
+  if (S.ui.autoUpdate !== false) setTimeout(() => checkUpdate(false), 3000);
 }
 boot();

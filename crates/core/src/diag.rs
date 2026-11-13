@@ -1,23 +1,23 @@
-//! Modèle commun des constats de diagnostic.
+//! Common model of diagnostic findings.
 //!
-//! Chaque contrôle (table de partitions, système de fichiers, SMART, pré-vérification,
-//! copie, vérification) produit des [`Finding`]. La gravité décrit l'importance du
-//! constat ; `blocking` indique séparément s'il interdit de démarrer le clonage. Un
-//! disque source en fin de vie est « critique » mais n'interdit pas le clonage — c'est
-//! au contraire le moment de le cloner.
+//! Every check (partition table, file system, SMART, pre-check, copy, verification)
+//! produces [`Finding`]s. The severity describes how important the finding is;
+//! `blocking` says separately whether it forbids starting the clone. A source disk
+//! at the end of its life is "critical" but does not forbid cloning — on the contrary,
+//! it is the moment to clone it.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    /// Information : rien d'anormal, ou remarque mineure.
+    /// Information: nothing abnormal, or a minor remark.
     Info,
-    /// Avertissement : anomalie détectée, clonage potentiellement risqué.
+    /// Warning: anomaly detected, cloning potentially risky.
     Warning,
-    /// Erreur : problème nécessitant une intervention.
+    /// Error: problem requiring an intervention.
     Error,
-    /// Critique : disque potentiellement défaillant ou opération dangereuse.
+    /// Critical: potentially failing disk or dangerous operation.
     Critical,
 }
 
@@ -35,16 +35,16 @@ impl Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub severity: Severity,
-    /// Code stable (ex. `GPT_BACKUP_INVALID`), utile pour les journaux et les tests.
+    /// Stable code (e.g. `GPT_BACKUP_INVALID`), useful for logs and tests.
     pub code: String,
     pub title: String,
     pub detail: String,
-    /// Vrai si ce constat interdit de démarrer le clonage.
+    /// True if this finding forbids starting the clone.
     pub blocking: bool,
-    /// Portée : « source », « destination », « partition 3 »…
+    /// Scope: "source", "destination", "partition 3"…
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// Position concernée (LBA en secteurs logiques), lorsque connue.
+    /// Position concerned (LBA in logical sectors), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lba: Option<u64>,
 }
@@ -79,7 +79,7 @@ impl Finding {
     }
 }
 
-/// Gravité maximale d'une liste de constats.
+/// Highest severity of a list of findings.
 pub fn max_severity(findings: &[Finding]) -> Option<Severity> {
     findings.iter().map(|f| f.severity).max()
 }
@@ -88,7 +88,7 @@ pub fn has_blocking(findings: &[Finding]) -> bool {
     findings.iter().any(|f| f.blocking)
 }
 
-/// Formate une taille en unités binaires lisibles (Go/GB = 2^30, comme l'Explorateur Windows).
+/// Formats a size in readable binary units (GB = 2^30, like Windows Explorer).
 pub fn human_size(bytes: u64) -> String {
     const UNITS_FR: [&str; 5] = ["o", "Ko", "Mo", "Go", "To"];
     const UNITS_EN: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];

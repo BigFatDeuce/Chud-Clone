@@ -1,9 +1,9 @@
-//! Contrôle des éléments nécessaires au démarrage de Windows.
+//! Checks of the elements Windows needs to boot.
 //!
-//! Ces contrôles constatent la présence (ou l'absence) des structures attendues. Ils
-//! ne peuvent pas prouver qu'un disque démarrera : cela dépend aussi du micrologiciel
-//! de la machine, de ses réglages et du contenu de la configuration de démarrage.
-//! Les libellés sont rédigés en conséquence.
+//! These checks record the presence (or absence) of the expected structures. They
+//! cannot prove that a disk will boot: that also depends on the machine's firmware,
+//! its settings and the content of the boot configuration.
+//! The labels are worded accordingly.
 
 use crate::device::BlockDevice;
 use crate::diag::Finding;
@@ -15,13 +15,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BootStyle {
-    /// Windows démarrant en UEFI (disque GPT, partition système EFI).
+    /// Windows booting in UEFI mode (GPT disk, EFI system partition).
     WindowsUefi,
-    /// Windows démarrant en BIOS hérité (disque MBR, partition active).
+    /// Windows booting in legacy BIOS mode (MBR disk, active partition).
     WindowsBios,
-    /// Partition EFI présente mais pas de Windows reconnu (autre système).
+    /// EFI partition present but no Windows recognised (other system).
     OtherUefi,
-    /// Aucun élément de démarrage : disque de données.
+    /// No boot element: data disk.
     DataOnly,
     Unknown,
 }
@@ -43,7 +43,7 @@ impl BootStyle {
 pub enum CheckState {
     Present,
     Missing,
-    /// Non vérifiable (volume chiffré, structure illisible).
+    /// Not verifiable (encrypted volume, unreadable structure).
     Unknown,
 }
 
@@ -52,7 +52,7 @@ pub struct BootCheck {
     pub key: String,
     pub label: String,
     pub state: CheckState,
-    /// Vrai si l'absence de cet élément empêche vraisemblablement le démarrage.
+    /// True if the absence of this element probably prevents booting.
     pub required: bool,
 }
 
@@ -77,7 +77,7 @@ fn state(r: Result<bool, String>) -> CheckState {
     }
 }
 
-/// Présence d'un fichier sur un volume NTFS ou FAT.
+/// Presence of a file on an NTFS or FAT volume.
 fn file_present(dev: &mut dyn BlockDevice, sp: &SourcePartition, ss: u64, path: &[&str]) -> CheckState {
     let (base, len) = bounds(sp, ss);
     match sp.fs.kind {
@@ -100,7 +100,7 @@ fn find_windows(dev: &mut dyn BlockDevice, a: &DiskAnalysis, loader: &str) -> Op
     None
 }
 
-/// Examine les éléments de démarrage d'un disque déjà analysé. Lecture seule.
+/// Examines the boot elements of an already analysed disk. Read-only.
 pub fn assess_boot(dev: &mut dyn BlockDevice, a: &DiskAnalysis) -> BootAssessment {
     let ss = a.sector_size as u64;
     let mut out = BootAssessment { style: BootStyle::Unknown, windows_partition: None, esp_partition: None, checks: vec![], findings: vec![] };
@@ -270,7 +270,7 @@ pub fn assess_boot(dev: &mut dyn BlockDevice, a: &DiskAnalysis) -> BootAssessmen
     out
 }
 
-/// Compare les éléments de démarrage de la source et du clone.
+/// Compares the boot elements of the source and of the clone.
 pub fn compare_boot(src: &BootAssessment, dst: &BootAssessment) -> Vec<Finding> {
     let mut out = Vec::new();
     for c in &src.checks {

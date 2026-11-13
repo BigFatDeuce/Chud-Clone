@@ -1,4 +1,4 @@
-//! Lecture des tables de partitions et des systèmes de fichiers sur de vraies images.
+//! Reading partition tables and file systems on real images.
 
 mod common;
 
@@ -27,7 +27,7 @@ fn gpt_windows_layout_is_read_correctly() {
             assert_eq!(*attributes, 0x8000_0000_0000_0001);
             assert_eq!(unique_guid.to_string(), "44444444-AAAA-4AAA-8AAA-000000000004");
         }
-        _ => panic!("GPT attendu"),
+        _ => panic!("GPT expected"),
     }
     assert_eq!(l.partitions[0].name(), Some("EFI system partition"));
 }
@@ -60,14 +60,14 @@ fn filesystems_are_identified_and_sized() {
     assert!(a.findings.is_empty(), "{:#?}", a.findings);
     assert_eq!(a.label.as_deref(), Some("Windows"));
     assert_eq!(a.cluster_size, Some(4096));
-    // NTFS réserve le dernier secteur de la partition au secteur d'amorçage de secours.
+    // NTFS reserves the last sector of the partition for the backup boot sector.
     assert_eq!(a.fs_size, Some(win.sectors * SS - SS));
     let used = a.used_bytes.unwrap();
-    assert!(used > 8 << 20 && used < 40 << 20, "utilisé = {used}");
+    assert!(used > 8 << 20 && used < 40 << 20, "used = {used}");
     let ext = a.used_extents.expect("volume propre");
-    assert!(ext.len() > 10, "la fragmentation du jeu de test doit produire plusieurs étendues");
+    assert!(ext.len() > 10, "the fragmentation of the test set must produce several extents");
     assert_eq!(ext[0].offset, 0);
-    assert_eq!(ext.last().unwrap().end(), win.sectors * SS, "le secteur d'amorçage de secours est inclus");
+    assert_eq!(ext.last().unwrap().end(), win.sectors * SS, "the backup boot sector is included");
 
     let mut dev = common::open_fixture("mbr-win.img");
     let l = read_layout(&mut dev).unwrap();
@@ -75,9 +75,9 @@ fn filesystems_are_identified_and_sized() {
     assert_eq!(kinds, vec![FsKind::Ntfs, FsKind::Ntfs, FsKind::Fat16, FsKind::Unknown]);
 }
 
-/// Preuve de suffisance de la carte d'allocation : une copie ne contenant QUE les
-/// étendues déclarées utilisées (le reste étant rempli de déchets) doit redonner
-/// exactement les mêmes fichiers, octet pour octet.
+/// Proof that the allocation map is sufficient: a copy containing ONLY the
+/// extents declared used (the rest being filled with garbage) must give back
+/// exactly the same files, byte for byte.
 #[test]
 fn ntfs_used_extents_are_sufficient_to_read_every_file() {
     for (image, part_index) in [("gpt-win.img", 2usize), ("gpt-win.img", 3), ("mbr-win.img", 0), ("mbr-win.img", 1)] {
@@ -98,16 +98,16 @@ fn ntfs_used_extents_are_sufficient_to_read_every_file() {
 
         let files = fs::ntfs::list_files(&mut dev, base, len).unwrap();
         let files_copy = fs::ntfs::list_files(&mut copy, base, len).unwrap();
-        assert_eq!(files, files_copy, "{image} p{part_index}: mêmes fichiers");
+        assert_eq!(files, files_copy, "{image} p{part_index}: same files");
         assert!(files.len() >= 2, "{image} p{part_index}: {} fichiers", files.len());
         for (path, size) in &files {
             let comps: Vec<&str> = path.split('/').collect();
             let a = fs::ntfs::read_file(&mut dev, base, len, &comps, usize::MAX).unwrap().unwrap();
             let b = fs::ntfs::read_file(&mut copy, base, len, &comps, usize::MAX).unwrap().unwrap();
             assert_eq!(a.len() as u64, *size, "{path}");
-            assert!(a == b, "{image} p{part_index}: contenu différent pour {path}");
+            assert!(a == b, "{image} p{part_index}: content differs for {path}");
         }
-        // Le second passage d'analyse sur la copie doit donner la même carte.
+        // The second analysis pass on the copy must give the same map.
         let a2 = fs::analyze(&mut copy, base, len);
         assert_eq!(a2.used_extents.unwrap(), ext);
         assert_eq!(copy.writes, 0);
@@ -136,9 +136,9 @@ fn dirty_ntfs_is_never_smart_copied() {
     let mut dev = MemDevice::from_vec(img, 512);
     let a = fs::analyze(&mut dev, 0, len);
     assert_eq!(a.kind, FsKind::Ntfs);
-    assert!(a.used_extents.is_none(), "un volume marqué dirty doit être copié en brut");
+    assert!(a.used_extents.is_none(), "a volume marked dirty must be copied raw");
     assert!(a.findings.iter().any(|f| f.code == "NTFS_DIRTY"), "{:#?}", a.findings);
-    assert!(a.used_bytes.is_some(), "l'espace utilisé reste affichable");
+    assert!(a.used_bytes.is_some(), "the used space can still be shown");
 }
 
 #[test]
@@ -149,11 +149,11 @@ fn unclean_log_and_hibernation_force_raw_copy() {
     let p = &l.partitions[2];
     let (base, len) = ((p.start_lba * SS) as usize, (p.sectors * SS) as usize);
 
-    // Localise $LogFile via sa propre carte d'exécution n'est pas nécessaire : après un
-    // démontage par ntfs-3g le journal est rempli de 0xFF. On y écrit une page de
-    // redémarrage « client actif, non propre », comme le laisse un arrêt brutal.
+    // Locating $LogFile through its own run list is not necessary: after an
+    // unmount by ntfs-3g the journal is filled with 0xFF. A restart page
+    // "active client, not clean" is written into it, as an abrupt shutdown leaves it.
     let part = &img[base..base + len];
-    let pos = find_ff_run(part, 1 << 20).expect("journal vide introuvable");
+    let pos = find_ff_run(part, 1 << 20).expect("empty journal not found");
     let mut bad = img.clone();
     for page in 0..2usize {
         let o = base + pos + page * 4096;
@@ -169,7 +169,7 @@ fn unclean_log_and_hibernation_force_raw_copy() {
     assert!(a.findings.iter().any(|f| f.code == "NTFS_LOG_UNCLEAN"), "{:#?}", a.findings);
 }
 
-/// Cherche le début d'une longue plage de 0xFF alignée sur 4 Kio (le journal vidé).
+/// Finds the start of a long run of 0xFF aligned on 4 KiB (the emptied journal).
 fn find_ff_run(data: &[u8], min_len: usize) -> Option<usize> {
     let mut start = None;
     let mut i = 0;

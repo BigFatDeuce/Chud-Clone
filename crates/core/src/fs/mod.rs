@@ -1,10 +1,10 @@
-//! Reconnaissance des systèmes de fichiers et carte des blocs utilisés.
+//! File system recognition and map of used blocks.
 //!
-//! Le « clonage intelligent » ne copie que les blocs marqués utilisés par le système
-//! de fichiers. Ce n'est sûr que si la carte d'allocation lue sur le disque est
-//! fiable : volume proprement démonté, journal vide, pas d'hibernation. Dans tous les
-//! autres cas, [`analyze`] ne fournit pas d'étendues et la partition est copiée
-//! intégralement, secteur par secteur.
+//! "Smart cloning" copies only the blocks the file system marks as used. That is only
+//! safe if the allocation map read from the disk can be trusted: cleanly unmounted
+//! volume, empty journal, no hibernation. In every other case, [`analyze`] provides no
+//! extents and the partition is copied in full,
+//! sector by sector.
 
 pub mod fat;
 pub mod ntfs;
@@ -22,7 +22,7 @@ pub enum FsKind {
     Fat16,
     Fat32,
     Exfat,
-    /// Volume chiffré BitLocker (contenu opaque).
+    /// BitLocker-encrypted volume (opaque content).
     Bitlocker,
     Refs,
     Ext,
@@ -30,7 +30,7 @@ pub enum FsKind {
     Btrfs,
     LinuxSwap,
     Luks,
-    /// Début de partition entièrement à zéro.
+    /// Partition start entirely zero.
     Blank,
     Unknown,
 }
@@ -60,7 +60,7 @@ impl FsKind {
     }
 }
 
-/// Plage d'octets relative au début de la partition.
+/// Byte range relative to the start of the partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Extent {
     pub offset: u64,
@@ -77,22 +77,22 @@ impl Extent {
 pub struct FsAnalysis {
     pub kind: FsKind,
     pub label: Option<String>,
-    /// Taille du système de fichiers (peut être inférieure à celle de la partition).
+    /// File system size (can be smaller than the partition's).
     pub fs_size: Option<u64>,
     pub cluster_size: Option<u32>,
-    /// Octets utilisés selon le système de fichiers, si connus.
+    /// Bytes used according to the file system, if known.
     pub used_bytes: Option<u64>,
-    /// Étendues à copier pour un clonage intelligent. `None` : copie brute obligatoire.
+    /// Extents to copy for a smart clone. `None`: raw copy required.
     #[serde(skip)]
     pub used_extents: Option<Vec<Extent>>,
-    /// Pourquoi le clonage intelligent n'est pas possible, le cas échéant.
+    /// Why smart cloning is not possible, if applicable.
     pub raw_reason: Option<String>,
-    /// Dernier octet utilisé + 1 (taille minimale sans déplacer de données).
+    /// Last used byte + 1 (minimum size without moving data).
     pub last_used_end: Option<u64>,
-    /// NTFS : le volume peut être agrandi hors ligne (structures contrôlées).
+    /// NTFS: the volume can be grown offline (structures checked).
     #[serde(default)]
     pub grow_ready: bool,
-    /// NTFS : pourquoi il ne peut pas l'être, le cas échéant.
+    /// NTFS: why it cannot be, if applicable.
     #[serde(default)]
     pub grow_issue: Option<String>,
     pub findings: Vec<Finding>,
@@ -120,8 +120,8 @@ impl FsAnalysis {
     }
 }
 
-/// Identifie un système de fichiers à partir des premiers octets de la partition.
-/// `head` doit contenir au moins 4096 octets (davantage améliore la détection).
+/// Identifies a file system from the first bytes of the partition.
+/// `head` must hold at least 4096 bytes (more improves detection).
 pub fn probe_kind(head: &[u8]) -> FsKind {
     if head.len() < 512 {
         return FsKind::Unknown;
@@ -163,13 +163,13 @@ pub fn probe_kind(head: &[u8]) -> FsKind {
     FsKind::Unknown
 }
 
-/// Analyse la partition `[base, base+len)` : type, taille, espace utilisé et, si la
-/// carte d'allocation est fiable, les étendues à copier.
+/// Analyses the partition `[base, base+len)`: type, size, used space and, if the
+/// allocation map can be trusted, the extents to copy.
 ///
-/// N'échoue jamais : une erreur de lecture devient un constat et impose la copie brute.
+/// Never fails: a read error becomes a finding and forces the raw copy.
 pub fn analyze(dev: &mut dyn BlockDevice, base: u64, len: u64) -> FsAnalysis {
     let ss = dev.sector_size() as u64;
-    // 128 Kio suffisent à toutes les signatures reconnues.
+    // 128 KiB is enough for every recognised signature.
     let want = (128 * 1024u64).min(len);
     let want = want - want % ss;
     if want < 512 {
@@ -222,7 +222,7 @@ pub fn analyze(dev: &mut dyn BlockDevice, base: u64, len: u64) -> FsAnalysis {
     a
 }
 
-/// Fusionne des étendues triées et adjacentes ou chevauchantes.
+/// Merges sorted extents that are adjacent or overlapping.
 pub fn normalize(mut extents: Vec<Extent>) -> Vec<Extent> {
     extents.retain(|e| e.len > 0);
     extents.sort_by_key(|e| e.offset);
@@ -239,8 +239,8 @@ pub fn normalize(mut extents: Vec<Extent>) -> Vec<Extent> {
     out
 }
 
-/// Construit des étendues à partir d'une carte de bits (1 bit = 1 unité, LSB d'abord).
-/// Seuls les `units` premiers bits sont pris en compte. Renvoie (étendues, unités utilisées).
+/// Builds extents from a bitmap (1 bit = 1 unit, LSB first).
+/// Only the first `units` bits are considered. Returns (extents, used units).
 pub(crate) struct BitmapScanner {
     unit_size: u64,
     base_offset: u64,

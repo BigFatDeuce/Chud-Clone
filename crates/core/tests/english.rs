@@ -1,9 +1,9 @@
-//! Messages en anglais : un clonage complet (image → nouvelle image plus grande, par la
-//! même voie que l'interface et la ligne de commande) produit un résultat, des constats et
-//! des rapports entièrement en anglais.
+//! English messages: a complete clone (image → new larger image, through the
+//! same path as the interface and the command line) produces a result, findings and
+//! reports entirely in English.
 //!
-//! Binaire de test séparé : la langue est un réglage global du processus, elle ne doit pas
-//! changer pendant les tests en français des autres fichiers.
+//! Separate test binary: the language is a process-wide setting, it must not
+//! change during the French tests of the other files.
 
 mod common;
 
@@ -14,12 +14,12 @@ use chud_clone_core::plan::PlanOptions;
 use chud_clone_core::report::{render_html, render_txt};
 
 fn has_french(s: &str) -> Option<&'static str> {
-    // Mots et caractères qui n'apparaissent pas dans un texte anglais.
+    // Words and characters that do not appear in an English text.
     const WORDS: [&str; 10] = ["é", "è", "à", "ç", "«", " disque", "Clonage", "partition agrandie", "Rapport", "octets"];
     if let Some(w) = WORDS.into_iter().find(|w| s.contains(w)) {
         return Some(w);
     }
-    // Unités françaises après un nombre (« 12 Mo »), sans confondre avec « Cascadia Mono ».
+    // French units after a number ("12 Mo"), without confusing them with "Cascadia Mono".
     let b = s.as_bytes();
     for unit in [" Ko", " Mo", " Go", " To"] {
         for (i, _) in s.match_indices(unit) {

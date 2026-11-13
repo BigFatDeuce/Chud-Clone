@@ -1,4 +1,4 @@
-//! Tables de partitions : lecture, contrôle de cohérence et écriture (GPT et MBR).
+//! Partition tables: reading, consistency checks and writing (GPT and MBR).
 
 pub mod gpt;
 pub mod mbr;
@@ -15,7 +15,7 @@ pub const MIB: u64 = 1024 * 1024;
 pub enum TableKind {
     Gpt,
     Mbr,
-    /// Aucune table reconnue (disque vierge, « superfloppy », table détruite).
+    /// No recognised table (blank disk, "superfloppy", destroyed table).
     None,
 }
 
@@ -29,26 +29,26 @@ impl TableKind {
     }
 }
 
-/// Rôle fonctionnel d'une partition, déduit de son type.
+/// Functional role of a partition, deduced from its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PartRole {
-    /// Partition système EFI (ESP).
+    /// EFI system partition (ESP).
     Esp,
-    /// Partition réservée Microsoft (MSR).
+    /// Microsoft reserved partition (MSR).
     Msr,
-    /// Environnement de récupération Windows.
+    /// Windows recovery environment.
     Recovery,
-    /// Données de base (NTFS, FAT, exFAT… : Windows, données).
+    /// Basic data (NTFS, FAT, exFAT…: Windows, data).
     BasicData,
-    /// Disque dynamique Windows (LDM) ou espaces de stockage.
+    /// Windows dynamic disk (LDM) or Storage Spaces.
     Dynamic,
     LinuxFs,
     LinuxSwap,
     LinuxLvm,
     BiosBoot,
     Apple,
-    /// Conteneur de partitions logiques (MBR étendu).
+    /// Container of logical partitions (MBR extended).
     Extended,
     Other,
 }
@@ -61,23 +61,23 @@ pub enum PartInfo {
         unique_guid: Guid,
         attributes: u64,
         name: String,
-        /// Indice de l'entrée dans le tableau GPT (base 0).
+        /// Index of the entry in the GPT array (0-based).
         slot: u32,
     },
     Mbr {
         type_id: u8,
         active: bool,
         logical: bool,
-        /// Indice de l'entrée primaire (0–3) ; pour une logique, rang dans la chaîne.
+        /// Index of the primary entry (0–3); for a logical one, rank in the chain.
         slot: u32,
-        /// LBA de l'EBR décrivant cette partition logique.
+        /// LBA of the EBR describing this logical partition.
         ebr_lba: Option<u64>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Partition {
-    /// Numéro affiché (base 1), dans l'ordre de la table.
+    /// Displayed number (1-based), in table order.
     pub number: u32,
     pub start_lba: u64,
     pub sectors: u64,
@@ -128,31 +128,31 @@ pub struct GptMeta {
     pub last_usable_lba: u64,
     pub primary_valid: bool,
     pub backup_valid: bool,
-    /// Vrai si l'en-tête de secours est bien sur le dernier secteur du disque.
+    /// True if the backup header is indeed on the last sector of the disk.
     pub backup_at_end: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MbrMeta {
     pub signature: u32,
-    /// Vrai si la zone de code d'amorçage (440 premiers octets) n'est pas vide.
+    /// True if the boot code area (first 440 bytes) is not empty.
     pub boot_code_present: bool,
-    /// Partition étendue (LBA de début, nombre de secteurs), si présente.
+    /// Extended partition (starting LBA, number of sectors), if present.
     pub extended: Option<(u64, u64)>,
-    /// LBA de chaque EBR de la chaîne des partitions logiques.
+    /// LBA of each EBR in the chain of logical partitions.
     pub ebr_lbas: Vec<u64>,
-    /// Copie brute du secteur 0 (code d'amorçage + table).
+    /// Raw copy of sector 0 (boot code + table).
     #[serde(skip)]
     pub sector0: Vec<u8>,
 }
 
-/// Description complète du partitionnement d'un disque.
+/// Complete description of a disk's partitioning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskLayout {
     pub kind: TableKind,
     pub sector_size: u32,
     pub disk_sectors: u64,
-    /// Partitions utiles (hors conteneur étendu), triées par LBA de début.
+    /// Useful partitions (excluding the extended container), sorted by starting LBA.
     pub partitions: Vec<Partition>,
     pub gpt: Option<GptMeta>,
     pub mbr: Option<MbrMeta>,
@@ -164,7 +164,7 @@ impl DiskLayout {
         self.disk_sectors * self.sector_size as u64
     }
 
-    /// Fin (exclue, en LBA) de la dernière partition, ou 0.
+    /// End (exclusive, in LBA) of the last partition, or 0.
     pub fn last_partition_end_lba(&self) -> u64 {
         self.partitions.iter().map(|p| p.end_lba()).max().unwrap_or(0)
     }
@@ -178,10 +178,10 @@ impl DiskLayout {
     }
 }
 
-/// Lit et contrôle la table de partitions d'un périphérique.
+/// Reads and checks a device's partition table.
 ///
-/// Ne renvoie une erreur que si le périphérique est illisible ; une table absente ou
-/// corrompue donne un `DiskLayout` avec `kind == None` et les constats correspondants.
+/// Only returns an error if the device is unreadable; a missing or corrupt table
+/// gives a `DiskLayout` with `kind == None` and the corresponding findings.
 pub fn read_layout(dev: &mut dyn BlockDevice) -> std::io::Result<DiskLayout> {
     let sector_size = dev.sector_size();
     let disk_sectors = dev.size() / sector_size as u64;
@@ -224,7 +224,7 @@ pub fn read_layout(dev: &mut dyn BlockDevice) -> std::io::Result<DiskLayout> {
                      Le clone recevra un MBR de protection standard.", "A valid GPT is present but sector 0 holds no protective MBR. The clone will receive a standard protective MBR."),
                 )),
             }
-            // Le secteur 0 est conservé pour réutiliser son code d'amorçage.
+            // Sector 0 is kept to reuse its boot code.
             layout.mbr = mbr.meta.map(|mut m| {
                 m.extended = None;
                 m.ebr_lbas.clear();
@@ -277,7 +277,7 @@ pub fn read_layout(dev: &mut dyn BlockDevice) -> std::io::Result<DiskLayout> {
     Ok(layout)
 }
 
-/// Contrôles communs : partitions hors disque, chevauchements, tailles nulles.
+/// Common checks: partitions outside the disk, overlaps, zero sizes.
 fn check_geometry(layout: &mut DiskLayout) {
     let mut findings = Vec::new();
     for p in &layout.partitions {

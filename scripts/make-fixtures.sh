@@ -1,14 +1,14 @@
 #!/bin/bash
-# Génère les images disque de test de Chud Clone avec de VRAIS systèmes de fichiers
-# (mkntfs / mkfs.vfat / sgdisk / sfdisk), sans jamais toucher à un disque physique :
-# tout se passe dans des fichiers ordinaires.
+# Generates the Chud Clone test disk images with REAL file systems
+# (mkntfs / mkfs.vfat / sgdisk / sfdisk), without ever touching a physical disk:
+# everything happens in ordinary files.
 #
-# À lancer sous Linux ou WSL, en root (montage FUSE ntfs-3g) :
+# Run on Linux or WSL, as root (ntfs-3g FUSE mount):
 #   wsl -d <distro> -- bash scripts/make-fixtures.sh crates/core/tests/fixtures
-# Paquets requis : ntfs-3g ntfsprogs dosfstools mtools gdisk util-linux python3
+# Required packages: ntfs-3g ntfsprogs dosfstools mtools gdisk util-linux python3
 set -euo pipefail
 
-OUT="${1:?dossier de sortie requis}"
+OUT="${1:?output folder required}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 W="$(mktemp -d /tmp/chudclone-fx.XXXXXX)"
@@ -16,8 +16,8 @@ trap 'mountpoint -q "$W/mnt" 2>/dev/null && umount "$W/mnt"; rm -rf "$W"' EXIT
 mkdir -p "$W/mnt"
 MIB=$((1024*1024))
 
-# Contenu déterministe : texte compressible + un peu d'aléatoire reproductible.
-gen() { # gen <chemin> <taille en Kio> <graine>
+# Deterministic content: compressible text plus some reproducible randomness.
+gen() { # gen <path> <size in KiB> <seed>
 python3 - "$1" "$2" "$3" <<'PY'
 import sys, random
 path, kib, seed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
@@ -33,7 +33,7 @@ open(path, "wb").write(out[:kib * 1024])
 PY
 }
 
-populate_ntfs() { # populate_ntfs <image> <profil> <graine>
+populate_ntfs() { # populate_ntfs <image> <profile> <seed>
   local img="$1" profile="$2" seed="$3"
   ntfs-3g -o rw,big_writes "$img" "$W/mnt"
   case "$profile" in
@@ -43,8 +43,8 @@ populate_ntfs() { # populate_ntfs <image> <profil> <graine>
       gen "$W/mnt/Windows/System32/ntoskrnl.exe" 1400 $((seed+2))
       gen "$W/mnt/Windows/System32/config/SYSTEM" 700 $((seed+3))
       gen "$W/mnt/Windows/System32/config/SOFTWARE" 1100 $((seed+4))
-      # Petits fichiers, dont un sur deux est supprimé : crée de la fragmentation
-      # et des trous dans la carte d'allocation.
+      # Small files, every other one deleted: creates fragmentation
+      # and holes in the allocation map.
       for i in $(seq 1 120); do gen "$W/mnt/tmp/f$i.bin" $((8 + i % 40)) $((seed+100+i)); done
       for i in $(seq 1 2 120); do rm "$W/mnt/tmp/f$i.bin"; done
       gen "$W/mnt/Users/Test/Documents/rapport.docx" 2300 $((seed+5))
@@ -74,18 +74,18 @@ populate_ntfs() { # populate_ntfs <image> <profil> <graine>
   umount "$W/mnt"
 }
 
-mk_ntfs() { # mk_ntfs <image> <taille Mio> <label> <secteur de début> <profil> <graine>
+mk_ntfs() { # mk_ntfs <image> <size MiB> <label> <start sector> <profile> <seed>
   truncate -s $(( $2 * MIB )) "$1"
   mkntfs -q -F -Q -L "$3" -s 512 -c 4096 -p "$4" -H 255 -S 63 "$1"
   populate_ntfs "$1" "$5" "$6"
 }
 
-put() { # put <partition.img> <disque.img> <secteur de début>
+put() { # put <partition.img> <disk.img> <start sector>
   dd if="$1" of="$2" bs=512 seek="$3" conv=notrunc status=none
 }
 
 # ---------------------------------------------------------------------------
-# 1. Disque GPT « Windows moderne » : ESP + MSR + Windows (NTFS) + Récupération
+# 1. GPT "modern Windows" disk: ESP + MSR + Windows (NTFS) + Recovery
 # ---------------------------------------------------------------------------
 G="$W/gpt-win.img"
 truncate -s $((192 * MIB)) "$G"
@@ -108,7 +108,7 @@ mcopy -i "$W/esp.img" "$W/BCD" ::/EFI/Microsoft/Boot/BCD
 mcopy -i "$W/esp.img" "$W/bootx64.efi" ::/EFI/Boot/bootx64.efi
 put "$W/esp.img" "$G" 2048
 
-# MSR : contenu arbitraire non nul (il ne doit PAS être requis dans le clone).
+# MSR: arbitrary non-zero content (it must NOT be required in the clone).
 python3 -c "import random,sys; sys.stdout.buffer.write(random.Random(5).randbytes(65536))" \
   | dd of="$G" bs=512 seek=$((2048 + 40*2048)) conv=notrunc status=none
 
@@ -120,14 +120,14 @@ mk_ntfs "$W/rec.img" 32 "Recovery" "$REC_START" recovery 2000
 put "$W/rec.img" "$G" "$REC_START"
 sgdisk -v "$G" | tail -3
 
-# Copie de la partition Windows marquée « à vérifier » (indicateur dirty) : sert à
-# tester le repli en copie brute quand la carte d'allocation n'est pas fiable.
+# Copy of the Windows partition marked dirty: used to test the fallback
+# to a raw copy when the allocation map cannot be trusted.
 cp "$W/win.img" "$W/ntfs-dirty.img"
 truncate -s $((96 * MIB)) "$W/ntfs-dirty.img"
 ntfsfix "$W/ntfs-dirty.img" >/dev/null
 
 # ---------------------------------------------------------------------------
-# 2. Disque MBR « BIOS » : Réservé au système (actif) + NTFS + étendue (FAT16 + brut)
+# 2. MBR "BIOS" disk: System Reserved (active) + NTFS + extended (FAT16 + raw)
 # ---------------------------------------------------------------------------
 M="$W/mbr-win.img"
 truncate -s $((128 * MIB)) "$M"
@@ -140,7 +140,7 @@ start=165888, size=90112,  type=f
 start=167936, size=40960,  type=6
 start=210944, size=40960,  type=83
 EOF
-# Code d'amorçage factice (440 octets) et « piste d'amorçage » (secteurs 1–62).
+# Dummy boot code (440 bytes) and "boot track" (sectors 1-62).
 python3 - "$M" <<'PY'
 import sys, random
 f = open(sys.argv[1], "r+b")
@@ -160,13 +160,13 @@ for i in 1 2 3 4 5 6 7 8; do gen "$W/d$i.txt" $((30 + i * 55)) $((500+i)); mcopy
 mdel -i "$W/fat16.img" ::/docs/d3.txt ::/docs/d6.txt
 gen "$W/big.bin" 1900 599; mcopy -i "$W/fat16.img" "$W/big.bin" ::/big.bin
 put "$W/fat16.img" "$M" 167936
-# Partition logique de type Linux sans système de fichiers reconnu : données brutes.
+# Linux-type logical partition with no recognised file system: raw data.
 python3 -c "import random,sys; sys.stdout.buffer.write(random.Random(9).randbytes(3*1024*1024))" \
   | dd of="$M" bs=512 seek=210944 conv=notrunc status=none
 sfdisk -l "$M" | tail -6
 
 # ---------------------------------------------------------------------------
-# Sortie compressée
+# Compressed output
 # ---------------------------------------------------------------------------
 for f in gpt-win mbr-win ntfs-dirty; do
   gzip -9 -c "$W/$f.img" > "$OUT/$f.img.gz"

@@ -1,8 +1,8 @@
-//! Agrandissement automatique de la partition NTFS principale sur une destination plus
-//! grande : plan, exécution, contrôles et cas d'échec. Images en mémoire uniquement.
+//! Automatic growth of the main NTFS partition on a larger destination:
+//! plan, execution, checks and failure cases. In-memory images only.
 //!
-//! Pour une validation indépendante avec les outils Linux de référence, définir
-//! `CHUD_EXPORT_DIR` : les clones agrandis y sont écrits (voir scripts/validate-grow.sh).
+//! For an independent validation with the Linux reference tools, set
+//! `CHUD_EXPORT_DIR`: the grown clones are written there (see scripts/validate-grow.sh).
 
 mod common;
 
@@ -26,8 +26,8 @@ fn gpt_image() -> &'static [u8] {
     IMG.get_or_init(|| common::load_fixture("gpt-win.img"))
 }
 
-/// Disque MBR « Réservé au système + Windows », Windows en dernière position : l'image
-/// de test MBR tronquée après la partition 2, sans la partition étendue.
+/// MBR disk "System Reserved + Windows", Windows in last position: the MBR test
+/// image truncated after partition 2, without the extended partition.
 fn mbr_two_parts() -> &'static [u8] {
     static IMG: OnceLock<Vec<u8>> = OnceLock::new();
     IMG.get_or_init(|| {
@@ -64,7 +64,7 @@ fn export(name: &str, data: &[u8]) {
     }
 }
 
-/// Tous les fichiers de la partition `n` sont identiques entre source et clone.
+/// Every file of partition `n` is identical between source and clone.
 fn same_files(src: &[u8], o: &Out, n: u32) -> usize {
     let pp = o.plan.partitions.iter().find(|p| p.number == n).unwrap();
     let mut s = MemDevice::from_vec(src.to_vec(), 512);
@@ -76,7 +76,7 @@ fn same_files(src: &[u8], o: &Out, n: u32) -> usize {
         let comps: Vec<&str> = path.split('/').collect();
         let x = fs::ntfs::read_file(&mut s, pp.src_start, pp.src_len, &comps, usize::MAX).unwrap().unwrap();
         let y = fs::ntfs::read_file(&mut d, pp.dst_start, pp.dst_len, &comps, usize::MAX).unwrap().unwrap();
-        assert!(x == y, "contenu différent : {path}");
+        assert!(x == y, "content differs: {path}");
     }
     a.len()
 }
@@ -106,7 +106,7 @@ fn gpt_larger_destination_grows_windows_partition() {
     let dst_size = 320 * MIB;
     let o = clone(src, dst_size, PlanOptions::default(), FaultPlan::default());
     assert_eq!(o.outcome.status, FinalStatus::SuccessVerified, "{}", dump(&o.outcome));
-    let g = o.plan.grow.expect("agrandissement prévu");
+    let g = o.plan.grow.expect("growth planned");
     assert_eq!(g.number, 3);
     assert_eq!(g.old_len, 96 * MIB);
     assert!(g.new_len > 200 * MIB, "{}", g.new_len);
@@ -116,7 +116,7 @@ fn gpt_larger_destination_grows_windows_partition() {
     assert!(go.attempted && go.done && !go.modified, "{go:#?}");
     assert!(o.outcome.reasons.iter().any(|r| r.contains("agrandie")));
 
-    // Table : la partition 3 s'étend jusqu'à la partition de récupération déplacée.
+    // Table: partition 3 extends up to the moved recovery partition.
     let mut d = MemDevice::from_vec(o.dst.clone(), 512);
     let l = read_layout(&mut d).unwrap();
     assert!(l.findings.is_empty(), "{:#?}", l.findings);
@@ -125,24 +125,24 @@ fn gpt_larger_destination_grows_windows_partition() {
     assert_eq!(p3.sectors * SS, g.new_len);
     assert_eq!(p3.end_lba(), p4.start_lba);
 
-    // Système de fichiers relu par le crate `ntfs` (analyseur indépendant du nôtre).
+    // File system re-read by the `ntfs` crate (a parser independent of ours).
     let a = analyze_disk(&mut d).unwrap();
     let ap = a.parts.iter().find(|p| p.part.number == 3).unwrap();
     let s = go.summary.as_ref().unwrap();
     assert_eq!(ap.fs.fs_size, Some(g.new_len - SS));
     assert_eq!(s.new_size, g.new_len - SS);
-    assert!(ap.fs.findings.iter().any(|f| f.code == "NTFS_DIRTY"), "volume marqué à vérifier");
+    assert!(ap.fs.findings.iter().any(|f| f.code == "NTFS_DIRTY"), "volume marked dirty");
     let mut sd = MemDevice::from_vec(src.to_vec(), 512);
     let sa = analyze_disk(&mut sd).unwrap();
     let sp = sa.parts.iter().find(|p| p.part.number == 3).unwrap();
     assert_eq!(ap.fs.used_bytes, Some(sp.fs.used_bytes.unwrap() + s.bitmap_extra_clusters * s.cluster_size));
     assert_eq!(ap.fs.label.as_deref(), Some("Windows"));
 
-    // Contrôle de relecture du module, et fichiers identiques dans les deux partitions NTFS.
+    // Module re-read check, and identical files in both NTFS partitions.
     ntfs_grow::verify(&mut d, g.dst_start, g.new_len, s).unwrap();
     assert!(same_files(src, &o, 3) > 50);
     assert!(same_files(src, &o, 4) > 0);
-    // Démarrage toujours reconnu.
+    // Boot still recognised.
     let boot = o.outcome.boot_destination.as_ref().unwrap();
     assert!(boot.findings.is_empty(), "{:#?}", boot.findings);
     export("gpt-grown.img", &o.dst);
@@ -151,15 +151,15 @@ fn gpt_larger_destination_grows_windows_partition() {
 #[test]
 fn grown_volume_can_be_grown_again() {
     let _g = heavy();
-    // Second agrandissement d'un volume déjà agrandi (bitmap répartie sur deux extensions).
+    // Second growth of an already grown volume (bitmap spread over two extensions).
     let src = gpt_image();
     let o = clone(src, 320 * MIB, PlanOptions::default(), FaultPlan::default());
     let g = o.plan.grow.unwrap();
     let mut img = o.dst.clone();
     img.resize(1024 * MIB as usize, 0);
     let mut d = MemDevice::from_vec(img, 512);
-    // La partition récupérée n'est pas déplacée ici : seul le système de fichiers est
-    // étendu dans une partition supposée plus grande (test du module seul).
+    // The recovery partition is not moved here: only the file system is
+    // extended in a partition assumed to be larger (test of the module alone).
     let base = g.dst_start;
     let new_len = 1024 * MIB - base - MIB;
     let s = ntfs_grow::grow(&mut d, base, new_len).unwrap();
@@ -180,7 +180,7 @@ fn mbr_last_partition_is_grown_to_end_of_disk() {
     let src = mbr_two_parts();
     let o = clone(src, 256 * MIB, PlanOptions::default(), FaultPlan::default());
     assert_eq!(o.outcome.status, FinalStatus::SuccessVerified, "{}", dump(&o.outcome));
-    let g = o.plan.grow.expect("agrandissement prévu");
+    let g = o.plan.grow.expect("growth planned");
     assert_eq!(g.number, 2);
     assert_eq!(g.dst_start + g.new_len, 256 * MIB);
     let mut d = MemDevice::from_vec(o.dst.clone(), 512);
@@ -188,7 +188,7 @@ fn mbr_last_partition_is_grown_to_end_of_disk() {
     assert!(l.findings.is_empty(), "{:#?}", l.findings);
     assert_eq!(l.partitions.len(), 2);
     assert_eq!(l.partitions[1].sectors * SS, g.new_len);
-    // Code d'amorçage et signature inchangés ; seule la taille de l'entrée 2 diffère.
+    // Boot code and signature unchanged; only the size of entry 2 differs.
     assert_eq!(o.dst[..0x1BE], src[..0x1BE]);
     assert_eq!(o.dst[0x1BE..0x1BE + 16 + 12], src[0x1BE..0x1BE + 16 + 12]);
     assert_ne!(o.dst[0x1CE + 12..0x1CE + 16], src[0x1CE + 12..0x1CE + 16]);
@@ -216,8 +216,8 @@ fn grow_disabled_or_destination_same_size_changes_nothing() {
 fn write_failure_during_grow_is_reported_and_fails_the_clone() {
     let _g = heavy();
     let src = gpt_image();
-    // Repérage : le secteur d'amorçage de secours est écrit dans le dernier secteur de la
-    // partition agrandie, zone que la copie ne touche pas.
+    // Marker: the backup boot sector is written in the last sector of the
+    // grown partition, an area the copy does not touch.
     let probe = clone(src, 320 * MIB, PlanOptions::default(), FaultPlan::default());
     let g = probe.plan.grow.unwrap();
     let s = probe.outcome.grow.unwrap().summary.unwrap();
@@ -228,8 +228,8 @@ fn write_failure_during_grow_is_reported_and_fails_the_clone() {
     assert!(go.attempted && !go.done && go.modified, "{go:#?}");
     assert_eq!(o.outcome.status, FinalStatus::Failed, "{}", dump(&o.outcome));
     assert!(o.outcome.reasons.iter().any(|r| r.contains("chkdsk /f")), "{:#?}", o.outcome.reasons);
-    // Le secteur d'amorçage principal (écrit en dernier) n'a pas changé : le volume
-    // garde sa taille d'origine.
+    // The main boot sector (written last) has not changed: the volume
+    // keeps its original size.
     let mut d = MemDevice::from_vec(o.dst.clone(), 512);
     let a = fs::analyze(&mut d, g.dst_start, g.new_len);
     assert_eq!(a.fs_size, Some(g.old_len - SS));

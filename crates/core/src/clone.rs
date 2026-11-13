@@ -1,13 +1,13 @@
-//! Orchestration d'un clonage : préparation de la destination, copie, écriture de la
-//! table de partitions, vérifications et statut final.
+//! Orchestration of a clone: destination preparation, copy, writing of the
+//! partition table, verifications and final status.
 //!
-//! Ordre des écritures sur la destination :
-//! 1. effacement des anciennes tables (début et fin de disque) ;
-//! 2. données des partitions ;
-//! 3. table de partitions, en tout dernier.
+//! Order of the writes to the destination:
+//! 1. erasing the old tables (start and end of the disk);
+//! 2. partition data;
+//! 3. partition table, at the very end.
 //!
-//! Ainsi une opération interrompue laisse une destination sans table de partitions,
-//! clairement inutilisable, plutôt qu'un disque d'apparence valide mais incomplet.
+//! An interrupted operation thus leaves a destination without a partition table,
+//! clearly unusable, rather than a disk that looks valid but is incomplete.
 
 use crate::boot::{self, BootAssessment};
 use crate::device::{AlignedBuf, BlockDevice};
@@ -27,13 +27,13 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalStatus {
-    /// Copie complète, sans erreur, et vérifications effectuées avec succès.
+    /// Complete copy, without errors, and verifications passed.
     SuccessVerified,
-    /// Copie complète, mais avec des réserves (vérification non faite, anomalies…).
+    /// Complete copy, but with reservations (verification not done, anomalies…).
     CompletedWithWarnings,
-    /// Des données manquent sur la destination.
+    /// Data is missing on the destination.
     Incomplete,
-    /// L'opération a échoué ; la destination n'est pas un clone utilisable.
+    /// The operation failed; the destination is not a usable clone.
     Failed,
 }
 
@@ -67,7 +67,7 @@ pub struct TableCheck {
     pub problems: Vec<String>,
 }
 
-/// Résultat de l'agrandissement de la partition principale.
+/// Result of growing the main partition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowOutcome {
     pub number: u32,
@@ -75,14 +75,14 @@ pub struct GrowOutcome {
     pub done: bool,
     pub summary: Option<GrowSummary>,
     pub error: Option<String>,
-    /// Des structures du volume avaient déjà été modifiées au moment de l'échec.
+    /// Volume structures had already been modified at the time of the failure.
     pub modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloneOutcome {
     pub status: FinalStatus,
-    /// Raisons du statut, en clair.
+    /// Reasons for the status, in plain words.
     pub reasons: Vec<String>,
     pub stop: StopReason,
     pub copy: CopySummary,
@@ -91,7 +91,7 @@ pub struct CloneOutcome {
     pub table_written: bool,
     pub table_check: TableCheck,
     pub data_check: DataVerification,
-    /// Constats issus du contrôle des structures du clone.
+    /// Findings from checking the clone's structures.
     pub structure_findings: Vec<Finding>,
     pub boot_source: Option<BootAssessment>,
     pub boot_destination: Option<BootAssessment>,
@@ -129,7 +129,7 @@ fn phase(obs: &dyn Observer, phase: Phase) {
     });
 }
 
-/// Contrôles de cohérence du plan par rapport aux périphériques réellement ouverts.
+/// Consistency checks of the plan against the devices actually opened.
 fn sanity(req: &CloneRequest) -> Result<(), String> {
     if req.plan.is_blocked() {
         return Err(t!("le plan comporte des constats bloquants", "the plan contains blocking findings").into());
@@ -212,7 +212,7 @@ fn write_table(req: &mut CloneRequest) -> Result<bool, String> {
                 b.copy_from_slice(data);
                 dst.write_at(lba * ss, &b).map_err(|e| tf!("écriture de {what} (LBA {lba}) : {e}", "writing {what} (LBA {lba}): {e}"))
             };
-            // Secours d'abord, principal ensuite, MBR de protection en dernier.
+            // Backup first, primary next, protective MBR last.
             write(req.dst, img.backup_lba, &img.backup, t!("la table GPT de secours", "the backup GPT"))?;
             write(req.dst, img.primary_lba, &img.primary, t!("la table GPT principale", "the primary GPT"))?;
             let pm = mbr::build_protective(src_sector0.as_deref(), spec.sector_size, spec.disk_sectors);
@@ -222,7 +222,7 @@ fn write_table(req: &mut CloneRequest) -> Result<bool, String> {
     }
 }
 
-/// Compare la table relue sur la destination à ce que le plan prévoyait.
+/// Compares the table read back from the destination with what the plan intended.
 fn check_table(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis) -> TableCheck {
     let ss = src.sector_size as u64;
     let mut problems = Vec::new();
@@ -315,8 +315,8 @@ fn check_table(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis) -> Tabl
     TableCheck { performed: true, ok: problems.is_empty(), problems }
 }
 
-/// Compare les systèmes de fichiers du clone à ceux de la source (en tenant compte d'un
-/// agrandissement réussi).
+/// Compares the clone's file systems with the source's (taking a successful
+/// growth into account).
 fn check_structures(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis, grow: Option<&GrowOutcome>) -> Vec<Finding> {
     let mut out = Vec::new();
     for pp in &plan.partitions {
@@ -375,7 +375,7 @@ fn check_structures(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis, gr
             );
             continue;
         }
-        // Un défaut de structure apparu sur le clone alors que la source en était exempte.
+        // A structural defect that appeared on the clone while the source was free of it.
         for f in &d.fs.findings {
             if f.severity >= Severity::Error && !s.fs.findings.iter().any(|x| x.code == f.code) {
                 out.push(f.clone().scope(scope.clone()));
@@ -385,8 +385,8 @@ fn check_structures(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis, gr
     out
 }
 
-/// Exécute un clonage complet et renvoie son bilan. Ne panique pas sur une erreur
-/// d'E/S : toute défaillance est décrite dans le résultat.
+/// Runs a complete clone and returns its outcome. Does not panic on an I/O
+/// error: every failure is described in the result.
 pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
     let started = Instant::now();
     let mut outcome = CloneOutcome {
@@ -425,7 +425,7 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         ),
     );
 
-    // --- 1. Préparation : invalidation des anciennes tables --------------------
+    // --- 1. Preparation: invalidating the old tables -----------------------------
     phase(req.obs, Phase::Preparing);
     let dst_size = req.plan.dst_size;
     let head = MIB.min(dst_size);
@@ -483,14 +483,14 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         }
     }
 
-    // --- 4. Vérifications -----------------------------------------------------
+    // --- 4. Verifications ---------------------------------------------------------
     if outcome.stop == StopReason::Completed {
         if req.opts.verify != VerifyMode::None {
             phase(req.obs, Phase::Verifying);
             outcome.data_check = verify_data(req.src, req.dst, &stats.hashes, req.opts.verify, req.ctl, req.obs);
         }
-        // Agrandissement : seulement sur une destination qui vient de restituer fidèlement
-        // les données (il modifie des zones déjà vérifiées).
+        // Growth: only on a destination that has just returned the data faithfully
+        // (it modifies areas already verified).
         if let Some(g) = req.plan.grow {
             outcome.grow = Some(grow_main(&mut req, g, &outcome.data_check));
         }
@@ -586,8 +586,8 @@ fn phase_done(obs: &dyn Observer, outcome: &CloneOutcome) {
     phase(obs, Phase::Done);
 }
 
-/// Détermine le statut final. « Réussi » n'est accordé que si la copie est complète
-/// ET que les vérifications ont réellement été faites et sont concluantes.
+/// Determines the final status. "Succeeded" is only granted if the copy is complete
+/// AND the verifications were actually done and are conclusive.
 fn decide_status(o: &mut CloneOutcome, plan: &ClonePlan, src: &DiskAnalysis, opts: &EngineOptions) {
     let mut reasons = Vec::new();
     let status;
@@ -712,7 +712,7 @@ fn decide_status(o: &mut CloneOutcome, plan: &ClonePlan, src: &DiskAnalysis, opt
                     o.copy.recovered_bytes
                 ));
             }
-            // Défauts préexistants de la source : le clone les reproduit fidèlement.
+            // Pre-existing defects of the source: the clone reproduces them faithfully.
             let inherited: Vec<&Finding> = src
                 .layout
                 .findings

@@ -1,8 +1,8 @@
-//! Couche Windows : accès aux disques, détection, verrouillage des volumes, SMART.
+//! Windows layer: disk access, detection, volume locking, SMART.
 //!
-//! Tout le reste du moteur est indépendant de la plateforme et testé sur des images.
-//! Cette couche est volontairement mince : elle traduit les appels Win32 en
-//! `BlockDevice` et en `DiskInfo`.
+//! The rest of the engine is platform-independent and tested on images.
+//! This layer is deliberately thin: it translates Win32 calls into
+//! `BlockDevice` and `DiskInfo`.
 
 pub mod enumerate;
 pub mod rawdisk;
@@ -14,22 +14,22 @@ use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, H
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
-/// L'écriture sur disque physique réel n'a pas encore été validée sur du matériel
-/// (seulement sur des images et, via le script fourni, sur des disques virtuels VHDX).
-/// Tant que cette constante vaut `false`, l'ouverture en écriture d'un disque non
-/// virtuel exige un accord explicite de l'appelant.
+/// Writing to a real physical disk has not been validated on hardware yet
+/// (only on images and, through the provided script, on VHDX virtual disks).
+/// While this constant is `false`, opening a non-virtual disk for writing
+/// requires explicit consent from the caller.
 pub const PHYSICAL_WRITE_VALIDATED: bool = false;
 
-/// Handle Win32 fermé automatiquement.
+/// Win32 handle closed automatically.
 pub struct Handle(pub HANDLE);
 
-// SAFETY: un HANDLE de fichier/périphérique peut être utilisé depuis n'importe quel thread.
+// SAFETY: a file/device HANDLE can be used from any thread.
 unsafe impl Send for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
         if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
-            // SAFETY: handle valide, possédé par cette structure.
+            // SAFETY: valid handle, owned by this structure.
             unsafe { CloseHandle(self.0) };
         }
     }
@@ -46,7 +46,7 @@ pub fn from_wide(buf: &[u16]) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// Requêtes de propriétés uniquement (aucun privilège requis).
+    /// Property queries only (no privilege required).
     Query,
     Read,
     ReadWrite,
@@ -59,7 +59,7 @@ pub fn open_device(path: &str, access: Access, flags: u32) -> io::Result<Handle>
         Access::Read => GENERIC_READ,
         Access::ReadWrite => GENERIC_READ | GENERIC_WRITE,
     };
-    // SAFETY: chaîne UTF-16 terminée par zéro, pointeurs optionnels nuls.
+    // SAFETY: zero-terminated UTF-16 string, optional pointers null.
     let h = unsafe {
         CreateFileW(
             w.as_ptr(),
@@ -77,10 +77,10 @@ pub fn open_device(path: &str, access: Access, flags: u32) -> io::Result<Handle>
     Ok(Handle(h))
 }
 
-/// `DeviceIoControl` avec tampons d'entrée et de sortie. Renvoie le nombre d'octets reçus.
+/// `DeviceIoControl` with input and output buffers. Returns the number of bytes received.
 pub fn ioctl(h: &Handle, code: u32, input: &[u8], output: &mut [u8]) -> io::Result<usize> {
     let mut returned = 0u32;
-    // SAFETY: les tampons sont valides pour les longueurs annoncées.
+    // SAFETY: the buffers are valid for the stated lengths.
     let ok = unsafe {
         DeviceIoControl(
             h.0,
@@ -112,12 +112,12 @@ pub(crate) fn u64le(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes(a)
 }
 
-/// Vrai si le processus dispose d'un jeton administrateur élevé.
+/// True if the process has an elevated administrator token.
 pub fn is_elevated() -> bool {
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: appels Win32 standards ; le jeton est fermé par `Handle`.
+    // SAFETY: standard Win32 calls; the token is closed by `Handle`.
     unsafe {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
@@ -136,8 +136,8 @@ pub fn is_elevated() -> bool {
     }
 }
 
-/// Relance le programme courant avec élévation (invite UAC). Renvoie `Ok(())` si
-/// Windows a accepté de démarrer le nouveau processus.
+/// Restarts the current program with elevation (UAC prompt). Returns `Ok(())` if
+/// Windows agreed to start the new process.
 pub fn relaunch_elevated(args: &str) -> io::Result<()> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -145,7 +145,7 @@ pub fn relaunch_elevated(args: &str) -> io::Result<()> {
     let exe_w = wide(&exe.to_string_lossy());
     let verb = wide("runas");
     let args_w = wide(args);
-    // SAFETY: chaînes UTF-16 valides et terminées.
+    // SAFETY: valid, terminated UTF-16 strings.
     let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), exe_w.as_ptr(), args_w.as_ptr(), std::ptr::null(), SW_SHOWNORMAL) };
     if (r as isize) > 32 { Ok(()) } else { Err(io::Error::other(t!("élévation refusée ou annulée", "elevation refused or cancelled"))) }
 }

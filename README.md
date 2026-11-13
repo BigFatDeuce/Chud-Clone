@@ -23,10 +23,11 @@
 Chud Clone copies a disk to another disk or to an image file, **checks** that the copy is
 identical, and tells you plainly whether the result can be trusted. It also reads disk health
 (SMART), tracks how it changes over time, and scans disk surfaces for slow or unreadable areas.
-No network connection, no telemetry, no account.
+No telemetry, no account. The only network access is an optional update check against this
+repository's GitHub releases.
 
 > [!WARNING]
-> **Version 0.1 status.** The engine is validated on disk images and virtual disks (automated tests
+> **Version 0.2 status.** The engine is validated on disk images and virtual disks (automated tests
 > plus checks by independent tools). **Writing to a real physical disk has not yet been proven on
 > hardware**, so it is disabled by default (Settings → Advanced). See
 > [Known limitations](#known-limitations). Always keep your source disk intact until the clone has
@@ -51,6 +52,8 @@ No network connection, no telemetry, no account.
 - **WinPE rescue key** to clone the disk Windows itself runs from, with the computer booted on the key.
 - **English and French**: interface, diagnostics, reports and command line. The language follows
   Windows and can be changed in Settings.
+- **Updates from inside the app**: a new release is announced at startup and installed in a click,
+  after its SHA-256 checksum has been verified (installed and portable versions).
 - A space-themed interface with a reduced-motion mode.
 
 <table>
@@ -70,13 +73,31 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.1.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.1.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.1.0.txt` | Checksums of the files above. |
+| `ChudClone-0.2.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.2.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.2.0.txt` | Checksums of the files above. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). The app starts without administrator rights in a *limited
 mode* (disk list, image files) and offers to restart as administrator when it needs to read a disk.
+
+## Updates
+
+At startup, Chud Clone sends **one** HTTPS request to the GitHub API to read the latest release of
+this repository. Nothing about the computer, its disks or its user is sent; the request only carries
+a generic `ChudClone/<version>` user agent and follows the Windows proxy settings. The check can be
+turned off in **Settings → Updates**, where it can also be run by hand.
+
+When a newer version exists, **Update now** downloads the package for your kind of installation and
+checks it against the `SHA256SUMS` file published with the release before running anything:
+
+- **installed version**: the new installer runs silently in the same folder (Windows asks for
+  administrator permission), then Chud Clone restarts;
+- **portable version**: the programs in the folder are replaced, `ChudClone-data\` is kept, then
+  Chud Clone restarts.
+
+An update never starts while a clone or a surface scan is running, and a package that does not
+match its checksum is deleted without being opened.
 
 ## How a clone works
 
@@ -157,7 +178,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 98 tests
+cargo test --workspace                                         # 103 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -184,6 +205,7 @@ crates/core   the engine (library), independent of any interface
   win/          Windows: enumeration, \\.\PhysicalDriveN, volume locks, IOCTLs
 crates/cli    chud-clone-cli
 crates/app    Tauri 2 application; HTML/CSS/JS interface with no build step (crates/app/ui)
+  update.rs     update check (WinHTTP), checksum-verified download and installation
 packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with the app
 ```
 
@@ -196,6 +218,9 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
   unstable reads recovered, source disappearing, access denied, destination errors and removal,
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
   growth, write failure during growth), surface scan, and a complete job in English.
+- `crates/app`: 5 unit tests for the updater (version comparison, release parsing, checksum
+  lookup, refusal of releases without checksums or with a foreign page), plus a network test run
+  on demand (`cargo test -p chud-clone-app -- --ignored`).
 - `scripts/validate-clone.sh`: **independent** check of a clone on Linux (sgdisk -v,
   ntfsresize --check, fsck.fat, MD5 of every file).
 - `scripts/validate-grow.sh`: **independent** check of a grown NTFS volume (ntfsresize --check,

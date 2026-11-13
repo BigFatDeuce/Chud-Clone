@@ -1,8 +1,8 @@
-//! NTFS : carte d'allocation ($Bitmap), état du journal et recherche de fichiers.
+//! NTFS: allocation map ($Bitmap), journal state and file lookup.
 //!
-//! L'analyse des structures NTFS est déléguée au crate `ntfs` (lecture seule). Ce
-//! module ne fait qu'en tirer la carte des clusters utilisés et décider si elle est
-//! digne de confiance.
+//! Parsing of the NTFS structures is delegated to the `ntfs` crate (read-only). This
+//! module only derives the map of used clusters from it and decides whether it can be
+//! trusted.
 
 use super::{BitmapScanner, Extent, FsAnalysis, normalize};
 use crate::device::{BlockDevice, DeviceReader};
@@ -12,15 +12,15 @@ use ::ntfs::structured_values::NtfsVolumeFlags;
 use ::ntfs::{KnownNtfsFileRecordNumber, Ntfs, NtfsFile, NtfsReadSeek};
 use std::io::{Read, Seek};
 
-/// Au-delà de cette taille, la zone située après le dernier cluster n'est plus copiée
-/// en entier (cas d'un système de fichiers plus petit que sa partition).
+/// Beyond this size, the area after the last cluster is no longer copied
+/// in full (case of a file system smaller than its partition).
 const MAX_FULL_TAIL: u64 = 64 * 1024 * 1024;
 
 fn err_text(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// Lit jusqu'à `max` octets du flux de données sans nom d'un fichier.
+/// Reads up to `max` bytes of a file's unnamed data stream.
 fn read_file_head<T: Read + Seek>(fs: &mut T, file: &NtfsFile, max: usize) -> Result<Vec<u8>, String> {
     let item = file.data(fs, "").ok_or(t!("attribut $DATA absent", "missing $DATA attribute"))?.map_err(err_text)?;
     let attr = item.to_attribute().map_err(err_text)?;
@@ -31,21 +31,21 @@ fn read_file_head<T: Read + Seek>(fs: &mut T, file: &NtfsFile, max: usize) -> Re
     Ok(buf)
 }
 
-/// État du journal $LogFile.
+/// State of the $LogFile journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogState {
-    /// Journal vide (rempli de 0xFF) ou marqué propre : aucune opération en attente.
+    /// Empty journal (filled with 0xFF) or marked clean: no pending operation.
     Clean,
-    /// Des opérations journalisées peuvent rester à rejouer.
+    /// Journaled operations may remain to be replayed.
     Unclean,
     /// Structure non reconnue.
     Unknown,
 }
 
-/// Interprète les deux pages de redémarrage du journal.
+/// Interprets the journal's two restart pages.
 ///
-/// Même règle que ntfs-3g : le journal est propre s'il est vide, si aucun client
-/// n'est actif, ou si l'indicateur « volume propre » est positionné.
+/// Same rule as ntfs-3g: the journal is clean if it is empty, if no client is
+/// active, or if the "clean volume" flag is set.
 pub fn logfile_state(head: &[u8]) -> LogState {
     if head.len() < 4096 {
         return LogState::Unknown;
@@ -84,7 +84,7 @@ pub fn logfile_state(head: &[u8]) -> LogState {
     }
 }
 
-/// Recherche un chemin (composants insensibles à la casse) depuis la racine.
+/// Looks up a path (case-insensitive components) from the root.
 fn lookup<'n, T: Read + Seek>(ntfs: &'n Ntfs, fs: &mut T, path: &[&str]) -> Result<Option<NtfsFile<'n>>, String> {
     let mut current = ntfs.root_directory(fs).map_err(err_text)?;
     for comp in path {
@@ -102,7 +102,7 @@ fn lookup<'n, T: Read + Seek>(ntfs: &'n Ntfs, fs: &mut T, path: &[&str]) -> Resu
     Ok(Some(current))
 }
 
-/// Indique si un fichier ou dossier existe dans le volume NTFS `[base, base+len)`.
+/// Tells whether a file or folder exists in the NTFS volume `[base, base+len)`.
 pub fn path_exists(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str]) -> Result<bool, String> {
     let mut fs = DeviceReader::new(dev, base, len);
     let mut ntfs = Ntfs::new(&mut fs).map_err(err_text)?;
@@ -110,7 +110,7 @@ pub fn path_exists(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str]
     Ok(lookup(&ntfs, &mut fs, path)?.is_some())
 }
 
-/// Lit le contenu complet d'un fichier (tests et vérifications ; fichiers modestes).
+/// Reads the whole content of a file (tests and verifications; modest files).
 pub fn read_file(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str], max: usize) -> Result<Option<Vec<u8>>, String> {
     let mut fs = DeviceReader::new(dev, base, len);
     let mut ntfs = Ntfs::new(&mut fs).map_err(err_text)?;
@@ -121,8 +121,8 @@ pub fn read_file(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str], 
     }
 }
 
-/// Liste récursive (chemin, taille) de tous les fichiers ordinaires. Réservé aux tests
-/// et aux comparaisons de petits volumes.
+/// Recursive list (path, size) of all regular files. Reserved for tests
+/// and comparisons of small volumes.
 pub fn list_files(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Result<Vec<(String, u64)>, String> {
     let mut fs = DeviceReader::new(dev, base, len);
     let mut ntfs = Ntfs::new(&mut fs).map_err(err_text)?;
@@ -139,7 +139,7 @@ pub fn list_files(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Result<Vec<
             while let Some(entry) = iter.next(&mut fs) {
                 let entry = entry.map_err(err_text)?;
                 let key = entry.key().ok_or(t!("entrée d'index sans clé", "index entry without a key"))?.map_err(err_text)?;
-                // Les noms courts DOS doublonnent les noms longs.
+                // DOS short names duplicate the long names.
                 if key.namespace() == ::ntfs::structured_values::NtfsFileNamespace::Dos {
                     continue;
                 }
@@ -155,7 +155,7 @@ pub fn list_files(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Result<Vec<
             if is_dir {
                 stack.push((path, rec));
             } else {
-                // La taille de l'index peut être périmée : on lit celle de l'attribut $DATA.
+                // The index size may be stale: read the $DATA attribute's size.
                 let f = ntfs.file(&mut fs, rec).map_err(err_text)?;
                 let size = match f.data(&mut fs, "") {
                     Some(item) => item.map_err(err_text)?.to_attribute().map_err(err_text)?.value_length(),
@@ -188,8 +188,8 @@ pub(super) fn analyze(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut 
         );
         return;
     }
-    // Agrandissement possible ? Uniquement sur un volume dont la carte d'allocation est
-    // fiable ; contrôle en lecture seule des structures que l'agrandissement modifie.
+    // Can it be grown? Only on a volume whose allocation map can be trusted;
+    // read-only check of the structures the growth modifies.
     match (&out.raw_reason, out.used_extents.is_some()) {
         (_, true) => match super::ntfs_grow::preflight(dev, base, len) {
             Ok(()) => out.grow_ready = true,
@@ -244,7 +244,7 @@ fn analyze_inner(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut FsAna
         }
     }
 
-    // --- Fiabilité de la carte d'allocation ---------------------------------
+    // --- Trustworthiness of the allocation map -------------------------------------
     let mut unreliable: Option<String> = None;
     let flags = ntfs.volume_info(&mut fs).map_err(err_text)?.flags();
     if flags.contains(NtfsVolumeFlags::IS_DIRTY) {
@@ -332,8 +332,8 @@ fn analyze_inner(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut FsAna
     out.used_bytes = Some(used_clusters * cluster);
     out.last_used_end = extents.last().map(|e| e.end());
 
-    // Zone située après le dernier cluster entier : elle contient le secteur
-    // d'amorçage de secours (dernier secteur du volume).
+    // Area after the last whole cluster: it holds the backup boot sector
+    // (last sector of the volume).
     let clusters_end = total_clusters * cluster;
     if len > clusters_end {
         let tail = len - clusters_end;
@@ -382,11 +382,11 @@ mod tests {
             h[ra + 12..ra + 14].copy_from_slice(&0u16.to_le_bytes()); // client actif
         }
         assert_eq!(logfile_state(&h), LogState::Unclean);
-        // La page la plus récente (LSN le plus élevé) porte l'indicateur « propre ».
+        // The most recent page (highest LSN) carries the "clean" flag.
         let ra = 4096 + 0x30;
         h[ra + 14..ra + 16].copy_from_slice(&0x0002u16.to_le_bytes());
         assert_eq!(logfile_state(&h), LogState::Clean);
-        // Aucun client actif = propre également.
+        // No active client = clean as well.
         h[ra + 14..ra + 16].copy_from_slice(&0u16.to_le_bytes());
         h[ra + 12..ra + 14].copy_from_slice(&0xFFFFu16.to_le_bytes());
         assert_eq!(logfile_state(&h), LogState::Clean);

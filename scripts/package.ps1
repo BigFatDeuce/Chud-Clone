@@ -24,11 +24,30 @@ $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
 Write-Host "Chud Clone $version" -ForegroundColor Cyan
 
 if (-not $NoBuild) {
+  # Reproducible paths: the build machine's folders (user profile, Cargo home, checkout)
+  # must not end up in the binaries through panic locations or generated code.
+  $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+  $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $env:USERPROFILE '.rustup' }
+  $env:RUSTFLAGS = @(
+    "--remap-path-prefix=$cargoHome=/cargo",
+    "--remap-path-prefix=$rustupHome=/rustup",
+    "--remap-path-prefix=$root=/build",
+    "--remap-path-prefix=$env:USERPROFILE=/home"
+  ) -join ' '
   & cargo build --release -p chud-clone-app -p chud-clone-cli
-  if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+  $code = $LASTEXITCODE
+  Remove-Item Env:RUSTFLAGS
+  if ($code -ne 0) { throw 'build failed' }
 }
 foreach ($exe in 'chud-clone.exe', 'chud-clone-cli.exe') {
   if (-not (Test-Path "target\release\$exe")) { throw "target\release\$exe not found" }
+  # Refuse to ship a binary that still names the build account or its folders.
+  $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes((Join-Path $root "target\release\$exe")))
+  foreach ($needle in @($env:USERNAME, $env:USERPROFILE, $root) | Where-Object { $_ -and $_.Length -ge 3 }) {
+    if ($text.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      throw "$exe contains a build-machine path or account name; rebuild without -NoBuild"
+    }
+  }
 }
 
 $dist = Join-Path $root 'dist'

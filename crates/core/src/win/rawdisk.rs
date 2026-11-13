@@ -1,5 +1,5 @@
-//! Disque Windows (`\\.\PhysicalDriveN`) en tant que `BlockDevice`, verrouillage des
-//! volumes et préparation d'un disque de destination.
+//! Windows disk (`\\.\PhysicalDriveN`) as a `BlockDevice`, volume locking
+//! and preparation of a destination disk.
 
 use super::{Access, Handle, ioctl, open_device, u32le, u64le};
 use crate::device::{AlignedBuf, BlockDevice, IoErrorClass, fault};
@@ -13,7 +13,7 @@ use windows_sys::Win32::System::Ioctl::{
     IOCTL_DISK_GET_LENGTH_INFO, IOCTL_DISK_UPDATE_PROPERTIES, IOCTL_STORAGE_QUERY_PROPERTY,
 };
 
-/// Taille maximale d'une E/S unique (les pilotes limitent la taille des transferts).
+/// Maximum size of a single I/O (drivers limit transfer sizes).
 const MAX_IO: usize = 8 * 1024 * 1024;
 
 pub struct RawDisk {
@@ -26,7 +26,7 @@ pub struct RawDisk {
     bounce: Option<AlignedBuf>,
 }
 
-/// Lit les tailles de secteur (logique, physique) via la propriété d'alignement.
+/// Reads the sector sizes (logical, physical) through the alignment property.
 pub(crate) fn query_sector_sizes(h: &Handle) -> Option<(u32, u32)> {
     // STORAGE_PROPERTY_QUERY { PropertyId = StorageAccessAlignmentProperty (6), QueryType = 0 }
     let mut q = [0u8; 12];
@@ -67,13 +67,13 @@ impl RawDisk {
         Ok(Self { handle, path: path.to_string(), size: size - size % sector as u64, sector, physical, writable, bounce: None })
     }
 
-    /// Ouvre un disque en lecture seule (source d'un clonage, analyse).
+    /// Opens a disk read-only (clone source, analysis).
     pub fn open_read_only(path: &str) -> io::Result<Self> {
         Self::open(path, false)
     }
 
-    /// Ouvre un disque en lecture/écriture. Réservé à la destination d'un clonage,
-    /// après les pré-vérifications et `prepare_destination`.
+    /// Opens a disk read/write. Reserved for the destination of a clone,
+    /// after the pre-checks and `prepare_destination`.
     pub fn open_read_write(path: &str) -> io::Result<Self> {
         Self::open(path, true)
     }
@@ -83,7 +83,7 @@ impl RawDisk {
     }
 
     fn overlapped(offset: u64) -> OVERLAPPED {
-        // SAFETY: OVERLAPPED est une structure C simple, valide à zéro.
+        // SAFETY: OVERLAPPED is a plain C structure, valid when zeroed.
         let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
         ov.Anonymous.Anonymous.Offset = offset as u32;
         ov.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
@@ -96,7 +96,7 @@ impl RawDisk {
             let n = (buf.len() - done).min(MAX_IO);
             let mut ov = Self::overlapped(offset + done as u64);
             let mut got = 0u32;
-            // SAFETY: tampon valide pour n octets ; handle synchrone avec position explicite.
+            // SAFETY: buffer valid for n bytes; synchronous handle with explicit position.
             let ok = unsafe { ReadFile(self.handle.0, buf[done..].as_mut_ptr(), n as u32, &mut got, &mut ov) };
             if ok == 0 {
                 return Err(io::Error::last_os_error());
@@ -118,7 +118,7 @@ impl RawDisk {
             let n = (buf.len() - done).min(MAX_IO);
             let mut ov = Self::overlapped(offset + done as u64);
             let mut put = 0u32;
-            // SAFETY: tampon valide pour n octets.
+            // SAFETY: buffer valid for n bytes.
             let ok = unsafe { WriteFile(self.handle.0, buf[done..].as_ptr(), n as u32, &mut put, &mut ov) };
             if ok == 0 {
                 return Err(io::Error::last_os_error());
@@ -161,7 +161,7 @@ impl BlockDevice for RawDisk {
         if buf.is_empty() {
             return Ok(());
         }
-        // Les E/S non tamponnées exigent un tampon aligné sur le secteur.
+        // Unbuffered I/O requires a sector-aligned buffer.
         if self.aligned(buf.as_ptr()) {
             return self.read_raw(offset, buf);
         }
@@ -209,11 +209,11 @@ impl BlockDevice for RawDisk {
 }
 
 // ---------------------------------------------------------------------------
-// Verrouillage des volumes
+// Volume locking
 // ---------------------------------------------------------------------------
 
-/// Volume verrouillé et démonté. Le verrou est rendu à la destruction ; Windows
-/// remonte alors le volume à la première demande.
+/// Locked and dismounted volume. The lock is released on drop; Windows
+/// then remounts the volume on the first request.
 pub struct VolumeLock {
     handle: Handle,
     pub name: String,
@@ -225,8 +225,8 @@ impl Drop for VolumeLock {
     }
 }
 
-/// Verrouille puis démonte un volume (`\\?\Volume{…}\`). Échoue si des fichiers y
-/// sont ouverts par un autre programme.
+/// Locks then dismounts a volume (`\\?\Volume{…}\`). Fails if files on it
+/// are open in another program.
 pub fn lock_volume(guid_path: &str, display: &str) -> io::Result<VolumeLock> {
     lock_volume_tries(guid_path, display, 6)
 }
@@ -262,8 +262,8 @@ fn lock_volume_tries(guid_path: &str, display: &str, tries: u64) -> io::Result<V
     Ok(VolumeLock { handle, name: display.to_string() })
 }
 
-/// Verrouille tous les volumes d'un disque. Les volumes sans système de fichiers
-/// monté sont ignorés.
+/// Locks all the volumes of a disk. Volumes without a mounted file
+/// system are ignored.
 pub fn lock_disk_volumes(disk: &DiskInfo, volumes: &[(String, String)]) -> io::Result<Vec<VolumeLock>> {
     let _ = disk;
     let mut locks = Vec::new();
@@ -273,8 +273,8 @@ pub fn lock_disk_volumes(disk: &DiskInfo, volumes: &[(String, String)]) -> io::R
     Ok(locks)
 }
 
-/// Comme `lock_disk_volumes`, mais en une seule tentative par volume (aperçu : pas
-/// d'attente si un programme utilise le volume).
+/// Like `lock_disk_volumes`, but with a single attempt per volume (preview: no
+/// waiting if a program is using the volume).
 pub fn try_lock_disk_volumes(volumes: &[(String, String)]) -> io::Result<Vec<VolumeLock>> {
     let mut locks = Vec::new();
     for (guid_path, display) in volumes {
@@ -283,8 +283,8 @@ pub fn try_lock_disk_volumes(volumes: &[(String, String)]) -> io::Result<Vec<Vol
     Ok(locks)
 }
 
-/// Refuse l'écriture sur un disque physique réel tant que cette voie n'est pas
-/// validée, sauf accord explicite. Les disques virtuels (VHD/VHDX) sont acceptés.
+/// Refuses writing to a real physical disk while that path is not
+/// validated, unless explicitly agreed. Virtual disks (VHD/VHDX) are accepted.
 pub fn check_write_allowed(disk: &DiskInfo, allow_unvalidated: bool) -> Result<(), String> {
     if disk.kind != DiskKind::Physical {
         return Ok(());
@@ -304,11 +304,11 @@ pub fn check_write_allowed(disk: &DiskInfo, allow_unvalidated: bool) -> Result<(
         .into())
 }
 
-/// Prépare un disque de destination : verrouille et démonte ses volumes, supprime sa
-/// table de partitions (Windows cesse alors d'y voir des volumes et autorise l'écriture
-/// sur tout le disque), puis l'ouvre en lecture/écriture.
+/// Prepares a destination disk: locks and dismounts its volumes, deletes its
+/// partition table (Windows then stops seeing volumes on it and allows writing
+/// to the whole disk), then opens it read/write.
 ///
-/// OPÉRATION DESTRUCTRICE : à n'appeler qu'après confirmation de l'utilisateur.
+/// DESTRUCTIVE OPERATION: call only after the user's confirmation.
 pub fn prepare_destination(disk: &DiskInfo, volumes: &[(String, String)], allow_unvalidated: bool) -> io::Result<RawDisk> {
     check_write_allowed(disk, allow_unvalidated).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
     let locks = lock_disk_volumes(disk, volumes)?;
@@ -324,7 +324,7 @@ pub fn prepare_destination(disk: &DiskInfo, volumes: &[(String, String)], allow_
     Ok(dev)
 }
 
-/// Demande à Windows de relire la table de partitions du disque.
+/// Asks Windows to re-read the disk's partition table.
 pub fn refresh_disk(dev: &RawDisk) -> io::Result<()> {
     ioctl(dev.handle(), IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []).map(|_| ())
 }

@@ -1,5 +1,5 @@
-// Petit serveur statique local pour le banc d'essai de l'interface (crates/app/ui-dev).
-// Écoute uniquement sur 127.0.0.1. Usage : node scripts/ui-dev-server.js [port]
+// Small local static server for the interface test bench (crates/app/ui-dev).
+// Listens on 127.0.0.1 only. Usage: node scripts/ui-dev-server.js [port]
 "use strict";
 const http = require("http");
 const fs = require("fs");

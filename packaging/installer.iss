@@ -1,6 +1,6 @@
 ﻿; Chud Clone — installer (Inno Setup 6), English and French.
 ; Built by scripts\package.ps1, which provides AppVersion and SourceDir:
-;   ISCC.exe /DAppVersion=0.1.0 /DSourceDir=..\dist\stage packaging\installer.iss
+;   ISCC.exe /DAppVersion=0.2.0 /DSourceDir=..\dist\stage packaging\installer.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -76,8 +76,15 @@ Name: "{autodesktop}\Chud Clone"; Filename: "{app}\chud-clone.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\chud-clone.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent unchecked
+; Update started from the application (/SILENT /relaunch=1): restart it afterwards.
+Filename: "{app}\chud-clone.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [Code]
+function RelaunchRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
+
 // The interface relies on Microsoft Edge WebView2. Nothing is downloaded (no network
 // connection): if the runtime is missing, the user is warned and may continue.
 function WebView2Present(): Boolean;

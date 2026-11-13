@@ -1,4 +1,4 @@
-//! Fichiers image utilisés comme disques (source ou destination).
+//! Image files used as disks (source or destination).
 
 use crate::device::FileDevice;
 use crate::model::{DiskInfo, DiskKind, MediaKind, PartitionInfo, fingerprint};
@@ -6,7 +6,7 @@ use crate::plan::{DiskAnalysis, analyze_disk};
 use std::io;
 use std::path::Path;
 
-/// Convertit le résultat d'une analyse en description de partitions.
+/// Converts the result of an analysis into a description of partitions.
 pub fn partition_infos(a: &DiskAnalysis) -> Vec<PartitionInfo> {
     let ss = a.sector_size as u64;
     a.parts
@@ -31,7 +31,7 @@ pub fn partition_infos(a: &DiskAnalysis) -> Vec<PartitionInfo> {
         .collect()
 }
 
-/// Décrit un fichier image existant (lecture seule) et renvoie son analyse.
+/// Describes an existing image file (read-only) and returns its analysis.
 pub fn image_info(path: &Path, sector: u32) -> io::Result<(DiskInfo, DiskAnalysis)> {
     let mut dev = FileDevice::open_read_only(path, sector)?;
     let analysis = analyze_disk(&mut dev)?;

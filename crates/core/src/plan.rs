@@ -1,8 +1,8 @@
-//! Planification d'un clonage : analyse de la source, placement des partitions sur la
-//! destination et liste des plages à copier.
+//! Clone planning: analysis of the source, placement of the partitions on the
+//! destination and list of the ranges to copy.
 //!
-//! Le plan est calculé sans rien écrire. Il est présenté à l'utilisateur, puis exécuté
-//! tel quel par le moteur : ce qui est affiché est ce qui est fait.
+//! The plan is computed without writing anything. It is shown to the user, then run
+//! as is by the engine: what is displayed is what is done.
 
 use crate::device::BlockDevice;
 use crate::diag::{Finding, human_size};
@@ -15,12 +15,12 @@ use std::io;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloneMode {
-    /// Par partition ; seuls les blocs utilisés sont copiés quand le système de fichiers
-    /// le permet de façon sûre, sinon la partition est copiée en entier.
+    /// Per partition; only the used blocks are copied when the file system allows it
+    /// safely, otherwise the partition is copied in full.
     Smart,
-    /// Par partition, tous les secteurs de chaque partition.
+    /// Per partition, every sector of each partition.
     RawPartitions,
-    /// Disque entier, secteur par secteur, aux mêmes positions.
+    /// Whole disk, sector by sector, at the same positions.
     RawDisk,
 }
 
@@ -37,12 +37,12 @@ impl CloneMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanOptions {
     pub mode: CloneMode,
-    /// Sur une destination plus grande (GPT) : déplacer les partitions situées après la
-    /// partition principale vers la fin du disque, pour que l'espace libre soit
-    /// contigu à la partition principale et qu'elle puisse être étendue ensuite.
+    /// On a larger destination (GPT): move the partitions after the main partition to
+    /// the end of the disk, so that the free space is contiguous with the main
+    /// partition and it can be extended afterwards.
     pub optimize_layout: bool,
-    /// Agrandir automatiquement la partition principale NTFS pour qu'elle occupe
-    /// l'espace libre qui la suit sur la destination.
+    /// Automatically grow the main NTFS partition so that it fills the free space
+    /// following it on the destination.
     #[serde(default = "yes")]
     pub grow_main: bool,
 }
@@ -63,7 +63,7 @@ pub struct SourcePartition {
     pub fs: FsAnalysis,
 }
 
-/// Résultat de l'analyse d'un disque (source ou simple inspection).
+/// Result of analysing a disk (source or plain inspection).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskAnalysis {
     pub size: u64,
@@ -73,8 +73,8 @@ pub struct DiskAnalysis {
 }
 
 impl DiskAnalysis {
-    /// Octets utilisés connus, toutes partitions confondues (les partitions opaques
-    /// comptent pour leur taille entière).
+    /// Known used bytes, all partitions together (opaque partitions count for
+    /// their whole size).
     pub fn used_bytes_estimate(&self) -> u64 {
         self.parts
             .iter()
@@ -100,7 +100,7 @@ impl DiskAnalysis {
     }
 }
 
-/// Lit la table de partitions et analyse chaque système de fichiers. Lecture seule.
+/// Reads the partition table and analyses each file system. Read-only.
 pub fn analyze_disk(dev: &mut dyn BlockDevice) -> io::Result<DiskAnalysis> {
     let layout = read_layout(dev)?;
     let ss = layout.sector_size as u64;
@@ -120,11 +120,11 @@ pub fn analyze_disk(dev: &mut dyn BlockDevice) -> io::Result<DiskAnalysis> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CopyMethod {
-    /// Blocs utilisés uniquement.
+    /// Used blocks only.
     Smart,
-    /// Tous les secteurs.
+    /// Every sector.
     Raw,
-    /// Rien à copier (partition réservée sans contenu utile).
+    /// Nothing to copy (reserved partition without useful content).
     Skip,
 }
 
@@ -142,25 +142,25 @@ pub struct PlannedPartition {
     pub dst_start: u64,
     pub dst_len: u64,
     pub method: CopyMethod,
-    /// Octets effectivement copiés pour cette partition.
+    /// Bytes actually copied for this partition.
     pub copy_bytes: u64,
     pub moved: bool,
-    /// Explication lorsque la copie intelligente n'est pas utilisée.
+    /// Explanation when the smart copy is not used.
     pub method_reason: Option<String>,
 }
 
-/// Agrandissement prévu d'une partition NTFS (octets absolus sur la destination).
+/// Planned growth of an NTFS partition (absolute bytes on the destination).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrowPlan {
     pub number: u32,
     pub dst_start: u64,
-    /// Taille de la partition (et du volume) sur la source.
+    /// Size of the partition (and of the volume) on the source.
     pub old_len: u64,
-    /// Taille de la partition sur la destination.
+    /// Size of the partition on the destination.
     pub new_len: u64,
 }
 
-/// Plage à copier, en octets absolus.
+/// Range to copy, in absolute bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyTask {
     pub src: u64,
@@ -168,14 +168,14 @@ pub struct CopyTask {
     pub len: u64,
 }
 
-/// Table de partitions à installer sur la destination, une fois les données copiées.
+/// Partition table to install on the destination, once the data has been copied.
 #[derive(Debug, Clone, Default)]
 pub enum TablePlan {
-    /// GPT reconstruite (principale + secours) et MBR de protection.
+    /// Rebuilt GPT (primary + backup) and protective MBR.
     Gpt { spec: GptSpec, src_sector0: Option<Vec<u8>> },
-    /// Secteur 0 MBR repris de la source.
+    /// MBR sector 0 taken from the source.
     Mbr { sector0: Vec<u8> },
-    /// Rien à écrire (copie brute sans table GPT à replacer).
+    /// Nothing to write (raw copy with no GPT table to relocate).
     #[default]
     None,
 }
@@ -183,14 +183,14 @@ pub enum TablePlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayoutStrategy {
-    /// Mêmes positions que sur la source.
+    /// Same positions as on the source.
     Identical,
-    /// Partitions resserrées pour tenir sur une destination plus petite.
+    /// Partitions packed together to fit on a smaller destination.
     Compacted,
-    /// Partitions de fin déplacées en fin de disque ; espace libre contigu à la
-    /// partition principale.
+    /// Trailing partitions moved to the end of the disk; free space contiguous with the
+    /// main partition.
     TrailingMoved,
-    /// Copie brute du disque entier.
+    /// Raw copy of the whole disk.
     WholeDisk,
 }
 
@@ -204,16 +204,16 @@ pub struct ClonePlan {
     pub dst_size: u64,
     pub partitions: Vec<PlannedPartition>,
     pub total_copy_bytes: u64,
-    /// Espace non alloué laissé juste après la partition principale.
+    /// Unallocated space left right after the main partition.
     pub free_after_main: u64,
     pub main_partition: Option<u32>,
-    /// Partition NTFS agrandie après la copie, le cas échéant.
+    /// NTFS partition grown after the copy, if any.
     #[serde(default)]
     pub grow: Option<GrowPlan>,
     pub findings: Vec<Finding>,
     #[serde(skip)]
     pub tasks: Vec<CopyTask>,
-    /// Plages copiées en dernier (zones contenant la table en copie brute).
+    /// Ranges copied last (areas holding the table in a raw copy).
     #[serde(skip)]
     pub late_tasks: Vec<CopyTask>,
     #[serde(skip)]
@@ -226,8 +226,8 @@ impl ClonePlan {
     }
 }
 
-/// Les trous plus petits que ce seuil entre deux étendues utilisées sont copiés avec
-/// elles : moins de déplacements de tête, pour un surcoût négligeable.
+/// Gaps smaller than this threshold between two used extents are copied with
+/// them: fewer head movements, for a negligible extra cost.
 const MERGE_GAP: u64 = 128 * 1024;
 
 fn align_up(v: u64, a: u64) -> u64 {
@@ -256,8 +256,8 @@ fn merge_gaps(extents: &[Extent], sector: u64, limit: u64) -> Vec<Extent> {
     out
 }
 
-/// Pourquoi la partition principale ne peut pas être agrandie automatiquement (`None` :
-/// elle le peut).
+/// Why the main partition cannot be grown automatically (`None`:
+/// it can).
 fn grow_blocker(sp: &SourcePartition, opts: &PlanOptions) -> Option<String> {
     if !opts.grow_main {
         return Some(t!("l'agrandissement automatique est désactivé dans les options", "automatic growing is disabled in the options").into());
@@ -307,7 +307,7 @@ fn no_grow_finding(number: u32, free: u64, reason: &str) -> Finding {
     )
 }
 
-/// Partition « principale » : la plus grande partition de données NTFS ou BitLocker.
+/// "Main" partition: the largest NTFS or BitLocker data partition.
 fn main_partition(src: &DiskAnalysis) -> Option<&SourcePartition> {
     src.parts
         .iter()
@@ -359,7 +359,7 @@ fn describe_identical(src: &DiskAnalysis) -> Vec<PlannedPartition> {
         .collect()
 }
 
-/// Construit le plan de clonage. Ne lit ni n'écrit aucun disque.
+/// Builds the clone plan. Neither reads nor writes any disk.
 pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &PlanOptions) -> ClonePlan {
     let ss = src.sector_size as u64;
     let mut findings: Vec<Finding> = Vec::new();
@@ -382,7 +382,7 @@ pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &Pla
     let dst_size = align_down(dst_size, ss);
     let dst_sectors = dst_size / ss;
 
-    // Sans table reconnue, seule la copie du disque entier a un sens.
+    // Without a recognised table, only copying the whole disk makes sense.
     let mut mode = opts.mode;
     if src.layout.kind == TableKind::None && mode != CloneMode::RawDisk {
         mode = CloneMode::RawDisk;
@@ -401,7 +401,7 @@ pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &Pla
         return plan_raw_disk(src, dst_size, opts, findings);
     }
 
-    // Les incohérences de table interdisent le travail par partition.
+    // Table inconsistencies forbid working per partition.
     let layout_blockers: Vec<Finding> = src.layout.findings.iter().filter(|f| f.blocking).cloned().collect();
     if !layout_blockers.is_empty() {
         findings.extend(layout_blockers);
@@ -428,7 +428,7 @@ pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &Pla
     match src.layout.kind {
         TableKind::Gpt => plan_gpt(src, dst_size, dst_sectors, opts, mode, findings),
         TableKind::Mbr => plan_mbr(src, dst_size, dst_sectors, opts, mode, findings),
-        TableKind::None => unreachable!("traité plus haut"),
+        TableKind::None => unreachable!("handled above"),
     }
 }
 
@@ -453,9 +453,9 @@ fn plan_raw_disk(src: &DiskAnalysis, dst_size: u64, opts: &PlanOptions, mut find
     }
     let head = MIB.min(src.size);
 
-    // Si la table GPT doit être réajustée à la taille de la destination, ses secteurs
-    // (début et fin de disque) ne sont pas copiés depuis la source : ils sont écrits
-    // une seule fois, à la fin, par la reconstruction de la table.
+    // If the GPT table must be adjusted to the destination's size, its sectors
+    // (start and end of the disk) are not copied from the source: they are written
+    // once, at the end, when the table is rebuilt.
     let mut table_plan = TablePlan::None;
     let mut copy_start = 0u64;
     let mut copy_end = src.size;
@@ -493,8 +493,8 @@ fn plan_raw_disk(src: &DiskAnalysis, dst_size: u64, opts: &PlanOptions, mut find
     if copy_end > head {
         tasks.push(CopyTask { src: head, dst: head, len: copy_end - head });
     }
-    // Le début du disque (table de partitions) est copié en dernier : une copie
-    // interrompue ne laisse pas un disque d'apparence valide.
+    // The start of the disk (partition table) is copied last: an interrupted copy
+    // does not leave a disk that looks valid.
     let mut late_tasks = Vec::new();
     if head > copy_start {
         late_tasks.push(CopyTask { src: copy_start, dst: copy_start, len: head.min(copy_end) - copy_start });
@@ -545,7 +545,7 @@ fn gpt_entry_same(p: &Partition) -> Option<GptEntrySpec> {
     }
 }
 
-/// Constat « destination trop petite » avec une piste concrète.
+/// "Destination too small" finding with a concrete suggestion.
 fn too_small_finding(src: &DiskAnalysis, needed: u64, available: u64, movable: bool) -> Finding {
     let deficit = needed.saturating_sub(available);
     let mut detail = tf!(
@@ -625,7 +625,7 @@ fn partition_tasks(
 
 fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOptions, mode: CloneMode, mut findings: Vec<Finding>) -> ClonePlan {
     let ss = src.sector_size as u64;
-    let meta = src.layout.gpt.as_ref().expect("GPT sans métadonnées");
+    let meta = src.layout.gpt.as_ref().expect("GPT without metadata");
     let align = (MIB / ss).max(1);
     let Some((first_usable, last_usable, _)) = gpt::geometry(src.sector_size, dst_sectors, meta.num_entries, meta.entry_size) else {
         findings.push(
@@ -653,7 +653,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
         let trailing = &parts[mi + 1..];
         let mut next = trailing.first().map(|t| t.part.start_lba).unwrap_or(last_usable + 1);
         if opts.optimize_layout {
-            // Place les partitions de fin contre la fin du disque.
+            // Place the trailing partitions against the end of the disk.
             let mut cursor = last_usable + 1;
             let mut new_starts = Vec::new();
             let mut ok = true;
@@ -675,7 +675,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
             let old_gap =
                 trailing.first().map(|t| t.part.start_lba - m.part.end_lba()).unwrap_or(src.layout.disk_sectors.saturating_sub(m.part.end_lba()))
                     * ss;
-            // Ne déplace que si cela libère réellement de l'espace contigu (≥ 16 Mio).
+            // Only move if it really frees contiguous space (≥ 16 MiB).
             if ok && !trailing.is_empty() && gain >= old_gap + 16 * MIB {
                 for (i, s) in new_starts.iter().enumerate() {
                     starts[mi + 1 + i] = *s;
@@ -689,7 +689,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
             grow_end = Some(next);
         }
     } else if !fits_as_is {
-        // Resserre les partitions, dans l'ordre, alignées sur 1 Mio.
+        // Pack the partitions, in order, aligned on 1 MiB.
         strategy = LayoutStrategy::Compacted;
         let mut cursor = align_up(first_usable, align);
         for (i, p) in parts.iter().enumerate() {
@@ -704,7 +704,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
         }
     }
 
-    // Agrandissement de la partition principale jusqu'à la partition suivante.
+    // Grow the main partition up to the next partition.
     let mut grow: Option<GrowPlan> = None;
     let mut grow_reason: Option<String> = None;
     if let (Some(end), Some(m)) = (grow_end, main) {
@@ -850,9 +850,9 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
 
 fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOptions, mode: CloneMode, mut findings: Vec<Finding>) -> ClonePlan {
     let ss = src.sector_size as u64;
-    let meta = src.layout.mbr.as_ref().expect("MBR sans métadonnées");
-    // Sur MBR, le démarrage de Windows repose sur la position des partitions
-    // (signature de disque + décalage) : les positions sont conservées à l'identique.
+    let meta = src.layout.mbr.as_ref().expect("MBR without metadata");
+    // On MBR, Windows boot relies on the position of the partitions
+    // (disk signature + offset): positions are kept identical.
     let mut needed_end = src.layout.last_partition_end_lba();
     if let Some((start, sectors)) = meta.extended {
         needed_end = needed_end.max(start + sectors);
@@ -862,8 +862,8 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
         return blocked_plan(src, dst_size, opts, mode, findings);
     }
 
-    // Agrandissement : seulement si la partition principale est la dernière du disque
-    // (primaire, sans partition étendue après elle).
+    // Growth: only if the main partition is the last one on the disk
+    // (primary, with no extended partition after it).
     let align = (MIB / ss).max(1);
     let mut grow: Option<GrowPlan> = None;
     let mut grow_reason: Option<String> = None;
@@ -904,14 +904,14 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     let mut tasks = Vec::new();
     let mut total = 0u64;
 
-    // Piste d'amorçage : secteurs entre le MBR et la première partition (chargeurs).
+    // Boot track: sectors between the MBR and the first partition (boot loaders).
     let first_start = src.parts.iter().map(|p| p.part.start_lba).min().unwrap_or(1);
     let track_end = (first_start * ss).min(MIB).min(src.size);
     if track_end > ss {
         tasks.push(CopyTask { src: ss, dst: ss, len: track_end - ss });
         total += track_end - ss;
     }
-    // EBR des partitions logiques (mêmes positions).
+    // EBRs of the logical partitions (same positions).
     for lba in &meta.ebr_lbas {
         tasks.push(CopyTask { src: lba * ss, dst: lba * ss, len: ss });
         total += ss;
@@ -999,8 +999,8 @@ mod tests {
     fn merge_gaps_aligns_and_merges() {
         let e = vec![
             Extent { offset: 0, len: 4096 },
-            Extent { offset: 8192, len: 4096 },     // trou de 4 Kio → fusion
-            Extent { offset: 10 * MIB, len: 1000 }, // loin → séparé, arrondi au secteur
+            Extent { offset: 8192, len: 4096 },     // 4 KiB gap → merged
+            Extent { offset: 10 * MIB, len: 1000 }, // far → separate, rounded to the sector
             Extent { offset: 10 * MIB + 2000, len: 100 },
         ];
         let m = merge_gaps(&e, 512, 11 * MIB);

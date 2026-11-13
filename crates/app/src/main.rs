@@ -1,9 +1,11 @@
-//! Chud Clone — application graphique.
+//! Chud Clone — graphical application.
 //!
-//! Cette couche ne contient aucune logique de clonage : elle relaie les demandes de
-//! l'interface au moteur (`chud-clone-core`) et lui renvoie progression, journal et
-//! rapports. Toutes les vérifications de sécurité sont refaites par le moteur.
+//! This layer holds no cloning logic: it relays the interface's requests to the
+//! engine (`chud-clone-core`) and sends back progress, log and reports. Every safety
+//! check is done again by the engine.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod update;
 
 use chud_clone_core::boot::BootAssessment;
 use chud_clone_core::engine::{Control, Decision, EngineOptions, LogLevel, Observer, Progress, UnreadableInfo, UnreadablePolicy, VerifyMode};
@@ -18,14 +20,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Texte que l'utilisateur doit saisir pour confirmer l'effacement de la destination.
+/// Text the user must type to confirm erasing the destination.
 const CONFIRM_WORD: &str = "EFFACER";
 const CONFIRM_WORD_EN: &str = "ERASE";
 
 #[derive(Clone)]
 struct ImageEntry {
     path: PathBuf,
-    /// Taille demandée pour une image à créer.
+    /// Requested size for an image to be created.
     new_size: Option<u64>,
 }
 
@@ -37,11 +39,15 @@ struct RunningJob {
 struct Inner {
     images: Mutex<Vec<ImageEntry>>,
     job: Mutex<Option<RunningJob>>,
-    /// Scan de surface en cours (un seul à la fois, jamais pendant un clonage).
+    /// Surface scan in progress (one at a time, never during a clone).
     scan: Mutex<Option<Arc<Control>>>,
     data_dir: PathBuf,
     reports_dir: PathBuf,
     portable: bool,
+    /// Result of the last update check (with the package to download).
+    update: Mutex<Option<update::UpdateInfo>>,
+    /// An update is being downloaded or installed: no clone or scan may start.
+    updating: std::sync::atomic::AtomicBool,
 }
 
 type Shared = Arc<Inner>;
@@ -55,7 +61,7 @@ impl Inner {
         vec![self.data_dir.to_string_lossy().to_string(), self.reports_dir.to_string_lossy().to_string()]
     }
 
-    /// Résout un identifiant d'interface en cible du moteur.
+    /// Resolves an interface identifier into an engine target.
     fn target(&self, id: &str) -> Result<(Target, Option<u64>), String> {
         if let Some(n) = id.strip_prefix("disk:") {
             return n
@@ -83,7 +89,7 @@ struct EnvInfo {
     reports_dir: String,
     physical_write_validated: bool,
     confirm_word: &'static str,
-    /// Langue de Windows (« fr » ou « en ») : langue par défaut de l'interface.
+    /// Windows language ("fr" or "en"): default language of the interface.
     system_lang: &'static str,
 }
 
@@ -102,7 +108,7 @@ fn env_info(state: State<'_, Shared>) -> EnvInfo {
     }
 }
 
-/// Langue des messages du moteur (constats, raisons, rapports), choisie dans l'interface.
+/// Language of the engine's messages (findings, reasons, reports), chosen in the interface.
 #[tauri::command]
 fn set_language(lang: String) {
     chud_clone_core::i18n::set_lang(chud_clone_core::i18n::Lang::from_tag(&lang));
@@ -133,7 +139,7 @@ async fn list_disks(state: State<'_, Shared>) -> Result<Vec<DiskInfo>, String> {
             match job::describe(&Target::Image(e.path.clone()), true, &[], e.new_size) {
                 Ok(d) => disks.push(d),
                 Err(_) => {
-                    // Fichier disparu : on le retire de la liste.
+                    // File gone: remove it from the list.
                     s.images.lock().unwrap_or_else(|x| x.into_inner()).retain(|x| x.path != e.path);
                 }
             }
@@ -233,8 +239,8 @@ struct DiskHealth {
     trends: Vec<chud_clone_core::diag::Finding>,
 }
 
-/// Lit la santé d'un disque (lecture seule), l'ajoute à son historique et signale ce qui
-/// s'aggrave depuis les relevés précédents.
+/// Reads a disk's health (read-only), adds it to its history and flags what got
+/// worse since the previous readings.
 #[tauri::command]
 async fn disk_health(state: State<'_, Shared>, id: String) -> Result<DiskHealth, String> {
     let (target, size) = state.target(&id)?;
@@ -288,16 +294,16 @@ fn config(state: &Inner, p: &CloneParams) -> Result<JobConfig, String> {
     })
 }
 
-/// Analyse, plan et pré-vérifications. N'écrit rien.
+/// Analysis, plan and pre-checks. Writes nothing.
 #[tauri::command]
 async fn prepare_clone(state: State<'_, Shared>, params: CloneParams) -> Result<Preparation, String> {
     let mut cfg = config(&state, &params)?;
-    // La préparation décrit l'état courant : les empreintes ne servent qu'à l'exécution.
+    // Preparation describes the current state: fingerprints are only used for execution.
     cfg.expected_source_fingerprint = None;
     cfg.expected_destination_fingerprint = None;
     let dir = state.health_dir();
     let prep = blocking(move || job::prepare(&cfg, true)).await??;
-    // Chaque lecture de santé enrichit l'historique des disques concernés.
+    // Every health reading enriches the history of the disks involved.
     let now = chud_clone_core::health::now();
     for (disk, smart) in [(&prep.source, &prep.smart_source), (&prep.destination, &prep.smart_destination)] {
         if let Some(s) = smart {
@@ -336,7 +342,7 @@ impl Observer for UiObserver {
             if let Some(d) = guard.take() {
                 return d;
             }
-            // Une annulation pendant la question équivaut à « arrêter ».
+            // Cancelling during the question amounts to "stop".
             if self.ctl.is_cancelled() {
                 return Decision::Abort;
             }
@@ -352,11 +358,11 @@ struct DoneEvent {
     blocked: Vec<chud_clone_core::diag::Finding>,
 }
 
-/// Lance le clonage. OPÉRATION DESTRUCTRICE : exige le mot de confirmation saisi par
-/// l'utilisateur ; le moteur refait ensuite toutes les pré-vérifications.
+/// Starts the clone. DESTRUCTIVE OPERATION: requires the confirmation word typed by
+/// the user; the engine then redoes every pre-check.
 #[tauri::command]
 fn start_clone(app: AppHandle, state: State<'_, Shared>, params: CloneParams, confirmation: String) -> Result<(), String> {
-    // Mot de confirmation de la langue affichée (EFFACER en français, ERASE en anglais).
+    // Confirmation word of the displayed language (EFFACER in French, ERASE in English).
     if confirmation.trim() != CONFIRM_WORD && confirmation.trim() != CONFIRM_WORD_EN {
         return Err(chud_clone_core::tf!(
             "confirmation incorrecte : saisissez {CONFIRM_WORD} pour autoriser l'effacement de la destination",
@@ -371,6 +377,9 @@ fn start_clone(app: AppHandle, state: State<'_, Shared>, params: CloneParams, co
         .into());
     }
     let cfg = config(&state, &params)?;
+    if state.updating.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed").into());
+    }
     if state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         return Err(chud_clone_core::t!(
             "un scan de surface est en cours : arrêtez-le avant de lancer un clonage",
@@ -448,11 +457,14 @@ struct ScanDone {
     saved: Option<String>,
 }
 
-/// Lance un scan de surface en LECTURE SEULE. Le résultat est aussi enregistré en JSON dans
-/// le dossier de données (`analyses`).
+/// Starts a READ-ONLY surface scan. The result is also saved as JSON in the
+/// data folder (`analyses`).
 #[tauri::command]
 fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<(), String> {
     let (target, _) = state.target(&id)?;
+    if state.updating.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed").into());
+    }
     if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         return Err(chud_clone_core::t!(
             "un clonage est en cours : le scan attendra qu'il soit terminé",
@@ -580,8 +592,114 @@ fn relaunch_elevated(app: AppHandle, state: State<'_, Shared>) -> Result<(), Str
     }
 }
 
-/// Dossier de données : à côté de l'exécutable en mode portable (fichier
-/// `portable.flag` présent), sinon dans `%APPDATA%\ChudClone`.
+// ------------------------------------------------------------------ Updates
+
+/// Checks the latest published release. Read-only: nothing is downloaded here.
+#[tauri::command]
+async fn update_check(state: State<'_, Shared>) -> Result<update::UpdateInfo, String> {
+    let portable = state.portable;
+    let info = blocking(move || update::check(portable)).await??;
+    *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
+    Ok(info)
+}
+
+#[derive(Serialize, Clone)]
+struct UpdateProgress {
+    phase: &'static str,
+    done: u64,
+    total: u64,
+}
+
+/// Downloads, verifies and installs the update found by the last check. The
+/// application closes (and restarts) once the new version is in place.
+#[tauri::command]
+fn update_install(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let info = state.update.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(info) = info.filter(|i| i.available && i.method != update::Method::Manual) else {
+        return Err(chud_clone_core::t!("aucune mise à jour installable", "no installable update").into());
+    };
+    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() || state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return Err(chud_clone_core::t!(
+            "une opération est en cours : la mise à jour attendra qu'elle soit terminée",
+            "an operation is running: the update will wait until it has finished"
+        )
+        .into());
+    }
+    if state.updating.swap(true, Ordering::SeqCst) {
+        return Err(chud_clone_core::t!("une mise à jour est déjà en cours", "an update is already in progress").into());
+    }
+    let shared = state.inner().clone();
+    std::thread::Builder::new()
+        .name("update".into())
+        .spawn(move || {
+            let progress = |phase, done, total| {
+                let _ = app.emit("update-progress", UpdateProgress { phase, done, total });
+            };
+            let result = update::download(&info, &progress).and_then(|path| {
+                let _ = app.emit("update-progress", UpdateProgress { phase: "install", done: 0, total: 0 });
+                apply_update(&info, &path)
+            });
+            match result {
+                Ok(()) => app.exit(0),
+                Err(e) => {
+                    shared.updating.store(false, Ordering::SeqCst);
+                    let _ = app.emit("update-failed", e);
+                }
+            }
+        })
+        .map_err(|e| {
+            state.updating.store(false, Ordering::SeqCst);
+            e.to_string()
+        })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn apply_update(info: &update::UpdateInfo, package: &std::path::Path) -> Result<(), String> {
+    match info.method {
+        update::Method::Installer => update::run_installer(package),
+        update::Method::Portable => {
+            let exe = update::apply_portable(package)?;
+            std::process::Command::new(exe).spawn().map(|_| ()).map_err(|e| {
+                chud_clone_core::tf!(
+                    "nouvelle version installée, mais son lancement a échoué : {e}",
+                    "new version installed, but it could not be started: {e}"
+                )
+            })
+        }
+        update::Method::Manual => Err(chud_clone_core::t!("aucune mise à jour installable", "no installable update").into()),
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_update(_: &update::UpdateInfo, _: &std::path::Path) -> Result<(), String> {
+    Err(chud_clone_core::t!("non pris en charge sur cette plateforme", "not supported on this platform").into())
+}
+
+/// Opens the release page of the last check (or the releases list) in the browser.
+#[tauri::command]
+fn open_release_page(state: State<'_, Shared>) -> Result<(), String> {
+    let url = state
+        .update
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|i| i.safe_page_url())
+        .unwrap_or_else(|| format!("https://github.com/{}/releases", update::REPOSITORY));
+    #[cfg(windows)]
+    {
+        update::shell_open(url, None)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        Err(chud_clone_core::t!("non pris en charge sur cette plateforme", "not supported on this platform").into())
+    }
+}
+
+/// Data folder: next to the executable in portable mode (`portable.flag` file
+/// present), otherwise in `%APPDATA%\ChudClone`.
 fn data_location() -> (PathBuf, bool) {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     if let Some(dir) = &exe_dir
@@ -598,16 +716,27 @@ fn data_location() -> (PathBuf, bool) {
 
 fn main() {
     let (data_dir, portable) = data_location();
-    // « rapports » pour les données créées par les premières versions, sinon « reports ».
+    // "rapports" for data created by the first versions, otherwise "reports".
     let reports_dir = if data_dir.join("rapports").is_dir() { data_dir.join("rapports") } else { data_dir.join("reports") };
     chud_clone_core::i18n::set_lang(chud_clone_core::i18n::system_lang());
     let _ = std::fs::create_dir_all(&reports_dir);
-    // Le profil du moteur web suit le dossier de données (important en mode portable).
-    // SAFETY: appelé avant la création de tout autre thread.
+    // The web engine's profile follows the data folder (important in portable mode).
+    // SAFETY: called before any other thread is created.
     unsafe { std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", data_dir.join("webview")) };
 
-    let shared: Shared =
-        Arc::new(Inner { images: Mutex::new(Vec::new()), job: Mutex::new(None), scan: Mutex::new(None), data_dir, reports_dir, portable });
+    // Leftovers of a previous update (downloaded package, replaced executables).
+    update::cleanup(portable);
+
+    let shared: Shared = Arc::new(Inner {
+        images: Mutex::new(Vec::new()),
+        job: Mutex::new(None),
+        scan: Mutex::new(None),
+        data_dir,
+        reports_dir,
+        portable,
+        update: Mutex::new(None),
+        updating: std::sync::atomic::AtomicBool::new(false),
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -632,11 +761,14 @@ fn main() {
             list_reports,
             get_report,
             export_report,
-            relaunch_elevated
+            relaunch_elevated,
+            update_check,
+            update_install,
+            open_release_page
         ])
         .on_window_event(|window, event| {
-            // Fermer la fenêtre pendant un clonage laisserait la destination incomplète :
-            // l'interface demande confirmation avant.
+            // Closing the window during a clone would leave the destination incomplete:
+            // the interface asks for confirmation first.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Shared>();
                 if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
@@ -646,5 +778,5 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("erreur au démarrage de Chud Clone");
+        .expect("failed to start Chud Clone");
 }

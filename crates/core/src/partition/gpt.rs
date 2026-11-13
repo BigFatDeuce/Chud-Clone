@@ -1,5 +1,5 @@
-//! Table de partitions GUID (GPT) : lecture avec contrôle des CRC et de l'en-tête de
-//! secours, et construction d'une table neuve pour la destination.
+//! GUID partition table (GPT): reading with checks of the CRCs and of the backup
+//! header, and building a new table for the destination.
 
 use super::{GptMeta, PartInfo, Partition, le32, le64};
 use crate::device::{BlockDevice, read_vec};
@@ -10,7 +10,7 @@ use std::io;
 const SIGNATURE: &[u8; 8] = b"EFI PART";
 const HEADER_SIZE: u32 = 92;
 const REVISION_1_0: u32 = 0x0001_0000;
-/// Garde-fou : un tableau d'entrées de plus de 16 Mio est tenu pour corrompu.
+/// Safeguard: an entry array larger than 16 MiB is considered corrupt.
 const MAX_ENTRIES_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,8 +150,8 @@ pub fn read_gpt(dev: &mut dyn BlockDevice) -> io::Result<GptRead> {
     let last = disk_sectors - 1;
     let mut findings = Vec::new();
 
-    // Une erreur de lecture sur l'en-tête principal ne doit pas empêcher d'essayer
-    // l'en-tête de secours : c'est précisément son rôle.
+    // A read error on the primary header must not prevent trying the backup
+    // header: that is precisely its role.
     let (seen_p, primary) = match try_read(dev, 1) {
         Ok(r) => r,
         Err(e) => (true, Err(tf!("secteur illisible ({e})", "unreadable sector ({e})"))),
@@ -331,25 +331,25 @@ pub struct GptSpec {
     pub entries: Vec<GptEntrySpec>,
 }
 
-/// Secteurs à écrire pour installer une GPT complète.
+/// Sectors to write to install a complete GPT.
 #[derive(Debug, Clone)]
 pub struct GptImage {
-    /// En-tête principal (LBA 1) suivi du tableau d'entrées.
+    /// Primary header (LBA 1) followed by the entry array.
     pub primary: Vec<u8>,
     pub primary_lba: u64,
-    /// Tableau d'entrées de secours suivi de l'en-tête de secours (dernier LBA).
+    /// Backup entry array followed by the backup header (last LBA).
     pub backup: Vec<u8>,
     pub backup_lba: u64,
     pub first_usable_lba: u64,
     pub last_usable_lba: u64,
 }
 
-/// (premier LBA utilisable, dernier LBA utilisable, secteurs du tableau d'entrées).
+/// (first usable LBA, last usable LBA, sectors of the entry array).
 pub fn geometry(sector_size: u32, disk_sectors: u64, num_entries: u32, entry_size: u32) -> Option<(u64, u64, u64)> {
     let ss = sector_size as u64;
     let entries_sectors = (num_entries as u64 * entry_size as u64).div_ceil(ss);
     let first_usable = 2 + entries_sectors;
-    // Fin de disque : [tableau de secours][en-tête de secours].
+    // End of disk: [backup array][backup header].
     let last_usable = disk_sectors.checked_sub(entries_sectors + 2)?;
     if last_usable < first_usable {
         return None;
@@ -521,13 +521,13 @@ mod tests {
 
     #[test]
     fn independent_parser_agrees() {
-        // Contrôle croisé avec une implémentation indépendante (crate gptman).
+        // Cross-check with an independent implementation (gptman crate).
         let spec = sample_spec(512, 65536);
         let img = build_gpt(&spec).unwrap();
         let mut dev = MemDevice::new(32 << 20, 512);
         install(&mut dev, &img);
         let mut cur = std::io::Cursor::new(dev.data.clone());
-        let g = gptman::GPT::read_from(&mut cur, 512).expect("gptman doit accepter notre table");
+        let g = gptman::GPT::read_from(&mut cur, 512).expect("gptman must accept our table");
         assert_eq!(g.header.disk_guid, spec.disk_guid.0);
         assert_eq!(g[1].starting_lba, 2048);
         assert_eq!(g[1].ending_lba, 4095);
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(g[4].unique_partition_guid, spec.entries[1].unique_guid.0);
         assert_eq!(g.header.first_usable_lba, img.first_usable_lba);
         assert_eq!(g.header.last_usable_lba, img.last_usable_lba);
-        // Et l'en-tête de secours seul doit suffire à gptman.
+        // And the backup header alone must be enough for gptman.
         let mut broken = dev.data.clone();
         broken[512..1024].fill(0);
         let mut cur = std::io::Cursor::new(broken);
@@ -549,7 +549,7 @@ mod tests {
         let img = build_gpt(&spec).unwrap();
         let mut dev = MemDevice::new(32 << 20, 512);
         install(&mut dev, &img);
-        dev.data[512 + 60] ^= 0xFF; // dans le GUID de disque → CRC faux
+        dev.data[512 + 60] ^= 0xFF; // in the disk GUID → wrong CRC
         let r = read_gpt(&mut dev).unwrap();
         assert!(r.valid);
         assert!(r.findings.iter().any(|f| f.code == "GPT_PRIMARY_CORRUPT"));
@@ -563,13 +563,13 @@ mod tests {
         let img = build_gpt(&spec).unwrap();
         let mut dev = MemDevice::new(32 << 20, 512);
         install(&mut dev, &img);
-        // Altère le tableau de secours.
+        // Corrupt the backup array.
         let o = img.backup_lba as usize * 512 + 40;
         dev.data[o] ^= 1;
         let r = read_gpt(&mut dev).unwrap();
         assert!(r.valid);
         assert!(r.findings.iter().any(|f| f.code == "GPT_BACKUP_INVALID"));
-        // Altère aussi le tableau principal : plus rien de fiable.
+        // Corrupt the primary array too: nothing reliable left.
         dev.data[2 * 512 + 40] ^= 1;
         let r = read_gpt(&mut dev).unwrap();
         assert!(!r.valid);

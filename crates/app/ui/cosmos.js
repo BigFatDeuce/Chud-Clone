@@ -1,5 +1,5 @@
-// Univers visuel de Chud Clone : ciel étoilé, astres (un par disque) et faisceau de transfert.
-// Tout est dessiné localement (canvas 2D et SVG) : aucune ressource externe.
+// Chud Clone's visual universe: starry sky, celestial bodies (one per disk) and transfer beam.
+// Everything is drawn locally (2D canvas and SVG): no external resource.
 "use strict";
 
 (function () {
@@ -72,7 +72,7 @@
     sky.raf = requestAnimationFrame(skyLoop);
     const t = now / 1000;
     const dt = Math.min(0.1, t - sky.last);
-    if (dt < 1 / 32) return; // ~30 images/s suffisent à un fond
+    if (dt < 1 / 32) return; // ~30 frames/s is enough for a background
     sky.last = t;
     sky.nextShoot -= dt;
     if (sky.nextShoot <= 0 && !sky.shoot) {
@@ -114,7 +114,7 @@
   // ---------------------------------------------------------------- Astres
   let uid = 0;
 
-  /** Type d'astre selon la nature du disque. */
+  /** Kind of celestial body according to the disk type. */
   function bodyKind(d) {
     if (d.kind === "image" || d.media === "virtual" || d.media === "image") return "holo";
     if (d.bus === "USB" || d.removable) return "moon";
@@ -124,7 +124,7 @@
     return "rock";
   }
 
-  /** Dessine l'astre d'un disque. La teinte dérive de son identité : un même disque garde son astre. */
+  /** Draws a disk's celestial body. The hue derives from its identity: a disk keeps its body. */
   function planet(d, opts) {
     opts = opts || {};
     const h = hash(d.fingerprint || d.id || d.model || "x");
@@ -143,27 +143,27 @@
     const sphere = `<circle cx="50" cy="50" r="32" fill="url(#${id}g)"/>`;
     const shade = `<circle cx="50" cy="50" r="32" fill="url(#${id}s)"/>`;
     if (kind === "ringed") {
-      // Géante gazeuse à anneau : le disque dur et ses plateaux.
+      // Ringed gas giant: the hard disk and its platters.
       const bands = [0, 1, 2, 3, 4].map((i) => `<rect x="14" y="${24 + i * 11 + (h >> i) % 4}" width="72" height="${3 + ((h >> (i + 3)) % 4)}" fill="#fff" opacity="${0.07 + ((h >> (i * 2)) % 5) * 0.03}"/>`).join("");
       body = `${halo}<g transform="rotate(-18 50 50)"><ellipse cx="50" cy="50" rx="47" ry="11" fill="none" stroke="${light}" stroke-opacity=".28" stroke-width="5"/></g>
         ${sphere}<g clip-path="url(#${id}c)">${bands}</g>${shade}
         <g transform="rotate(-18 50 50)"><path d="M3 50a47 11 0 0 0 94 0" fill="none" stroke="${light}" stroke-opacity=".75" stroke-width="2.4"/><path d="M8 50a42 8 0 0 0 84 0" fill="none" stroke="${light}" stroke-opacity=".3" stroke-width="1.6"/></g>`;
     } else if (kind === "crystal") {
-      // Monde lisse et lumineux : le SSD, sans pièce mobile.
+      // Smooth, bright world: the SSD, no moving parts.
       body = `${halo}${sphere}<g clip-path="url(#${id}c)" opacity=".5"><path d="M22 60 50 18 78 58 50 84z" fill="#fff" opacity=".07"/><path d="M50 18 62 52 50 84 36 50z" fill="#fff" opacity=".09"/></g>${shade}
         <ellipse cx="40" cy="36" rx="9" ry="5" fill="#fff" opacity=".35" transform="rotate(-28 40 36)"/>`;
     } else if (kind === "star") {
-      // Étoile : le NVMe, le plus rapide.
+      // Star: NVMe, the fastest.
       body = `<circle cx="50" cy="50" r="48" fill="url(#${id}h)"/><circle class="spin" cx="50" cy="50" r="40" fill="none" stroke="${light}" stroke-opacity=".5" stroke-width="1.2" stroke-dasharray="2 9"/>
         <circle class="spin" style="animation-direction:reverse;animation-duration:38s" cx="50" cy="50" r="44.5" fill="none" stroke="${glow}" stroke-opacity=".35" stroke-width=".9" stroke-dasharray="1 14"/>
         <circle cx="50" cy="50" r="27" fill="url(#${id}g)"/><circle cx="50" cy="50" r="16" fill="#fff" opacity=".55"/><circle cx="50" cy="50" r="27" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width=".8"/>`;
     } else if (kind === "moon") {
-      // Lune : le disque externe, de passage.
+      // Moon: the external disk, passing through.
       body = `<circle cx="50" cy="50" r="42" fill="url(#${id}h)" opacity=".6"/><circle cx="50" cy="50" r="29" fill="hsl(${hue} 14% 62%)"/><circle cx="50" cy="50" r="29" fill="url(#${id}g)" opacity=".28"/>
         <g fill="#0a0d20" opacity=".28"><circle cx="40" cy="42" r="6"/><circle cx="60" cy="58" r="4.5"/><circle cx="56" cy="36" r="2.8"/><circle cx="42" cy="62" r="2.2"/></g>
         <circle cx="50" cy="50" r="29" fill="url(#${id}s)"/>`;
     } else if (kind === "holo") {
-      // Hologramme : le fichier image, un disque sans matière.
+      // Hologram: the image file, a disk without matter.
       body = `<circle cx="50" cy="50" r="46" fill="url(#${id}h)" opacity=".7"/><g fill="none" stroke="${light}" stroke-width="1.1">
         <circle cx="50" cy="50" r="32" stroke-opacity=".9"/><ellipse cx="50" cy="50" rx="32" ry="11" stroke-opacity=".55"/><ellipse cx="50" cy="50" rx="32" ry="22" stroke-opacity=".35"/>
         <g class="spin" style="animation-duration:24s"><ellipse cx="50" cy="50" rx="12" ry="32" stroke-opacity=".6" stroke-dasharray="3 3"/><ellipse cx="50" cy="50" rx="24" ry="32" stroke-opacity=".35" stroke-dasharray="3 3"/></g></g>
@@ -174,8 +174,8 @@
     return `<svg viewBox="0 0 100 100" aria-hidden="true"><defs>${defs}</defs>${body}</svg>`;
   }
 
-  // -------------------------------------------------------------- Faisceau
-  /** Flux de particules entre l'astre source et l'astre de destination. */
+  // ---------------------------------------------------------------------- Beam
+  /** Particle stream between the source body and the destination body. */
   class Beam {
     constructor(canvas) {
       this.c = canvas;
@@ -211,7 +211,7 @@
       this.a = { x: this.w * 0.07 + 75, y: cy };
       this.b = { x: this.w * 0.93 - 75, y: cy };
     }
-    /** Point de la trajectoire (deux arcs passant au-dessus et au-dessous de l'anneau central). */
+    /** Point on the path (two arcs passing above and below the central ring). */
     point(t, lane) {
       const a = this.a, b = this.b;
       const mx = (a.x + b.x) / 2, bend = 118 * lane;
@@ -241,7 +241,7 @@
       ctx.clearRect(0, 0, this.w, this.h);
       const still = document.documentElement.classList.contains("no-motion");
 
-      // Débit de particules selon la phase.
+      // Particle rate according to the phase.
       let rate = 0, back = false;
       if (mode === "copy") rate = 26 + 150 * this.intensity;
       else if (mode === "recover") rate = 10;
@@ -300,7 +300,7 @@
       }
       this.parts = keep;
 
-      // Ondes sur la destination (écriture de la table, fin de l'opération).
+      // Waves on the destination (table writing, end of the operation).
       const rk = [];
       for (const r of this.rings) {
         r.r += 60 * dt;
@@ -316,7 +316,7 @@
       }
       this.rings = rk;
 
-      // Balayage de la destination pendant la vérification.
+      // Sweep over the destination during verification.
       if ((mode === "verify" || mode === "check") && !still) {
         const ang = t * 2.4;
         ctx.strokeStyle = "rgba(160,240,255,.85)";
@@ -329,7 +329,7 @@
         ctx.arc(this.b.x, this.b.y, 73, -ang * 0.7, -ang * 0.7 + 0.8);
         ctx.stroke();
       }
-      // Pulsation de la source pendant la relecture des zones difficiles.
+      // Pulse of the source while re-reading difficult areas.
       if (mode === "recover" && !still) {
         const k = (t * 1.4) % 1;
         ctx.strokeStyle = `rgba(255,197,107,${1 - k})`;
