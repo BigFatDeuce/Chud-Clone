@@ -7,7 +7,7 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..", "crates", "app");
 const port = Number(process.argv[2]) || 5178;
-const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
+const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".mp3": "audio/mpeg" };
 
 http
   .createServer((req, res) => {

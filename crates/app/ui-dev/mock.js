@@ -251,8 +251,9 @@
     if (o.grow && o.grow.done) o.reasons = o.reasons.concat([T(`La partition ${o.grow.number} a été agrandie de ${GB(o.grow.summary.old_size)} à ${GB(o.grow.summary.new_size)} ; Windows vérifiera ce volume (chkdsk) une fois, au premier démarrage du clone.`, `Partition ${o.grow.number} was grown from ${GB(o.grow.summary.old_size)} to ${GB(o.grow.summary.new_size)}; Windows will check this volume (chkdsk) once, on the clone's first boot.`)]);
     rep.log =job.log.concat([{ t_ms: o.duration_ms, time: now(), level: o.status === "success_verified" ? "info" : "warning", message: T("Résultat : ", "Result: ") + (MLANG === "en" ? { success_verified: "Clone succeeded and verified", completed_with_warnings: "Clone completed with warnings", incomplete: "Clone incomplete", failed: "Clone failed" } : { success_verified: "Clonage réussi et vérifié", completed_with_warnings: "Clonage terminé avec avertissements", incomplete: "Clonage incomplet", failed: "Clonage échoué" })[o.status] }]);
     reports.unshift(rep);
-    const j = job; job = null;
-    emit("clone-done", { report: rep, error: null, blocked: null });
+    const j = job, j0 = job; job = null;
+    const ej = j0.params.eject && ["success_verified", "completed_with_warnings"].includes(o.status) && j0.params.destination_id.startsWith("disk:");
+    emit("clone-done", { report: rep, error: null, blocked: null, ejected: ej ? true : null, eject_error: null });
     return j;
   }
 
@@ -273,7 +274,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.4.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.5.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },
@@ -325,6 +326,25 @@
       job = { params, prep, t0: Date.now(), log: [], err: { read: 0, bad: 0, rec: 0, write: 0 }, cancel: false };
       setTimeout(runJob, 50);
     },
+    shutdown_pc: async () => { throw T("Banc d'essai : extinction simulée.", "Test bench: simulated shutdown."); },
+    format_check: async ({ id, request }) => {
+      await wait(300);
+      const d = disks.find((x) => x.id === id);
+      const max = { ntfs: 32, exfat: 15, fat32: 11 }[request.fs];
+      const refusals = [];
+      if (d.kind !== "physical") refusals.push(T("seuls les disques peuvent être formatés (pas les fichiers image)", "only disks can be formatted (not image files)"));
+      if (d.is_system) refusals.push(T("ce disque porte le Windows en cours d'exécution", "this disk holds the running Windows"));
+      if (request.label.length > max) refusals.push(T(`nom trop long pour ${request.fs} : ${max} caractères au plus`, `name too long for ${request.fs}: ${max} characters at most`));
+      if (request.fs === "fat32" && /[^ -~]/.test(request.label)) refusals.push(T("caractère interdit dans un nom FAT32", "character not allowed in a FAT32 name"));
+      return { disk: d, label: request.fs === "fat32" ? request.label.toUpperCase() : request.label, refusals, own_fat32: request.fs === "fat32" && d.size > 32 * GiB };
+    },
+    format_disk: async ({ id, request, confirmation }) => {
+      if (!["EFFACER", "ERASE"].includes(confirmation)) throw T("Confirmation incorrecte.", "Wrong confirmation.");
+      const d = disks.find((x) => x.id === id);
+      for (const st of [T(`Effacement du disque ${d.number} et nouvelle table ${request.table.toUpperCase()}`, `Erasing disk ${d.number} and creating a new ${request.table.toUpperCase()} table`), T(`Formatage ${request.fs.toUpperCase()} par Windows`, `${request.fs.toUpperCase()} formatting by Windows`)]) { emit("format-step", st); await wait(900); }
+      emit("format-step", T("Volume prêt : F:\\", "Volume ready: F:\\"));
+      return { fs: request.fs, table: request.table, label: request.fs === "fat32" ? request.label.toUpperCase() : request.label, partition_size: d.size - 2 * MiB, mount: "F:\\", steps: [] };
+    },
     start_scan: async ({ id }) => {
       const d = disks.find((x) => x.id === id);
       const n = Math.min(2400, Math.ceil(d.size / MiB)), cells = new Array(n).fill(255);
@@ -373,7 +393,7 @@
     update_check: async () => {
       await wait(400);
       const avail = Q.has("update");
-      return { current: "0.4.0", latest: avail ? "0.4.1" : "0.4.0", available: avail, title: avail ? "Chud Clone 0.4.1" : "Chud Clone 0.4.0", notes: T("Nouveautés :\n- Recherche de mises à jour et mise à jour depuis le logiciel.", "What's new:\n- Update check and in-app update."), published: "2026-11-13T12:00:00Z", page_url: "https://github.com/example/releases/tag/v0.4.1", method: "portable", download_size: 6.1e6 };
+      return { current: "0.5.0", latest: avail ? "0.5.1" : "0.5.0", available: avail, title: avail ? "Chud Clone 0.5.1" : "Chud Clone 0.5.0", notes: T("Nouveautés :\n- Recherche de mises à jour et mise à jour depuis le logiciel.", "What's new:\n- Update check and in-app update."), published: "2026-11-13T12:00:00Z", page_url: "https://github.com/example/releases/tag/v0.5.1", method: "portable", download_size: 6.1e6 };
     },
     update_install: async () => {
       const total = 6.1e6;

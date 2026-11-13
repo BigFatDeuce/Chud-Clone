@@ -4,6 +4,7 @@
 //! This layer is deliberately thin: it translates Win32 calls into
 //! `BlockDevice` and `DiskInfo`.
 
+pub mod eject;
 pub mod enumerate;
 pub mod rawdisk;
 pub mod smart_io;

@@ -47,6 +47,14 @@ repository's GitHub releases.
 - **Disk health**: SMART for ATA, SAT (USB) and NVMe, a history kept at every reading, and alerts
   when something gets worse (pending or reallocated sectors, temperature, wear…).
 - **Read-only surface scan** with a "star map" of the disk, unreadable sectors and slow areas.
+- **Several clones in a row**: pick several destinations for the same source, confirm once, and
+  they are cloned one after another (a failure does not stop the next ones). Optionally eject
+  each destination and shut the computer down at the end (60-second countdown, cancellable).
+  A sound tells success from failure.
+- **Whole-disk formatting**: new GPT or MBR table, one NTFS, exFAT or FAT32 partition with the
+  name you choose, after the same typed confirmation. FAT32 works beyond Windows' 32 GB limit.
+  Also on the WinPE key (`M`).
+- The computer does not go to sleep while a clone, a scan or a format runs.
 - **WinPE rescue ISO** (bootable from Ventoy or a USB key), with a full-screen keyboard interface,
   to clone the disk Windows itself runs
   from, with the computer booted on the key.
@@ -75,10 +83,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.4.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.4.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.4.0.txt` | Checksums of the files above. |
-| `ChudClone-0.4.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.5.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.5.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.5.0.txt` | Checksums of the files above. |
+| `ChudClone-0.5.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -162,6 +170,7 @@ chud-clone-cli plan <source> <destination> [options]
 chud-clone-cli clone <source> <destination> --confirm-erase [options]
 chud-clone-cli report <report.json> (--txt | --html) [--out <file>]
 chud-clone-cli tui [--reports <folder>] [--image <file>]... [--only-virtual]
+chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr] [--label <name>] --confirm-erase
 ```
 
 `tui` opens a full-screen keyboard interface in the console, with the same steps as the
@@ -185,7 +194,8 @@ Each release since 0.3.0 has a ready-made image, `ChudClone-<version>-winpe.iso`
 
 The key opens a **full-screen interface** driven with the keyboard (arrows, Enter, Esc): pick
 the source, then the destination, check the options and the review, type `ERASE` (`EFFACER`),
-and follow the progress. It also reads SMART health, analyses a disk and runs the surface scan.
+and follow the progress. It also reads SMART health, analyses a disk, runs the surface scan
+and formats a disk (`M`).
 `L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
 or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
 
@@ -200,7 +210,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 109 tests
+cargo test --workspace                                         # 113 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -221,6 +231,7 @@ crates/core   the engine (library), independent of any interface
   smart.rs      SMART ATA, SAT (USB), NVMe health log
   health.rs     SMART history per disk and degradation trends
   scan.rs       read-only surface scan
+  format.rs     whole-disk formatting (diskpart, and its own FAT32 beyond 32 GB)
   report.rs     log, JSON / TXT / HTML reports
   i18n.rs       English / French messages
   job.rs        preparation and execution; everything is re-checked right before writing
@@ -234,7 +245,7 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 
 ## Tests
 
-- `crates/core`: 64 unit tests and 38 integration tests on **real disk images**
+- `crates/core`: 68 unit tests and 38 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
@@ -243,7 +254,7 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
   growth, write failure during growth), surface scan, and a complete job in English.
 - `crates/cli`: 2 tests that drive the full-screen interface with keys on image files: a complete
   clone (choice of a new image as destination, wrong then right confirmation word, verified
-  result, reports written), analysis, SMART, surface scan, language switch, quit menu, and every
+  result, reports written), analysis, SMART, surface scan, formatting refused on an image, language switch, quit menu, and every
   screen rendered at 60 x 18, 80 x 25 and 140 x 45.
 - `crates/app`: 5 unit tests for the updater (version comparison, release parsing, checksum
   lookup, refusal of releases without checksums or with a foreign page), plus a network test run

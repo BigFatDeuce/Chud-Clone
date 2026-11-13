@@ -3,6 +3,7 @@
 //! Slow work (disk enumeration, analysis, SMART, clone, surface scan) runs on worker
 //! threads that report through a channel; the interface thread only draws and reacts.
 
+use chud_clone_core::format::{FormatOutcome, FormatRequest, FsChoice, TableChoice};
 use chud_clone_core::engine::{Control, Decision, EngineOptions, LogLevel, Observer, Progress, UnreadableInfo, UnreadablePolicy, VerifyMode};
 use chud_clone_core::i18n::{Lang, lang, set_lang};
 use chud_clone_core::job::{self, JobConfig, JobError, Preparation, Target};
@@ -64,6 +65,7 @@ pub enum Screen {
     Running,
     Result,
     Scan,
+    Format,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +136,19 @@ pub struct ScanState {
     pub cancel_requested: bool,
 }
 
+/// Whole-disk formatting screen. Rows: 0 file system, 1 table, 2 name, 3 confirmation.
+pub struct FormatState {
+    pub idx: usize,
+    pub fs: FsChoice,
+    pub table: TableChoice,
+    pub label: String,
+    pub row: usize,
+    pub confirm: String,
+    pub running: bool,
+    pub steps: Vec<String>,
+    pub result: Option<Result<FormatOutcome, String>>,
+}
+
 pub enum Msg {
     Disks(Vec<Entry>, Vec<String>),
     Text(Result<Vec<Line<'static>>, String>),
@@ -145,6 +160,8 @@ pub enum Msg {
     Finished(Box<Result<Report, String>>),
     ScanProgress(ScanProgress),
     ScanDone(Box<Result<ScanResult, String>>),
+    FormatStep(String),
+    Formatted(Box<Result<FormatOutcome, String>>),
 }
 
 pub struct App {
@@ -172,6 +189,7 @@ pub struct App {
     pub report: Option<Box<Report>>,
     pub run_error: Option<String>,
     pub scan: Option<ScanState>,
+    pub fmt: Option<FormatState>,
     /// Status line message (warning or information).
     pub notice: Option<String>,
     pub app_paths: Vec<String>,
@@ -217,6 +235,7 @@ impl App {
             report: None,
             run_error: None,
             scan: None,
+            fmt: None,
             notice: None,
             app_paths,
             tx,
@@ -378,6 +397,18 @@ impl App {
                     s.progress = Some(p);
                 }
             }
+            Msg::FormatStep(s) => {
+                if let Some(f) = &mut self.fmt {
+                    f.steps.push(s);
+                }
+            }
+            Msg::Formatted(res) => {
+                if let Some(f) = &mut self.fmt {
+                    f.running = false;
+                    f.confirm.clear();
+                    f.result = Some(*res);
+                }
+            }
             Msg::ScanDone(res) => {
                 if let Some(s) = &mut self.scan {
                     match *res {
@@ -447,6 +478,7 @@ impl App {
                 KeyCode::Esc | KeyCode::Enter => self.back_home(true),
                 _ => self.scroll_key(key.code),
             },
+            Screen::Format => self.format_key(key),
             Screen::Scan => {
                 let done = self.scan.as_ref().is_some_and(|s| s.result.is_some() || s.error.is_some());
                 if done {
@@ -466,6 +498,7 @@ impl App {
         self.prep = None;
         self.run = None;
         self.scan = None;
+        self.fmt = None;
         self.confirm.clear();
         self.scroll = 0;
         if refresh {
@@ -528,6 +561,20 @@ impl App {
                 'l' => self.toggle_lang(),
                 'f' => self.ask_image(InputPurpose::SourceImage),
                 'h' if n > 0 => self.show_smart(self.home_sel),
+                'm' if n > 0 => {
+                    self.fmt = Some(FormatState {
+                        idx: self.home_sel,
+                        fs: FsChoice::Ntfs,
+                        table: TableChoice::Gpt,
+                        label: String::new(),
+                        row: 0,
+                        confirm: String::new(),
+                        running: false,
+                        steps: Vec::new(),
+                        result: None,
+                    });
+                    self.screen = Screen::Format;
+                }
                 'd' if n > 0 => self.show_inspect(self.home_sel),
                 't' if n > 0 => {
                     let title = self.entries[self.home_sel].info.title();
@@ -547,6 +594,102 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    pub fn format_request(&self) -> Option<FormatRequest> {
+        self.fmt.as_ref().map(|f| FormatRequest { fs: f.fs, table: f.table, label: f.label.clone() })
+    }
+
+    /// Why the chosen disk cannot be formatted this way (empty: allowed).
+    pub fn format_refusals(&self) -> Vec<String> {
+        let (Some(f), Some(req)) = (self.fmt.as_ref(), self.format_request()) else { return vec![] };
+        match self.entries.get(f.idx) {
+            Some(e) => chud_clone_core::format::refusals(&e.info, &req),
+            None => vec![t!("disque introuvable", "disk not found").into()],
+        }
+    }
+
+    fn format_key(&mut self, key: KeyEvent) {
+        let refused = !self.format_refusals().is_empty();
+        let word_ok = self.fmt.as_ref().is_some_and(|f| f.confirm.trim().eq_ignore_ascii_case(confirm_word()));
+        let Some(f) = self.fmt.as_mut() else { return };
+        if f.running {
+            return;
+        }
+        if f.result.is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                self.back_home(true);
+            }
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.back_home(false),
+            KeyCode::Up => f.row = f.row.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => f.row = (f.row + 1).min(3),
+            KeyCode::Left | KeyCode::Right if f.row == 0 => {
+                let all = [FsChoice::Ntfs, FsChoice::Exfat, FsChoice::Fat32];
+                let i = all.iter().position(|x| *x == f.fs).unwrap_or(0);
+                let i = if key.code == KeyCode::Right { (i + 1) % 3 } else { (i + 2) % 3 };
+                f.fs = all[i];
+                f.confirm.clear();
+            }
+            KeyCode::Left | KeyCode::Right if f.row == 1 => {
+                f.table = if f.table == TableChoice::Gpt { TableChoice::Mbr } else { TableChoice::Gpt };
+                f.confirm.clear();
+            }
+            KeyCode::Backspace if f.row == 2 => {
+                f.label.pop();
+                f.confirm.clear();
+            }
+            KeyCode::Backspace if f.row == 3 => {
+                f.confirm.pop();
+            }
+            KeyCode::Char(c) if !ctrl && f.row == 2 && f.label.chars().count() < 32 => {
+                f.label.push(c);
+                f.confirm.clear();
+            }
+            KeyCode::Char(c) if !ctrl && f.row == 3 && f.confirm.chars().count() < 20 => f.confirm.push(c),
+            KeyCode::Enter if f.row < 3 => f.row += 1,
+            KeyCode::Enter if refused => {}
+            KeyCode::Enter if word_ok => self.start_format(),
+            KeyCode::Enter => self.message(
+                t!("Confirmation", "Confirmation"),
+                tf!("Tapez {} puis Entrée pour formater.", "Type {} then Enter to format.", confirm_word()),
+            ),
+            _ => {}
+        }
+    }
+
+    fn start_format(&mut self) {
+        let Some(req) = self.format_request() else { return };
+        let Some(f) = self.fmt.as_mut() else { return };
+        let Some(entry) = self.entries.get(f.idx).cloned() else { return };
+        f.running = true;
+        f.steps.clear();
+        let tx = self.tx.clone();
+        let paths = self.app_paths.clone();
+        std::thread::spawn(move || {
+            let res = match entry.info.number {
+                #[cfg(windows)]
+                Some(n) => {
+                    let step_tx = Mutex::new(tx.clone());
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        chud_clone_core::format::format_disk(n, &entry.info.fingerprint, &req, &paths, &|s| {
+                            if let Ok(t) = step_tx.lock() {
+                                let _ = t.send(Msg::FormatStep(s.to_string()));
+                            }
+                        })
+                    }))
+                    .unwrap_or_else(|_| Err(t!("erreur interne pendant le formatage", "internal error while formatting").into()))
+                }
+                _ => {
+                    let _ = (&req, &paths);
+                    Err(t!("seuls les disques peuvent être formatés", "only disks can be formatted").to_string())
+                }
+            };
+            let _ = tx.send(Msg::Formatted(Box::new(res)));
+        });
     }
 
     fn ask_image(&mut self, purpose: InputPurpose) {

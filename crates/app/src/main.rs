@@ -10,6 +10,7 @@ mod update;
 use chud_clone_core::boot::BootAssessment;
 use chud_clone_core::engine::{Control, Decision, EngineOptions, LogLevel, Observer, Progress, UnreadableInfo, UnreadablePolicy, VerifyMode};
 use chud_clone_core::job::{self, JobConfig, JobError, Preparation, Target};
+use chud_clone_core::format::{FormatOutcome, FormatRequest};
 use chud_clone_core::model::DiskInfo;
 use chud_clone_core::plan::{CloneMode, DiskAnalysis, PlanOptions};
 use chud_clone_core::report::{self, Report, ReportSummary};
@@ -274,6 +275,9 @@ struct CloneParams {
     allow_unvalidated_physical_write: bool,
     source_fingerprint: Option<String>,
     destination_fingerprint: Option<String>,
+    /// Safely remove the destination disk after a successful clone.
+    #[serde(default)]
+    eject: bool,
 }
 
 fn config(state: &Inner, p: &CloneParams) -> Result<JobConfig, String> {
@@ -356,6 +360,39 @@ struct DoneEvent {
     report: Option<Report>,
     error: Option<String>,
     blocked: Vec<chud_clone_core::diag::Finding>,
+    /// Destination ejected after the clone (None: not requested or not attempted).
+    ejected: Option<bool>,
+    eject_error: Option<String>,
+}
+
+impl DoneEvent {
+    fn failed(error: String, blocked: Vec<chud_clone_core::diag::Finding>) -> Self {
+        DoneEvent { report: None, error: Some(error), blocked, ejected: None, eject_error: None }
+    }
+}
+
+/// Ejects the destination disk after a clone whose result is usable.
+fn eject_after(p: &CloneParams, report: &Report) -> (Option<bool>, Option<String>) {
+    use chud_clone_core::clone::FinalStatus;
+    if !p.eject || !matches!(report.outcome.status, FinalStatus::SuccessVerified | FinalStatus::CompletedWithWarnings) {
+        return (None, None);
+    }
+    let Some(n) = p.destination_id.strip_prefix("disk:").and_then(|n| n.parse::<u32>().ok()) else {
+        return (None, None);
+    };
+    #[cfg(windows)]
+    {
+        std::thread::sleep(Duration::from_millis(500));
+        match chud_clone_core::win::eject::eject_disk(n) {
+            Ok(()) => (Some(true), None),
+            Err(e) => (Some(false), Some(e)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = n;
+        (Some(false), None)
+    }
 }
 
 /// Starts the clone. DESTRUCTIVE OPERATION: requires the confirmation word typed by
@@ -397,36 +434,34 @@ fn start_clone(app: AppHandle, state: State<'_, Shared>, params: CloneParams, co
     drop(slot);
 
     let shared = state.inner().clone();
+    let params = params.clone();
     std::thread::Builder::new()
         .name("clonage".into())
         .spawn(move || {
             let obs = UiObserver { app: app.clone(), ctl: ctl.clone(), decision };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job::execute(&cfg, &shared.reports_dir, &ctl, &obs)));
             let event = match result {
-                Ok(Ok(report)) => DoneEvent { report: Some(report), error: None, blocked: vec![] },
-                Ok(Err(JobError::Blocked(f))) => DoneEvent {
-                    report: None,
-                    error: Some(
-                        chud_clone_core::t!(
-                            "Le clonage a été refusé par les pré-vérifications. Rien n'a été écrit.",
-                            "The clone was refused by the pre-checks. Nothing was written."
-                        )
-                        .into(),
-                    ),
-                    blocked: f,
-                },
-                Ok(Err(JobError::Failed(m))) => DoneEvent { report: None, error: Some(m), blocked: vec![] },
-                Err(_) => DoneEvent {
-                    report: None,
-                    error: Some(
-                        chud_clone_core::t!(
-                            "Erreur interne inattendue pendant le clonage. La destination doit être considérée comme incomplète.",
-                            "Unexpected internal error during cloning. The destination must be considered incomplete."
-                        )
-                        .into(),
-                    ),
-                    blocked: vec![],
-                },
+                Ok(Ok(report)) => {
+                    let (ejected, eject_error) = eject_after(&params, &report);
+                    DoneEvent { report: Some(report), error: None, blocked: vec![], ejected, eject_error }
+                }
+                Ok(Err(JobError::Blocked(f))) => DoneEvent::failed(
+                    chud_clone_core::t!(
+                        "Le clonage a été refusé par les pré-vérifications. Rien n'a été écrit.",
+                        "The clone was refused by the pre-checks. Nothing was written."
+                    )
+                    .into(),
+                    f,
+                ),
+                Ok(Err(JobError::Failed(m))) => DoneEvent::failed(m, vec![]),
+                Err(_) => DoneEvent::failed(
+                    chud_clone_core::t!(
+                        "Erreur interne inattendue pendant le clonage. La destination doit être considérée comme incomplète.",
+                        "Unexpected internal error during cloning. The destination must be considered incomplete."
+                    )
+                    .into(),
+                    vec![],
+                ),
             };
             *shared.job.lock().unwrap_or_else(|e| e.into_inner()) = None;
             let _ = app.emit("clone-done", event);
@@ -515,6 +550,98 @@ fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<()
             chud_clone_core::tf!("impossible de démarrer le scan : {e}", "cannot start the scan: {e}")
         })?;
     Ok(())
+}
+
+/// Shuts the computer down (end of a clone queue, after the interface's countdown).
+#[tauri::command]
+fn shutdown_pc(state: State<'_, Shared>) -> Result<(), String> {
+    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return Err(chud_clone_core::t!("un clonage est en cours", "a clone is running").into());
+    }
+    #[cfg(windows)]
+    return chud_clone_core::win::eject::shutdown_now();
+    #[cfg(not(windows))]
+    Err("Windows only".into())
+}
+
+#[derive(Serialize)]
+struct FormatCheck {
+    disk: DiskInfo,
+    /// Name as it will be written (FAT32: upper case).
+    label: String,
+    refusals: Vec<String>,
+    /// FAT32 above 32 GiB: written by Chud Clone instead of Windows.
+    own_fat32: bool,
+}
+
+/// What formatting would do, and why it is refused. Writes nothing.
+#[tauri::command]
+async fn format_check(state: State<'_, Shared>, id: String, request: FormatRequest) -> Result<FormatCheck, String> {
+    let (target, _) = state.target(&id)?;
+    let paths = state.app_paths();
+    blocking(move || {
+        let disk = job::describe(&target, false, &paths, None)?;
+        let label = chud_clone_core::format::validate_label(request.fs, &request.label).unwrap_or_else(|_| request.label.clone());
+        let refusals = chud_clone_core::format::refusals(&disk, &request);
+        let own_fat32 = chud_clone_core::format::uses_own_fat32(&request, disk.size.saturating_sub(2 << 20));
+        Ok(FormatCheck { disk, label, refusals, own_fat32 })
+    })
+    .await?
+}
+
+/// Formats a whole disk. DESTRUCTIVE OPERATION: requires the confirmation word and
+/// the disk's identity as shown to the user; the engine checks both again.
+#[tauri::command]
+async fn format_disk(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    id: String,
+    fingerprint: String,
+    request: FormatRequest,
+    confirmation: String,
+) -> Result<FormatOutcome, String> {
+    if confirmation.trim() != CONFIRM_WORD && confirmation.trim() != CONFIRM_WORD_EN {
+        return Err(chud_clone_core::tf!(
+            "confirmation incorrecte : saisissez {CONFIRM_WORD} pour autoriser l'effacement du disque",
+            "wrong confirmation: type {CONFIRM_WORD_EN} to allow erasing the disk"
+        ));
+    }
+    let number = id
+        .strip_prefix("disk:")
+        .and_then(|n| n.parse::<u32>().ok())
+        .ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être formatés", "only disks can be formatted").to_string())?;
+    if state.updating.load(std::sync::atomic::Ordering::SeqCst) || state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return Err(chud_clone_core::t!("une autre opération est en cours", "another operation is running").into());
+    }
+    // The clone slot is held during formatting: no clone can start meanwhile.
+    {
+        let mut slot = state.job.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_some() {
+            return Err(chud_clone_core::t!("un clonage est en cours", "a clone is running").into());
+        }
+        *slot = Some(RunningJob { ctl: Arc::new(Control::new()), decision: Arc::new((Mutex::new(None), Condvar::new())) });
+    }
+    let shared = state.inner().clone();
+    let paths = state.app_paths();
+    let result = blocking(move || {
+        #[cfg(windows)]
+        {
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                chud_clone_core::format::format_disk(number, &fingerprint, &request, &paths, &|s| {
+                    let _ = app.emit("format-step", s);
+                })
+            }));
+            out.unwrap_or_else(|_| Err(chud_clone_core::t!("erreur interne pendant le formatage", "internal error while formatting").into()))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (app, number, fingerprint, request, paths);
+            Err::<FormatOutcome, String>("Windows only".into())
+        }
+    })
+    .await;
+    *shared.job.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    result?
 }
 
 #[tauri::command]
@@ -764,7 +891,10 @@ fn main() {
             relaunch_elevated,
             update_check,
             update_install,
-            open_release_page
+            open_release_page,
+            shutdown_pc,
+            format_check,
+            format_disk
         ])
         .on_window_event(|window, event| {
             // Closing the window during a clone would leave the destination incomplete:

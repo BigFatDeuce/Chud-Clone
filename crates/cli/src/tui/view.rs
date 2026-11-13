@@ -293,6 +293,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Running => draw_running(f, app, body),
         Screen::Result => draw_result(f, app, body),
         Screen::Scan => draw_scan(f, app, body),
+        Screen::Format => draw_format(f, app, body),
     }
     draw_footer(f, app, foot);
     if let Some(msg) = &app.busy {
@@ -316,6 +317,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Screen::Running => t!("Clonage en cours", "Cloning"),
         Screen::Result => t!("Résultat du clonage", "Clone result"),
         Screen::Scan => t!("Test de surface", "Surface scan"),
+        Screen::Format => t!("Formater un disque", "Format a disk"),
     };
     let mut l1 = vec![
         Span::styled(format!(" CHUD CLONE {} ", chud_clone_core::APP_VERSION), Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)),
@@ -342,6 +344,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ("H", t!("Santé SMART", "SMART health")),
                 ("D", t!("Analyse", "Analysis")),
                 ("T", t!("Test de surface", "Surface scan")),
+                ("M", t!("Formater", "Format")),
                 ("F", t!("Fichier image", "Image file")),
                 ("R", t!("Actualiser", "Refresh")),
                 ("L", lang),
@@ -367,6 +370,15 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
             Screen::Running => vec![(t!("Échap", "Esc"), t!("Annuler le clonage", "Cancel the clone"))],
+            Screen::Format => {
+                if app.fmt.as_ref().is_some_and(|x| x.running) {
+                    vec![]
+                } else if app.fmt.as_ref().is_some_and(|x| x.result.is_some()) {
+                    vec![(t!("Entrée", "Enter"), t!("Retour aux disques", "Back to the disks"))]
+                } else {
+                    vec![("↑↓", t!("Ligne", "Row")), ("← →", t!("Changer", "Change")), (t!("Entrée", "Enter"), t!("Valider / formater", "Next / format")), (t!("Échap", "Esc"), t!("Retour", "Back"))]
+                }
+            }
             Screen::Result => vec![("↑↓", t!("Défiler", "Scroll")), (t!("Entrée", "Enter"), t!("Retour aux disques", "Back to the disks"))],
             Screen::Scan => {
                 if app.scan.as_ref().is_some_and(|s| s.result.is_some() || s.error.is_some()) {
@@ -869,6 +881,80 @@ fn draw_scan(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Map of the disk surface: each character is a group of cells, coloured by its worst class.
+fn draw_format(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(st) = app.fmt.as_ref() else { return };
+    let Some(entry) = app.entries.get(st.idx) else { return };
+    let d = &entry.info;
+    let refusals = app.format_refusals();
+    let mut lines = vec![
+        Line::from(Span::styled(d.title(), Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            format!("{} . {} . {}", d.number.map(|n| format!("disk {n}")).unwrap_or_else(|| d.path.clone()), human_size(d.size), d.mounts().join(" ")),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+    ];
+    let label_shown = if st.label.is_empty() { t!("(sans nom)", "(no name)").to_string() } else { st.label.clone() };
+    let rows: [(String, String); 4] = [
+        (t!("Système de fichiers", "File system").into(), format!("< {} >", st.fs.label())),
+        (t!("Table", "Table").into(), format!("< {} >", st.table.label())),
+        (tf!("Nom ({} max)", "Name ({} max)", st.fs.max_label()), label_shown),
+        (tf!("Tapez {}", "Type {}", confirm_word()), st.confirm.clone()),
+    ];
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let on = i == st.row && !st.running && st.result.is_none();
+        let style = if on { Style::default().fg(Color::Black).bg(Color::Cyan) } else { Style::default() };
+        let cursor = if on && i >= 2 && (app.tick / 5).is_multiple_of(2) { "_" } else { " " };
+        lines.push(Line::from(vec![Span::raw(format!("  {k:<24} ")), Span::styled(format!(" {v}{cursor} "), style)]));
+    }
+    lines.push(Line::from(""));
+    if st.fs == chud_clone_core::format::FsChoice::Fat32 {
+        lines.push(Line::from(Span::styled(t!("FAT32 : fichiers de 4 Go maximum.", "FAT32: 4 GB maximum file size."), Style::default().fg(Color::Gray))));
+    }
+    for r in &refusals {
+        lines.push(Line::from(Span::styled(format!("x {r}"), Style::default().fg(Color::LightRed))));
+    }
+    if refusals.is_empty() && st.result.is_none() && !st.running {
+        lines.push(Line::from(Span::styled(
+            tf!("TOUT le contenu de ce disque sera effacé ({}).", "ALL content of this disk will be erased ({}).", human_size(d.size)),
+            Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if st.running || !st.steps.is_empty() {
+        lines.push(Line::from(""));
+        for s in &st.steps {
+            lines.push(Line::from(format!("  - {s}")));
+        }
+        if st.running {
+            lines.push(Line::from(Span::styled(t!("  Formatage en cours...", "  Formatting..."), Style::default().fg(Color::Yellow))));
+        }
+    }
+    match &st.result {
+        Some(Ok(o)) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                tf!(
+                    "Disque formaté : {} {} \"{}\" {} {}",
+                    "Disk formatted: {} {} \"{}\" {} {}",
+                    o.table.label(),
+                    o.fs.label(),
+                    o.label,
+                    human_size(o.partition_size),
+                    o.mount.clone().unwrap_or_default()
+                ),
+                Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
+            )));
+        }
+        Some(Err(e)) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(tf!("Échec : {e}", "Failed: {e}"), Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))));
+        }
+        None => {}
+    }
+    let block = Block::default().borders(ratatui::widgets::Borders::ALL).title(title(t!(" Formater (disque entier) ", " Format (whole disk) ")));
+    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);
+}
+
 fn draw_map(f: &mut Frame, cells: &[u8], area: Rect) {
     let block = Block::bordered().title(t!(" Carte de la surface ", " Surface map ")).border_style(Style::new().fg(DIM));
     let inner = block.inner(area);

@@ -266,6 +266,7 @@ pub fn surface_scan(
 ) -> Result<(DiskInfo, crate::scan::ScanResult), String> {
     let info = describe(target, false, app_paths, None)?;
     let mut dev = ReadOnly(open_read_only(target)?);
+    let _awake = crate::awake::KeepAwake::new();
     let result = crate::scan::scan(&mut dev, opts, ctl, obs);
     Ok((info, result))
 }
@@ -381,6 +382,7 @@ fn volumes_for_lock(info: &DiskInfo) -> Vec<(String, String)> {
 /// DESTRUCTIVE OPERATION for the destination: the caller must have obtained the
 /// user's explicit confirmation.
 pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Observer) -> Result<Report, JobError> {
+    let _awake = crate::awake::KeepAwake::new();
     let started_at = now_string();
     let id = new_report_id();
     std::fs::create_dir_all(reports_dir)

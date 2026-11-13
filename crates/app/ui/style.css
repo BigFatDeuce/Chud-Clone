@@ -12,15 +12,15 @@
   --void: #05060d;
   --night: #0a0e24;
   --violet-deep: #1a1036;
-  --panel: rgba(10, 13, 32, 0.82);
+  --panel: rgba(12, 15, 34, 0.94);
   --panel-solid: #0d1029;
   --raise: rgba(255, 255, 255, 0.04);
   --raise-2: rgba(255, 255, 255, 0.07);
-  --line: rgba(146, 170, 255, 0.13);
+  --line: rgba(146, 170, 255, 0.16);
   --line-strong: rgba(146, 170, 255, 0.26);
   --text: #e8ecff;
-  --text-2: #a7b0d4;
-  --text-3: #707aa3;
+  --text-2: #bcc4e4;
+  --text-3: #8a93b8;
   --cyan: #4fe3ff;
   --electric: #3a7bff;
   --violet: #9a6bff;
@@ -34,7 +34,7 @@
   --flow: linear-gradient(90deg, var(--cyan), var(--electric) 55%, var(--violet));
   --sans: "Sora Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono Variable", "Cascadia Mono", Consolas, monospace;
-  --radius: 14px;
+  --radius: 10px;
 }
 
 * { box-sizing: border-box; }
@@ -43,7 +43,7 @@ body {
   background: radial-gradient(1000px 700px at 85% 10%, #1b1140 0%, transparent 65%), radial-gradient(900px 700px at 8% 95%, #0b1c44 0%, transparent 60%), var(--void);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.5;
   letter-spacing: -0.005em;
   overflow: hidden;
@@ -89,7 +89,7 @@ select option { background: var(--panel-solid); }
 .win svg { width: 11px; height: 11px; }
 
 main#view { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 28px 28px; }
-.page { max-width: 1180px; margin: 0 auto; }
+.page { max-width: 1480px; margin: 0 auto; }
 /* ---------- Screen transition: glitch ----------
    Played once, on the new page only (class set then removed by app.js):
    no vertical shift, the final layout is in place from the first frame. */
@@ -386,3 +386,44 @@ details.adv .body { padding: 4px 14px 14px; display: grid; gap: 12px; }
 .about-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .about-head img { width: 64px; height: 64px; flex: none; }
 .about-head b { display: block; font-size: 16px; }
+
+/* ---------- Readability pass: flatter, denser, more technical ---------- */
+.panel h2 { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.12em; color: var(--text-3); border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 12px; }
+.panel { padding: 14px 16px; }
+.page-head h1 { font-size: 20px; }
+.page-head p { font-size: 13px; }
+.disk.selected { box-shadow: 0 0 0 1px var(--cyan); }
+.disk.selected.dest { box-shadow: 0 0 0 1px var(--violet); }
+.disk .sub, .disk .cap span { font-family: var(--mono); font-size: 11.5px; }
+.stat .k, table.t th, .flight .node { font-family: var(--mono); }
+.stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+table.t td { font-variant-numeric: tabular-nums; }
+table.t tr.sel td { background: rgba(79, 227, 255, 0.06); }
+.btn.primary:hover:not(:disabled), .btn.danger:hover:not(:disabled) { box-shadow: none; filter: brightness(1.08); }
+.flight .node.current .orb { box-shadow: none; }
+.panel.slim { padding: 9px 14px; display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+
+/* Clone queue */
+.qtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.qtab { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text-2); font-size: 12.5px; }
+.qtab.on { border-color: var(--violet); color: var(--text); }
+button.qtab:hover { border-color: var(--line-strong); color: var(--text); }
+.qtab .n { font-family: var(--mono); font-size: 11px; width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; background: var(--raise-2); }
+
+/* Danger zone */
+.dz-title { font-family: var(--mono); font-size: 11.5px !important; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 8px; }
+.erase-list { margin: 0 0 6px; padding-left: 18px; }
+.erase-list li { margin: 2px 0; }
+.end-opts { gap: 22px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 79, 130, 0.25); }
+
+/* Format */
+.fmt-head { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.fmt-head .planet { width: 46px; height: 46px; flex: none; }
+.fmt-head .planet svg { width: 100%; height: 100%; overflow: visible; }
+.fmt-grid { display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 12px; margin-top: 14px; }
+.fmt-grid label { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.fmt-grid select, .fmt-grid input { font-family: var(--sans); font-size: 14px; color: var(--text); text-transform: none; letter-spacing: 0; }
+.notes { margin: 10px 0 0; padding-left: 18px; color: var(--text-2); font-size: 12.5px; }
+.fmt-steps { margin: 10px 0 0; padding-left: 20px; font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
+.danger-zone + .panel, .panel + .danger-zone, .panel + .verdict { margin-top: 14px; }
+@media (max-width: 900px) { .fmt-grid { grid-template-columns: 1fr; } }

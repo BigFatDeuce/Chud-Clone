@@ -46,6 +46,11 @@ UTILISATION
       Interface plein écran au clavier : mêmes étapes et mêmes vérifications que
       l'application (clé de secours WinPE, ou toute console).
 
+  chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr]
+                 [--label <nom>] --confirm-erase
+      Formate le disque entier : nouvelle table (défaut GPT), une partition,
+      un système de fichiers. TOUT LE CONTENU DU DISQUE EST EFFACÉ.
+
 CIBLES
   disk:N          disque Windows numéro N (voir « list »)
   <chemin>        fichier image disque
@@ -100,6 +105,11 @@ USAGE
       Full-screen keyboard interface: same steps and same checks as the
       application (WinPE rescue key, or any console).
 
+  chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr]
+                 [--label <name>] --confirm-erase
+      Formats the whole disk: new table (default GPT), one partition, one
+      file system. ALL CONTENT OF THE DISK IS ERASED.
+
 TARGETS
   disk:N          Windows disk number N (see \"list\")
   <path>          disk image file
@@ -135,7 +145,7 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUE_FLAGS: [&str; 10] = ["--mode", "--verify", "--on-unreadable", "--retries", "--image-size", "--reports", "--out", "--chunk", "--image", "--lang-file"];
+const VALUE_FLAGS: [&str; 13] = ["--fs", "--table", "--label", "--mode", "--verify", "--on-unreadable", "--retries", "--image-size", "--reports", "--out", "--chunk", "--image", "--lang-file"];
 
 fn parse_args(raw: &[String]) -> Result<Args, String> {
     let mut a = Args { positional: vec![], flags: vec![] };
@@ -603,6 +613,49 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
                 winpe: a.has("--winpe"),
                 lang_file: a.value("--lang-file").map(PathBuf::from),
             })
+        }
+        "format" => {
+            use chud_clone_core::format::{FormatRequest, FsChoice, TableChoice, refusals, validate_label};
+            a.check_known(&["--fs", "--table", "--label", "--confirm-erase", "--json"])?;
+            let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
+            let fs = FsChoice::parse(a.value("--fs").ok_or(chud_clone_core::t!("--fs ntfs|exfat|fat32 attendu", "--fs ntfs|exfat|fat32 expected"))?)?;
+            let table = TableChoice::parse(a.value("--table").unwrap_or("gpt"))?;
+            let label = validate_label(fs, a.value("--label").unwrap_or(""))?;
+            let req = FormatRequest { fs, table, label };
+            let info = job::describe(&target, false, &[], None)?;
+            let refused = refusals(&info, &req);
+            if !refused.is_empty() {
+                return Err(refused.join(" ; "));
+            }
+            println!(
+                "{}",
+                chud_clone_core::tf!(
+                    "{} → {} {}, nom « {} »",
+                    "{} → {} {}, name \"{}\"",
+                    info.title(),
+                    req.table.label(),
+                    req.fs.label(),
+                    req.label
+                )
+            );
+            if !a.has("--confirm-erase") {
+                return Err(chud_clone_core::tf!(
+                    "confirmation manquante. Cette commande EFFACE tout le contenu de « {} ». Ajoutez --confirm-erase pour confirmer.",
+                    "confirmation missing. This command ERASES all content of \"{}\". Add --confirm-erase to confirm.",
+                    info.title()
+                ));
+            }
+            #[cfg(windows)]
+            {
+                let number = info.number.ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?;
+                let out = chud_clone_core::format::format_disk(number, &info.fingerprint, &req, &[], &|s| eprintln!("  {s}"))?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
+                }
+                Ok(0)
+            }
+            #[cfg(not(windows))]
+            Err("Windows only".into())
         }
         "report" => {
             a.check_known(&["--txt", "--html", "--out"])?;

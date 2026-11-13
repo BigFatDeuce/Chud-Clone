@@ -96,12 +96,20 @@ const S = {
   step: "source",
   srcId: null,
   dstId: null,
+  // Several destinations can be cloned one after another from the same source.
+  dstIds: [],
+  preps: [],
+  prepIdx: 0,
+  queue: null,
+  resultIdx: 0,
+  shutdown: false,
+  fmt: { id: null, fs: "ntfs", table: "gpt", label: "", check: null, checking: false, confirm: "", running: false, steps: [], outcome: null, error: null },
   prep: null,
   prepBusy: false,
   prepError: null,
   confirmText: "",
-  opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3 }),
-  ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null }),
+  opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3, eject: false }),
+  ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null, sound: true }),
   update: { info: null, checking: false, error: null, checkedAt: null, installing: false },
   run: null,
   report: null,
@@ -214,13 +222,13 @@ function identity(d, before) {
 // ------------------------------------------------------------- Vue : Cloner
 function viewClone() {
   if (S.step === "run") return viewRun();
-  if (S.step === "result") return `<div class="page">${flight()}${outcomeHtml(S.report, S.runError)}</div>`;
+  if (S.step === "result") return `<div class="page">${flight()}${queueSummary()}${outcomeHtml(S.report, S.runError)}</div>`;
   if (S.step === "review") return viewReview();
   const isSrc = S.step === "source";
   const s = src();
   const head = isSrc
-    ? [L("Quel disque voulez-vous copier ?", "Which disk do you want to copy?"), L("Choisissez le disque source. Il ne sera jamais modifié : Chud Clone ne fait que le lire.", "Choose the source disk. It is never modified: Chud Clone only reads it.")]
-    : [L("Sur quel disque écrire la copie ?", "Which disk should receive the copy?"), L("Choisissez le disque de destination. Tout son contenu actuel sera effacé.", "Choose the destination disk. All its current content will be erased.")];
+    ? [L("Source", "Source"), L("Disque à copier. Lecture seule.", "Disk to copy. Read-only.")]
+    : [L("Destination(s)", "Destination(s)"), L("Contenu effacé. Plusieurs disques possibles : clonés l'un après l'autre.", "Content erased. Several disks allowed: cloned one after another.")];
   let cards;
   if (S.loadingDisks) cards = `<div class="empty"><div class="orbit-loader"></div>${L("Recherche des disques…", "Looking for disks…")}</div>`;
   else {
@@ -237,7 +245,8 @@ function viewClone() {
           else if (s.used_bytes != null && d.size > s.used_bytes * 1.05) chips = `<span class="chip warn">${L("Plus petit que la source", "Smaller than the source")}</span>`;
           else chips = `<span class="chip bad">${L("Probablement trop petit", "Probably too small")}</span>`;
         }
-        return diskCard(d, { act: "pick", selected: d.id === S.dstId, dest: true, tag: d.id === S.dstId ? "Destination" : "", chips, note, locked });
+        const qi = S.dstIds.indexOf(d.id);
+        return diskCard(d, { act: "pick", selected: qi >= 0, dest: true, tag: qi >= 0 ? (S.dstIds.length > 1 ? `Destination ${qi + 1}` : "Destination") : "", chips, note, locked });
       })
       .join("");
     cards = `<div class="disk-grid">${cards}
@@ -248,13 +257,16 @@ function viewClone() {
   const limited = S.env && !S.env.elevated
     ? `<div class="finding warning" style="margin-bottom:14px"><div class="ico">!</div><div><b>${L("Mode limité (sans droits administrateur)", "Limited mode (no administrator rights)")}</b><p>${L("Les disques sont listés d'après ce que Windows expose. Pour analyser et cloner un disque réel, Chud Clone doit lire les disques directement : cliquez sur « Passer en administrateur » en haut à droite. Les fichiers image fonctionnent sans cela.", "Disks are listed from what Windows exposes. To analyse and clone a real disk, Chud Clone must read disks directly: click \"Switch to administrator\" at the top right. Image files work without it.")}</p></div></div>`
     : "";
-  const chosen = isSrc ? s : dst();
+  const chosen = isSrc ? s : S.dstIds.length ? disk(S.dstIds[0]) : null;
+  const chosenTxt = !chosen ? L("Aucun disque sélectionné", "No disk selected")
+    : isSrc || S.dstIds.length === 1 ? `${isSrc ? "Source" : "Destination"}${L(" :", ":")} <b style="color:var(--text)">${esc(chosen.model)}</b> · ${size(chosen.size)}`
+    : `<b style="color:var(--text)">${S.dstIds.length} destinations</b> · ${L("clonées l'une après l'autre", "cloned one after another")}`;
   return `<div class="page">${flight()}
     <div class="page-head"><div><h1>${head[0]}</h1><p>${head[1]}</p></div><button class="btn small ghost" data-act="refresh">↻ ${L("Actualiser", "Refresh")}</button></div>
     ${limited}${cards}
     <div class="footer-bar">
       ${isSrc ? "" : `<button class="btn" data-act="back">← ${L("Retour", "Back")}</button>`}
-      <span class="muted">${chosen ? `${isSrc ? "Source" : "Destination"}${L(" :", ":")} <b style="color:var(--text)">${esc(chosen.model)}</b> · ${size(chosen.size)}` : L("Aucun disque sélectionné", "No disk selected")}</span>
+      <span class="muted">${chosenTxt}</span>
       <span class="spacer"></span>
       <button class="btn primary" data-act="next" ${chosen ? "" : "disabled"}>${isSrc ? L("Choisir la destination →", "Choose the destination →") : L("Vérifier avant de cloner →", "Review before cloning →")}</button>
     </div></div>`;
@@ -300,7 +312,8 @@ function viewReview() {
     const p = S.prep, plan = p.plan;
     const blocking = p.findings.filter((f) => f.blocking);
     const others = p.findings.filter((f) => !f.blocking);
-    const ready = !p.blocked;
+    const readyList = S.preps.filter((x) => x.prep && !x.prep.blocked);
+    const ready = readyList.length > 0;
     const word = confirmWord();
     const good = S.confirmText.trim().toUpperCase() === word;
     // A serious problem (degraded source disk…) is raised to the top of the page.
@@ -331,14 +344,23 @@ function viewReview() {
       </div>
       ${urgent ? "" : attention}
       ${optionsHtml()}
-      ${ready ? `<div class="danger-zone" style="margin-top:14px"><h2 style="font-size:12px;letter-spacing:.09em;text-transform:uppercase;margin-bottom:8px">${L("Opération irréversible", "Irreversible operation")}</h2>
-        <p class="big">${L(`Toutes les données de « ${esc(p.destination.model)} » (${size(p.destination.size)}) seront définitivement effacées.`, `All data on “${esc(p.destination.model)}” (${size(p.destination.size)}) will be permanently erased.`)}</p>
-        <p class="muted" style="margin-top:4px">${L("Une fois le clonage lancé, l'ancien contenu de la destination n'est plus récupérable, même si vous annulez en cours de route. La source, elle, n'est jamais modifiée.", "Once cloning has started, the destination's previous content cannot be recovered, even if you cancel midway. The source is never modified.")}</p>
-        <div class="row wrap" style="margin-top:14px"><span>${L("Pour confirmer, saisissez", "To confirm, type")} <b class="mono">${word}</b>${L(" :", ":")}</span><input type="text" id="confirm" class="${good ? "good" : ""}" value="${esc(S.confirmText)}" autocomplete="off" spellcheck="false" maxlength="12"><span class="spacer"></span><button class="btn danger" data-act="start" ${good ? "" : "disabled"}>${L("Lancer le clonage", "Start cloning")}</button></div></div>` : ""}`;
+      ${ready ? `<div class="danger-zone" style="margin-top:14px"><h2 class="dz-title">${L("Irréversible", "Irreversible")}</h2>
+        <ul class="erase-list">${readyList.map((x) => `<li><b>${esc(x.prep.destination.model)}</b> <span class="mono dim">${x.prep.destination.number != null ? "disk " + x.prep.destination.number : ""} · ${size(x.prep.destination.size)}</span> — ${L("effacé", "erased")}</li>`).join("")}</ul>
+        ${readyList.length < S.preps.length ? `<p class="muted">${L(`${S.preps.length - readyList.length} destination(s) bloquée(s) : ignorée(s).`, `${S.preps.length - readyList.length} blocked destination(s): skipped.`)}</p>` : ""}
+        <div class="row wrap end-opts">
+          <label class="toggle"><input type="checkbox" data-opt="eject" ${S.opts.eject ? "checked" : ""}><span>${L("Éjecter la destination à la fin", "Eject the destination when done")}</span></label>
+          <label class="toggle"><input type="checkbox" id="opt-shutdown" ${S.shutdown ? "checked" : ""}><span>${L("Éteindre le PC à la fin", "Shut down the PC when done")}</span></label>
+        </div>
+        <div class="row wrap" style="margin-top:12px"><span>${L("Saisir", "Type")} <b class="mono">${word}</b> ${L("puis Entrée", "then Enter")}</span><input type="text" id="confirm" class="${good ? "good" : ""}" value="${esc(S.confirmText)}" autocomplete="off" spellcheck="false" maxlength="12"><span class="spacer"></span><button class="btn danger" data-act="start" ${good ? "" : "disabled"}>${readyList.length > 1 ? L(`Lancer ${readyList.length} clonages`, `Start ${readyList.length} clones`) : L("Lancer le clonage", "Start cloning")}</button></div></div>` : ""}`;
   } else body = "";
+  const tabs = S.dstIds.length > 1 ? `<div class="qtabs">${S.dstIds.map((id, i) => {
+    const x = S.preps[i] || {}, dd = disk(id);
+    const st = x.busy ? ["", "…"] : x.error ? ["bad", L("erreur", "error")] : x.prep?.blocked ? ["bad", L("bloqué", "blocked")] : x.prep ? ["ok", L("prêt", "ready")] : ["", "—"];
+    return `<button class="qtab ${i === S.prepIdx ? "on" : ""}" data-act="prep-tab" data-i="${i}"><span class="n">${i + 1}</span>${esc(dd?.model || id)}<span class="chip ${st[0]}">${st[1]}</span></button>`;
+  }).join("")}</div>` : "";
   return `<div class="page">${flight()}
-    <div class="page-head"><div><h1>${L("Vérifiez avant de lancer", "Review before starting")}</h1><p>${s && d ? `${esc(s.model)} → ${esc(d.model)}` : ""}</p></div></div>
-    ${body}
+    <div class="page-head"><div><h1>${L("Vérification", "Review")}</h1><p class="mono">${s && d ? `${esc(s.model)} → ${S.dstIds.length > 1 ? `${S.dstIds.length} destinations` : esc(d.model)}` : ""}</p></div></div>
+    ${tabs}${body}
     <div class="footer-bar"><button class="btn" data-act="back">← ${L("Retour", "Back")}</button><span class="spacer"></span>${S.prep && !S.prepBusy ? `<button class="btn small ghost" data-act="reprepare">↻ ${L("Refaire l'analyse", "Analyse again")}</button>` : ""}</div></div>`;
 }
 const FS = { ntfs: "NTFS", fat12: "FAT12", fat16: "FAT16", fat32: "FAT32", exfat: "exFAT", bitlocker: "BitLocker", refs: "ReFS", ext: "ext2/3/4", xfs: "XFS", btrfs: "Btrfs", linux_swap: "Swap", luks: "LUKS", blank: "—", unknown: "—" };
@@ -350,7 +372,9 @@ function checkRow(c) {
 // --------------------------------------------------------- View: clone running
 function viewRun() {
   const s = S.run.source, d = S.run.destination;
-  return `<div class="page">${flight()}
+  const q = S.queue;
+  const qbar = q && q.items.length > 1 ? `<div class="qtabs">${q.items.map((it, i) => `<span class="qtab ${i === q.idx ? "on" : ""}"><span class="n">${i + 1}</span>${esc(it.prep.destination.model)}<span class="chip ${it.done ? (itemGood(it) ? "ok" : "bad") : ""}">${it.done ? (itemGood(it) ? "OK" : L("échec", "failed")) : i === q.idx ? L("en cours", "running") : L("en attente", "waiting")}</span></span>`).join("")}</div>` : "";
+  return `<div class="page">${flight()}${qbar}
     <div class="scene"><canvas id="beam"></canvas>
       <div class="body src"><div class="planet">${Cosmos.planet(s)}</div><div class="lbl">Source</div><div class="name" title="${esc(s.model)}">${esc(s.model)}</div></div>
       <div class="body dst"><div class="planet" id="dst-planet">${Cosmos.planet(d)}</div><div class="lbl">Destination</div><div class="name" title="${esc(d.model)}">${esc(d.model)}</div></div>
@@ -369,7 +393,7 @@ function viewRun() {
       <div class="stat"><div class="k">${L("Position (LBA source)", "Position (source LBA)")}</div><div class="v mono" style="font-size:15px" id="s-lba">—</div></div>
     </div>
     <details class="log" ${S.logOpen ? "open" : ""} data-keep="log"><summary>${L("Journal de l'opération", "Operation log")}</summary><pre id="log"></pre></details>
-    <div class="footer-bar"><span class="muted">${L("Ne débranchez aucun disque et ne mettez pas l'ordinateur en veille pendant l'opération.", "Do not unplug any disk or put the computer to sleep during the operation.")}</span><span class="spacer"></span><button class="btn" data-act="cancel" id="btn-cancel">${L("Annuler le clonage…", "Cancel cloning…")}</button></div></div>`;
+    <div class="footer-bar"><span class="muted">${L("Ne débranchez aucun disque. Veille bloquée pendant l'opération.", "Do not unplug any disk. Sleep is blocked during the operation.")}${q?.shutdown ? ` · <b style="color:var(--warn)">${L("extinction à la fin", "shutdown when done")}</b>` : ""}${q?.eject ? ` · ${L("éjection à la fin", "eject when done")}` : ""}</span><span class="spacer"></span><button class="btn" data-act="cancel" id="btn-cancel">${L("Annuler…", "Cancel…")}</button></div></div>`;
 }
 
 function updateRun() {
@@ -487,6 +511,22 @@ function outcomeHtml(rep, error, opts) {
     <div class="footer-bar"><span class="muted">${L(`Rapport ${esc(rep.id)} enregistré.`, `Report ${esc(rep.id)} saved.`)}</span><span class="spacer"></span>
       <button class="btn small" data-act="export" data-id="${esc(rep.id)}" data-fmt="txt">${L("Exporter en TXT", "Export as TXT")}</button><button class="btn small" data-act="export" data-id="${esc(rep.id)}" data-fmt="html">${L("Exporter en HTML", "Export as HTML")}</button>
       ${opts.fromList ? `<button class="btn" data-act="report-close">← ${L("Tous les rapports", "All reports")}</button>` : `<button class="btn primary" data-act="restart">${L("Nouveau clonage", "New clone")}</button>`}</div>`;
+}
+
+const itemGood = (it) => !!it.report && ["success_verified", "completed_with_warnings"].includes(it.report.outcome.status);
+
+function queueSummary() {
+  const q = S.queue;
+  if (!q || !q.items.length) return "";
+  const ej = (it) => it.ejected === true ? `<span class="chip ok">${L("éjecté", "ejected")}</span>` : it.ejected === false ? `<span class="chip warn" title="${esc(it.ejectError || "")}">${L("non éjecté", "not ejected")}</span>` : "";
+  if (q.items.length === 1) {
+    const it = q.items[0];
+    return it.ejected != null ? `<div class="panel slim">${ej(it)} ${it.ejectError ? `<span class="muted">${esc(it.ejectError)}</span>` : ""}</div>` : "";
+  }
+  return `<div class="panel"><h2>${L("File de clonage", "Clone queue")}</h2><table class="t"><tr><th>#</th><th>Destination</th><th>${L("Résultat", "Result")}</th><th>${L("Durée", "Duration")}</th><th></th><th></th></tr>${q.items.map((it, i) => {
+    const st = it.report ? STATUS[it.report.outcome.status] : ["failed", it.blocked?.length ? L("Refusé", "Refused") : L("Erreur", "Error")];
+    return `<tr class="${i === S.resultIdx ? "sel" : ""}"><td>${i + 1}</td><td>${esc(it.prep.destination.model)} <span class="dim mono">${size(it.prep.destination.size)}</span></td><td><span class="chip ${{ ok: "ok", warn: "warn", incomplete: "bad", failed: "bad" }[st[0]]}">${st[1]}</span></td><td class="num">${it.report ? dur(it.report.outcome.duration_ms / 1000) : "—"}</td><td>${ej(it)}</td><td><button class="btn small" data-act="result-sel" data-i="${i}" ${i === S.resultIdx ? "disabled" : ""}>${L("Détails", "Details")}</button></td></tr>`;
+  }).join("")}</table></div>`;
 }
 
 function badge(kind) {
@@ -667,6 +707,86 @@ function viewReports() {
   return `<div class="page"><div class="page-head"><div><h1>${L("Rapports", "Reports")}</h1><p>${L("Enregistrés localement dans", "Saved locally in")} <code>${esc(S.env?.reports_dir || "")}</code>. ${L("Rien n'est envoyé sur Internet.", "Nothing is sent over the Internet.")}</p></div></div>${body}</div>`;
 }
 
+// ---------------------------------------------------------------- View: format
+const FS_MAX = { ntfs: 32, exfat: 15, fat32: 11 };
+function viewFormat() {
+  const f = S.fmt;
+  if (S.loadingDisks) return `<div class="page"><div class="empty"><div class="orbit-loader"></div></div></div>`;
+  const list = S.disks.map((d) => diskCard(d, { mini: true, act: "fmt-sel", selected: d.id === f.id, locked: f.running })).join("");
+  const sel = disk(f.id);
+  let right;
+  if (!sel) right = `<div class="panel empty">${L("Choisir un disque à gauche.", "Pick a disk on the left.")}</div>`;
+  else {
+    const c = f.check;
+    const word = confirmWord();
+    const good = f.confirm.trim().toUpperCase() === word;
+    const refused = c?.refusals || [];
+    const notes = [];
+    if (f.fs === "fat32") notes.push(L("FAT32 : fichiers de 4 Go maximum.", "FAT32: 4 GB maximum file size."));
+    if (c?.own_fat32) notes.push(L("FAT32 > 32 Go : écrit par Chud Clone (Windows refuse au-delà).", "FAT32 > 32 GB: written by Chud Clone (Windows refuses beyond)."));
+    if (f.table === "mbr") notes.push(L("MBR : démarrage BIOS hérité, 2 To max.", "MBR: legacy BIOS boot, 2 TB max."));
+    const sel1 = (k, list) => `<select data-fmt="${k}" ${f.running ? "disabled" : ""}>${list.map(([v, l]) => `<option value="${v}" ${f[k] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+    const form = `<div class="panel">
+      <div class="fmt-head"><div class="planet">${Cosmos.planet(sel)}</div><div><h2 style="margin:0">${esc(sel.model || "—")}</h2><div class="mono dim">${sel.number != null ? "disk " + sel.number : esc(sel.path)} · ${size(sel.size)} · ${TABLE[sel.table]} · ${esc(sel.partitions.flatMap((p) => p.mounts).join(" ") || "—")}</div></div></div>
+      ${strip(sel.partitions, sel.size)}
+      <div class="fmt-grid">
+        <label>${L("Système de fichiers", "File system")}${sel1("fs", [["ntfs", "NTFS"], ["exfat", "exFAT"], ["fat32", "FAT32"]])}</label>
+        <label>${L("Table", "Table")}${sel1("table", [["gpt", "GPT"], ["mbr", "MBR"]])}</label>
+        <label>${L("Nom du volume", "Volume name")} <span class="dim">(${f.label.length}/${FS_MAX[f.fs]})</span><input type="text" id="fmt-label" value="${esc(f.label)}" maxlength="${FS_MAX[f.fs]}" spellcheck="false" ${f.running ? "disabled" : ""} placeholder="${L("sans nom", "no name")}"></label>
+      </div>
+      ${c && c.label !== f.label && !refused.length ? `<p class="dim">${L("Nom écrit :", "Name written:")} <b class="mono">${esc(c.label)}</b></p>` : ""}
+      ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+      ${f.checking ? `<div class="loader"></div>` : refused.length ? findingsHtml(refused.map((r) => ({ severity: "error", title: r, detail: "", blocking: true }))) : ""}
+    </div>`;
+    let action = "";
+    if (f.running) action = `<div class="panel"><h2>${L("Formatage…", "Formatting…")}</h2><div class="loader"></div><ol class="fmt-steps">${f.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>`;
+    else if (f.outcome) action = `<div class="verdict ok"><div class="badge">${badge("ok")}</div><div><h1>${L("Disque formaté", "Disk formatted")}</h1><ul class="selectable"><li class="mono">${esc(f.outcome.table.toUpperCase())} · ${esc({ ntfs: "NTFS", exfat: "exFAT", fat32: "FAT32" }[f.outcome.fs])} · « ${esc(f.outcome.label || "—")} » · ${size(f.outcome.partition_size)} · ${esc(f.outcome.mount || L("sans lettre", "no letter"))}</li>${f.outcome.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn primary" data-act="fmt-again">OK</button></div>`;
+    else if (f.error) action = `<div class="verdict failed"><div class="badge">${badge("failed")}</div><div><h1>${L("Formatage échoué", "Formatting failed")}</h1><ul><li class="selectable">${esc(f.error)}</li></ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn" data-act="fmt-again">OK</button></div>`;
+    else if (c && !refused.length && !f.checking) action = `<div class="danger-zone"><h2 class="dz-title">${L("Irréversible", "Irreversible")}</h2>
+      <p class="big">${L(`Tout le contenu de « ${esc(sel.model)} » (${size(sel.size)}) sera effacé.`, `All content of “${esc(sel.model)}” (${size(sel.size)}) will be erased.`)}</p>
+      <div class="row wrap" style="margin-top:12px"><span>${L("Saisir", "Type")} <b class="mono">${word}</b> ${L("puis Entrée", "then Enter")}</span><input type="text" id="fmt-confirm" class="${good ? "good" : ""}" value="${esc(f.confirm)}" autocomplete="off" spellcheck="false" maxlength="12"><span class="spacer"></span><button class="btn danger" data-act="fmt-start" ${good ? "" : "disabled"}>${L("Formater", "Format")}</button></div></div>`;
+    right = form + action;
+  }
+  return `<div class="page"><div class="page-head"><div><h1>${L("Formater", "Format")}</h1><p>${L("Disque entier : nouvelle table, une partition, un nom.", "Whole disk: new table, one partition, one name.")}</p></div><button class="btn small ghost" data-act="refresh">↻ ${L("Actualiser", "Refresh")}</button></div>
+    <div class="split"><div class="disk-list">${list}</div><div>${right}</div></div></div>`;
+}
+
+let fmtCheckGen = 0;
+async function formatCheck() {
+  const f = S.fmt;
+  if (!f.id) return;
+  const gen = ++fmtCheckGen;
+  f.checking = true;
+  render();
+  let check = null;
+  try { check = await api.invoke("format_check", { id: f.id, request: { fs: f.fs, table: f.table, label: f.label } }); } catch (e) { check = { refusals: [typeof e === "string" ? e : String(e)], label: f.label }; }
+  if (gen !== fmtCheckGen) return;
+  f.check = check; f.checking = false;
+  if (S.view === "format") render();
+}
+
+let fmtLabelTimer = null;
+function bindFormat() {
+  const lab = $("#fmt-label");
+  lab?.addEventListener("input", (ev) => {
+    S.fmt.label = ev.target.value;
+    S.fmt.confirm = "";
+    clearTimeout(fmtLabelTimer);
+    fmtLabelTimer = setTimeout(() => { formatCheck().then(() => { const l = $("#fmt-label"); if (l) { l.focus(); l.setSelectionRange(l.value.length, l.value.length); } }); }, 350);
+  });
+  const c = $("#fmt-confirm");
+  c?.addEventListener("input", (ev) => {
+    S.fmt.confirm = ev.target.value;
+    const ok = S.fmt.confirm.trim().toUpperCase() === confirmWord();
+    ev.target.classList.toggle("good", ok);
+    const b = $('[data-act="fmt-start"]');
+    if (b) b.disabled = !ok;
+  });
+  c?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && S.fmt.confirm.trim().toUpperCase() === confirmWord()) { ev.preventDefault(); actions["fmt-start"](); }
+  });
+}
+
 // -------------------------------------------------------------- View: settings
 // Full logo, next to the title-bar one (the UI bench serves the page from another folder).
 const logoUrl = () => ($(".brand img")?.getAttribute("src") || "logo-tiny.svg").replace(/logo-tiny\.svg$/, "logo.svg");
@@ -678,7 +798,8 @@ function viewSettings() {
       <div class="opt"><div><label>${L("Langue", "Language")}</label><small>${L("Interface, diagnostics et nouveaux rapports.", "Interface, diagnostics and new reports.")}</small></div>
       <select data-ui="lang"><option value="fr" ${LANG === "fr" ? "selected" : ""}>Français</option><option value="en" ${LANG === "en" ? "selected" : ""}>English</option></select></div>
       <div class="opt"><div><label>Animations</label><small>${L("Le ciel étoilé, le faisceau de transfert et les transitions. « Réduites » fige le fond.", "The starry sky, the transfer beam and the transitions. \"Reduced\" freezes the background.")}</small></div>
-      <select data-ui="motion"><option value="full" ${S.ui.motion === "full" ? "selected" : ""}>${L("Complètes", "Full")}</option><option value="reduced" ${S.ui.motion === "reduced" ? "selected" : ""}>${L("Réduites", "Reduced")}</option><option value="off" ${S.ui.motion === "off" ? "selected" : ""}>${L("Aucune", "None")}</option></select></div></div>
+      <select data-ui="motion"><option value="full" ${S.ui.motion === "full" ? "selected" : ""}>${L("Complètes", "Full")}</option><option value="reduced" ${S.ui.motion === "reduced" ? "selected" : ""}>${L("Réduites", "Reduced")}</option><option value="off" ${S.ui.motion === "off" ? "selected" : ""}>${L("Aucune", "None")}</option></select></div>
+      <div class="opt"><div><label>${L("Sons de fin de clonage", "End-of-clone sounds")}</label><small>${L("Son de réussite ou d'échec.", "Success or failure sound.")}</small></div><label class="toggle"><input type="checkbox" data-uicheck="sound" ${S.ui.sound !== false ? "checked" : ""}><span>${L("Activés", "On")}</span></label></div></div>
     ${updatePanel()}
     <div class="panel"><h2>${L("À propos", "About")}</h2><div class="about-head"><img src="${esc(logoUrl())}" alt="" /><div><b>${esc(e.name || "Chud Clone")}</b><span class="muted">${L("Clonage et diagnostic de disques", "Disk cloning and diagnostics")}</span></div></div>${kv([["Version", `${esc(e.name)} ${esc(e.version)}`], ["Mode", e.portable ? L("Portable (données à côté du programme)", "Portable (data next to the program)") : L("Installé", "Installed")], [L("Droits", "Rights"), e.elevated ? L("Administrateur", "Administrator") : L("Limités (lecture des propriétés uniquement)", "Limited (properties only)")], [L("Données", "Data"), `<code>${esc(e.data_dir)}</code>`], [L("Rapports", "Reports"), `<code>${esc(e.reports_dir)}</code>`], [L("Confidentialité", "Privacy"), L("Aucune télémétrie. Seule connexion réseau : la recherche de mises à jour sur GitHub, désactivable ci-dessus.", "No telemetry. Only network connection: the update check on GitHub, which can be turned off above.")]])}</div></div>`;
 }
@@ -842,7 +963,7 @@ function render() {
   const screen = S.view + ":" + (S.view === "clone" ? S.step : S.view === "reports" ? S.reportOpen?.id || "" : "");
   const sameScreen = view.dataset.screen === screen;
   if (beam) { beam.destroy(); beam = null; }
-  view.innerHTML = { clone: viewClone, disks: viewDisks, reports: viewReports, settings: viewSettings }[S.view]();
+  view.innerHTML = { clone: viewClone, disks: viewDisks, format: viewFormat, reports: viewReports, settings: viewSettings }[S.view]();
   view.dataset.screen = screen;
   view.scrollTop = sameScreen ? scroll : 0;
   // Transition only when the screen changes: refreshes (loading, SMART, progress)
@@ -867,13 +988,22 @@ function render() {
     }
     updateRun();
   }
-  if (S.view === "clone" && S.step === "review") $("#confirm")?.addEventListener("input", (ev) => {
-    S.confirmText = ev.target.value;
-    const ok = S.confirmText.trim().toUpperCase() === confirmWord();
-    ev.target.classList.toggle("good", ok);
-    const b = $('[data-act="start"]');
-    if (b) b.disabled = !ok;
-  });
+  if (S.view === "clone" && S.step === "review") {
+    const c = $("#confirm");
+    c?.addEventListener("input", (ev) => {
+      S.confirmText = ev.target.value;
+      const ok = S.confirmText.trim().toUpperCase() === confirmWord();
+      ev.target.classList.toggle("good", ok);
+      const b = $('[data-act="start"]');
+      if (b) b.disabled = !ok;
+    });
+    // Enter starts the clone once the word is right.
+    c?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && S.confirmText.trim().toUpperCase() === confirmWord()) { ev.preventDefault(); actions.start(); }
+    });
+    $("#opt-shutdown")?.addEventListener("change", (ev) => { S.shutdown = ev.target.checked; });
+  }
+  if (S.view === "format") bindFormat();
 }
 
 async function loadDisks(silent) {
@@ -888,40 +1018,133 @@ async function loadDisks(silent) {
   if (S.view === "disks") surveyHealth();
 }
 
-function params() {
+function params(dstId, prep) {
   const o = S.opts;
   return {
-    source_id: S.srcId, destination_id: S.dstId, mode: o.mode, optimize_layout: !!o.optimize_layout, grow_main: o.grow_main !== false, verify: o.verify, unreadable: o.unreadable,
+    source_id: S.srcId, destination_id: dstId, mode: o.mode, optimize_layout: !!o.optimize_layout, grow_main: o.grow_main !== false, verify: o.verify, unreadable: o.unreadable,
     read_retries: Number(o.read_retries), allow_unvalidated_physical_write: false,
-    source_fingerprint: S.prep?.source.fingerprint ?? null, destination_fingerprint: S.prep?.destination.fingerprint ?? null,
+    source_fingerprint: prep?.source.fingerprint ?? null, destination_fingerprint: prep?.destination.fingerprint ?? null,
+    eject: !!o.eject,
   };
 }
 
+// Shows the analysis of destination i of the queue.
+function selectPrep(i) {
+  S.prepIdx = Math.max(0, Math.min(i, S.dstIds.length - 1));
+  const x = S.preps[S.prepIdx] || {};
+  S.dstId = S.dstIds[S.prepIdx] || null;
+  S.prep = x.prep || null;
+  S.prepError = x.error || null;
+  S.prepBusy = !!x.busy;
+}
+
+// Analyses every destination of the queue, one after another. Writes nothing.
 async function prepare() {
-  S.prep = null; S.prepError = null; S.prepBusy = true; S.confirmText = "";
+  const gen = (S.prepGen = (S.prepGen || 0) + 1);
+  S.preps = S.dstIds.map(() => ({ busy: true }));
+  S.confirmText = "";
   S.prepLang = LANG;
+  selectPrep(S.prepIdx);
   render();
   await langReady;
+  for (let i = 0; i < S.dstIds.length; i++) {
+    let x;
+    try {
+      const prep = await api.invoke("prepare_clone", { params: params(S.dstIds[i], null) });
+      S.smart[prep.source.id] = prep.smart_source;
+      S.smart[prep.destination.id] = prep.smart_destination;
+      x = { prep };
+    } catch (e) { x = { error: typeof e === "string" ? e : e?.message || String(e) }; }
+    if (gen !== S.prepGen) return;
+    S.preps[i] = x;
+    selectPrep(S.prepIdx);
+    if (S.view === "clone" && S.step === "review") render();
+  }
+}
+
+// ------------------------------------------------------------ Clone queue
+async function startQueueItem() {
+  const q = S.queue, it = q.items[q.idx];
+  S.run = { source: it.prep.source, destination: it.prep.destination, progress: null, logs: [], started: Date.now(), err: { read: 0, bad: 0, rec: 0, write: 0 } };
+  S.report = null; S.runError = null; S.runBlocked = null;
   try {
-    S.prep = await api.invoke("prepare_clone", { params: params() });
-    S.smart[S.prep.source.id] = S.prep.smart_source;
-    S.smart[S.prep.destination.id] = S.prep.smart_destination;
-  } catch (e) { S.prepError = typeof e === "string" ? e : e?.message || String(e); }
-  S.prepBusy = false;
-  if (S.view === "clone" && S.step === "review") render();
+    await api.invoke("start_clone", { params: params(it.id, it.prep), confirmation: q.word });
+    S.step = "run";
+    render();
+  } catch (e) {
+    queueDone({ report: null, error: typeof e === "string" ? e : e?.message || String(e), blocked: [] });
+  }
+}
+
+// End of one clone of the queue: next one, or the final result.
+function queueDone(payload) {
+  const q = S.queue;
+  if (!q) return;
+  const it = q.items[q.idx];
+  Object.assign(it, { done: true, report: payload.report, error: payload.error, blocked: payload.blocked, ejected: payload.ejected ?? null, ejectError: payload.eject_error || null });
+  if (it.ejected === false) toast(L("Éjection impossible : ", "Eject failed: ") + (it.ejectError || ""), true);
+  if (q.idx + 1 < q.items.length) {
+    q.idx++;
+    startQueueItem();
+    return;
+  }
+  const allGood = q.items.every(itemGood);
+  playSound(allGood);
+  const firstBad = q.items.findIndex((x) => !itemGood(x));
+  showResult(firstBad >= 0 ? firstBad : q.items.length - 1);
+  S.step = "result"; S.run = null;
+  render();
+  loadDisks(true);
+  if (q.shutdown) shutdownCountdown();
+}
+
+function showResult(i) {
+  const it = S.queue.items[i];
+  S.resultIdx = i;
+  S.report = it.report; S.runError = it.error; S.runBlocked = it.blocked;
+}
+
+function soundUrl(name) {
+  return ($(".brand img")?.getAttribute("src") || "logo-tiny.svg").replace(/logo-tiny\.svg$/, "sounds/" + name + ".mp3");
+}
+function playSound(good) {
+  if (S.ui.sound === false) return;
+  try { const a = new Audio(soundUrl(good ? "good" : "bad")); a.volume = 0.9; a.play().catch(() => {}); } catch { /* no audio */ }
+}
+
+let shutdownTimer = null;
+function shutdownCountdown() {
+  let left = 60;
+  const draw = () => modal(`<h2 style="color:var(--warn)">${L("Extinction du PC", "Shutting down")}</h2><p class="big mono" style="font-size:40px;margin:10px 0">${left} s</p><p class="muted">${L("Rapports enregistrés.", "Reports saved.")}</p>
+    <div class="actions"><button class="btn primary" data-act="shutdown-cancel">${L("Annuler l'extinction", "Cancel shutdown")}</button><button class="btn danger" data-act="shutdown-now">${L("Éteindre maintenant", "Shut down now")}</button></div>`);
+  draw();
+  shutdownTimer = setInterval(() => {
+    left--;
+    if (left <= 0) return void actions["shutdown-now"]();
+    draw();
+  }, 1000);
 }
 
 // ----------------------------------------------------------------- Actions
 const actions = {
   pick(el) {
-    if (S.step === "source") { S.srcId = el.dataset.id; if (S.dstId === S.srcId) S.dstId = null; }
-    else S.dstId = el.dataset.id;
+    const id = el.dataset.id;
+    if (S.step === "source") { S.srcId = id; S.dstIds = S.dstIds.filter((x) => x !== id); }
+    else S.dstIds = S.dstIds.includes(id) ? S.dstIds.filter((x) => x !== id) : [...S.dstIds, id];
+    S.dstId = S.dstIds[0] || null;
     render();
   },
   next() {
     if (S.step === "source" && S.srcId) S.step = "destination";
-    else if (S.step === "destination" && S.dstId) { S.step = "review"; prepare(); return; }
+    else if (S.step === "destination" && S.dstIds.length) { S.step = "review"; S.prepIdx = 0; prepare(); return; }
     render();
+  },
+  "prep-tab"(el) { selectPrep(Number(el.dataset.i)); render(); },
+  "result-sel"(el) { showResult(Number(el.dataset.i)); render(); },
+  "shutdown-cancel"() { clearInterval(shutdownTimer); shutdownTimer = null; closeModal(); toast(L("Extinction annulée.", "Shutdown cancelled.")); },
+  async "shutdown-now"() {
+    clearInterval(shutdownTimer); shutdownTimer = null; closeModal();
+    try { await api.invoke("shutdown_pc"); } catch (e) { fail(e); }
   },
   back() {
     S.step = S.step === "review" ? "destination" : "source";
@@ -935,7 +1158,8 @@ const actions = {
       if (!path) return;
       const info = await api.invoke("add_image", { path });
       await loadDisks(true);
-      if (S.step === "source") S.srcId = info.id; else if (info.id !== S.srcId) S.dstId = info.id;
+      if (S.step === "source") S.srcId = info.id; else if (info.id !== S.srcId && !S.dstIds.includes(info.id)) S.dstIds.push(info.id);
+      S.dstId = S.dstIds[0] || null;
       render();
     } catch (e) { fail(e); }
   },
@@ -947,20 +1171,18 @@ const actions = {
       if (!path) return;
       const info = await api.invoke("add_new_image", { path, size: s.size });
       await loadDisks(true);
-      S.dstId = info.id;
+      if (!S.dstIds.includes(info.id)) S.dstIds.push(info.id);
+      S.dstId = S.dstIds[0];
       render();
     } catch (e) { fail(e); }
   },
   async start() {
-    if (!S.prep || S.prep.blocked) return;
-    const p = params();
-    S.run = { source: S.prep.source, destination: S.prep.destination, progress: null, logs: [], started: Date.now(), err: { read: 0, bad: 0, rec: 0, write: 0 } };
-    S.report = null; S.runError = null; S.runBlocked = null;
-    try {
-      await api.invoke("start_clone", { params: p, confirmation: S.confirmText.trim().toUpperCase() });
-      S.step = "run";
-      render();
-    } catch (e) { S.run = null; fail(e); }
+    const ready = S.preps.map((x, i) => ({ id: S.dstIds[i], prep: x.prep })).filter((x) => x.prep && !x.prep.blocked);
+    if (!ready.length || S.queue?.running) return;
+    const word = S.confirmText.trim().toUpperCase();
+    if (word !== confirmWord()) return;
+    S.queue = { items: ready, idx: 0, word, eject: !!S.opts.eject, shutdown: S.shutdown, running: true };
+    await startQueueItem();
   },
   cancel() {
     modal(`<h2>${L("Annuler le clonage ?", "Cancel cloning?")}</h2><p>${L("La copie s'arrêtera immédiatement. <b>L'ancien contenu de la destination est déjà perdu</b> et ne sera pas restauré : la destination restera sans table de partitions, inutilisable jusqu'à un nouveau clonage complet.", "The copy will stop immediately. <b>The destination's previous content is already lost</b> and will not be restored: the destination will stay without a partition table, unusable until a new complete clone.")}</p><p class="muted">${L("La source n'est pas modifiée.", "The source is not modified.")}</p>
@@ -976,7 +1198,7 @@ const actions = {
   "update-skip"() { S.ui.skipVersion = S.update.info?.latest || null; store.set("ui", S.ui); $("#update-toast")?.remove(); },
   "unreadable-stop"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: false }); },
   "unreadable-zero"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: true }); },
-  restart() { S.step = "source"; S.prep = null; S.report = null; S.runError = null; S.run = null; S.confirmText = ""; S.dstId = null; loadDisks(); },
+  restart() { S.step = "source"; S.prep = null; S.preps = []; S.prepIdx = 0; S.queue = null; S.report = null; S.runError = null; S.run = null; S.confirmText = ""; S.dstId = null; S.dstIds = []; S.shutdown = false; loadDisks(); },
   async export(el) {
     const fmt = el.dataset.fmt, id = el.dataset.id;
     try {
@@ -987,6 +1209,24 @@ const actions = {
     } catch (e) { fail(e); }
   },
   "disk-sel"(el) { S.diskSel = el.dataset.id; render(); },
+  "fmt-sel"(el) {
+    if (S.fmt.running) return;
+    Object.assign(S.fmt, { id: el.dataset.id, check: null, confirm: "", outcome: null, error: null, steps: [] });
+    formatCheck();
+  },
+  "fmt-again"() { Object.assign(S.fmt, { outcome: null, error: null, steps: [], confirm: "" }); formatCheck(); },
+  async "fmt-start"() {
+    const f = S.fmt;
+    if (f.running || !f.check || f.check.refusals.length || f.confirm.trim().toUpperCase() !== confirmWord()) return;
+    Object.assign(f, { running: true, steps: [], outcome: null, error: null });
+    render();
+    try {
+      f.outcome = await api.invoke("format_disk", { id: f.id, fingerprint: f.check.disk.fingerprint, request: { fs: f.fs, table: f.table, label: f.label }, confirmation: f.confirm.trim().toUpperCase() });
+    } catch (e) { f.error = typeof e === "string" ? e : e?.message || String(e); }
+    f.running = false; f.confirm = "";
+    render();
+    loadDisks(true);
+  },
   async smart(el) {
     await readHealth(el.dataset.id);
   },
@@ -1040,12 +1280,14 @@ async function surveyHealth() {
 
 async function goto(view) {
   if (S.view === "clone" && S.step === "run" && view !== "clone") { toast(L("Un clonage est en cours : restez sur cet écran pour le suivre.", "A clone is running: stay on this screen to follow it.")); return; }
+  if (S.fmt.running && view !== "format") { toast(L("Formatage en cours.", "Formatting in progress.")); return; }
   S.view = view;
   // Analysis shown in another language: it is redone.
   if (view === "clone" && S.step === "review" && !S.prepBusy && S.prepLang !== LANG) return void prepare();
   if (view === "reports") { S.reportOpen = null; S.reports = null; render(); try { S.reports = await api.invoke("list_reports"); } catch (e) { S.reports = []; fail(e); } }
   render();
   if (view === "disks" && !S.loadingDisks) surveyHealth();
+  if (view === "format" && S.fmt.id) formatCheck();
 }
 
 document.addEventListener("click", (ev) => {
@@ -1061,6 +1303,12 @@ document.addEventListener("change", (ev) => {
     store.set("opts", S.opts);
     // An option that changes the plan requires redoing the displayed analysis.
     if (S.view === "clone" && S.step === "review" && ["mode", "optimize_layout", "grow_main"].includes(t.dataset.opt)) prepare();
+  }
+  if (t.dataset.fmt) {
+    S.fmt[t.dataset.fmt] = t.value;
+    S.fmt.confirm = "";
+    if (t.dataset.fmt === "fs") S.fmt.label = S.fmt.label.slice(0, FS_MAX[S.fmt.fs]);
+    formatCheck();
   }
   if (t.dataset.uicheck) {
     S.ui[t.dataset.uicheck] = t.checked;
@@ -1109,13 +1357,13 @@ async function boot() {
   await api.listen("clone-ask", (e) => askUnreadable(e.payload));
   await api.listen("clone-done", (e) => {
     closeModal();
-    const { report, error, blocked } = e.payload;
-    S.report = report; S.runError = error; S.runBlocked = blocked;
+    const { report } = e.payload;
     const st = report ? STATUS[report.outcome.status][0] : "failed";
-    // Lets the final state of the beam show before displaying the report.
+    // Lets the final state of the beam show before the next clone or the report.
     if (beam) beam.set({ ok: "ok", warn: "warn", incomplete: "incomplete", failed: "fail" }[st], 0.3, false);
-    setTimeout(() => { S.step = "result"; S.run = null; render(); loadDisks(true); }, document.documentElement.classList.contains("no-motion") ? 0 : 1600);
+    setTimeout(() => queueDone(e.payload), document.documentElement.classList.contains("no-motion") ? 0 : 1600);
   });
+  await api.listen("format-step", (e) => { S.fmt.steps.push(e.payload); if (S.view === "format") render(); });
   await api.listen("scan-progress", (e) => {
     const sc = S.scan, p = e.payload;
     if (!sc || !sc.running) return;

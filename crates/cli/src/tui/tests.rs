@@ -225,5 +225,25 @@ fn destination_rules() {
     wait(&mut app, "image", |a| a.busy.is_none());
     assert!(matches!(app.modal, Some(Modal::Message { .. })));
     assert_eq!(app.entries.len(), 1);
+
+    // Formatting: an image file is refused, nothing starts even with the right word.
+    set_lang(Lang::En);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('m'));
+    assert_eq!(app.screen, Screen::Format);
+    render_all_sizes(&mut app, "only disks can be formatted");
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.fmt.as_ref().unwrap().fs, chud_clone_core::format::FsChoice::Fat32);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    typ(&mut app, "my key");
+    render_all_sizes(&mut app, "Name (11 max)");
+    press(&mut app, KeyCode::Down);
+    typ(&mut app, "ERASE");
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.fmt.as_ref().unwrap().running && app.fmt.as_ref().unwrap().result.is_none());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Home);
     let _ = std::fs::remove_dir_all(&dir);
 }

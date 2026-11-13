@@ -29,11 +29,13 @@ macro_rules! tf {
 
 pub mod i18n;
 
+pub mod awake;
 pub mod boot;
 pub mod clone;
 pub mod device;
 pub mod diag;
 pub mod engine;
+pub mod format;
 pub mod fs;
 pub mod guid;
 pub mod health;
