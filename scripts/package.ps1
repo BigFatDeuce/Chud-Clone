@@ -64,6 +64,8 @@ $setup = Join-Path $dist "ChudClone-$version-setup.exe"
 Write-Host "Installer: $setup" -ForegroundColor Green
 
 Write-Host "`nSHA-256 checksums:" -ForegroundColor Cyan
-Get-FileHash -Algorithm SHA256 $zip, $setup, "$port\chud-clone.exe", "$port\chud-clone-cli.exe" |
-  ForEach-Object { '{0}  {1}' -f $_.Hash.ToLower(), (Split-Path -Leaf $_.Path) } |
-  Tee-Object -FilePath (Join-Path $dist "SHA256SUMS-$version.txt")
+$sums = Get-FileHash -Algorithm SHA256 $zip, $setup, "$port\chud-clone.exe", "$port\chud-clone-cli.exe" |
+  ForEach-Object { '{0}  {1}' -f $_.Hash.ToLower(), (Split-Path -Leaf $_.Path) }
+# ASCII with LF line endings, so that "sha256sum -c" can read it.
+[IO.File]::WriteAllText((Join-Path $dist "SHA256SUMS-$version.txt"), (($sums -join "`n") + "`n"), [Text.Encoding]::ASCII)
+$sums
