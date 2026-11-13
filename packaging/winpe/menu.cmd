@@ -4,7 +4,8 @@ rem Every operation goes through chud-clone-cli.exe: same checks as the applicat
 rem Language: lang.txt ("en" or "fr", written by make-winpe.ps1); option 9 toggles it.
 rem This file stays pure ASCII: cmd misreads batch files containing UTF-8 characters.
 rem The messages are in menu-en.txt / menu-fr.txt (UTF-8), loaded with chcp 65001.
-chcp 65001 >nul
+rem chcp gets an empty input (<nul) so that it never touches the menu's own input.
+chcp 65001 <nul >nul
 setlocal EnableExtensions EnableDelayedExpansion
 set "HOME=%~dp0"
 set "CLI=%HOME%chud-clone-cli.exe"
@@ -51,8 +52,11 @@ echo     7. !T_7!
 echo     8. !T_8!
 echo     9. !T_9!
 echo.
-choice /c 123456789 /n /m "   !T_CHOICE! "
-goto choice%errorlevel%
+rem WinPE has no choice.exe: the answer is read with set /p.
+set "C="
+set /p "C=   !T_CHOICE! "
+for %%k in (1 2 3 4 5 6 7 8 9) do if "!C!"=="%%k" goto choice%%k
+goto menu
 
 :choice0
 goto menu
@@ -141,12 +145,17 @@ rem --- Disk number input (digits only) ----------------------------------------
 :disk
 set "%~1="
 set /p "%~1=  %~2 : "
-echo(!%~1!| findstr /r "^[0-9][0-9]*$" >nul || (
-  echo   !T_BADNUM!
-  pause
-  exit /b 1
-)
+rem Digits only, checked without external tools (WinPE lacks some of them).
+set "REST=!%~1!"
+if not defined REST goto badnum
+for %%c in (0 1 2 3 4 5 6 7 8 9) do set "REST=!REST:%%c=!"
+if defined REST goto badnum
 exit /b 0
+
+:badnum
+echo   !T_BADNUM!
+pause
+exit /b 1
 
 :pair
 "%CLI%" list

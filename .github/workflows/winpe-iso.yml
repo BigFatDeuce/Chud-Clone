@@ -16,6 +16,9 @@ on:
       tag:
         description: Release tag (e.g. v0.3.0)
         required: true
+      ref:
+        description: "Branch or tag for the menu and scripts (default: the release tag). The CLI always comes from the release."
+        required: false
 
 permissions:
   contents: write
@@ -30,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.event.release.tag_name || inputs.ref || inputs.tag }}
 
       - name: Install the Windows ADK (deployment tools) and the WinPE add-on
         shell: pwsh
