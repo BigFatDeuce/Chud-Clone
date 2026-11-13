@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chud Clone</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <canvas id="cosmos"></canvas>
+    <div id="app">
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand"><img src="logo.png" alt="" /><span>Chud Clone</span></div>
+        <nav>
+          <button data-view="clone" class="active" data-fr="Cloner" data-en="Clone">Cloner</button>
+          <button data-view="disks" data-fr="Disques et santé" data-en="Disks &amp; health">Disques et santé</button>
+          <button data-view="reports" data-fr="Rapports" data-en="Reports">Rapports</button>
+          <button data-view="settings" data-fr="Réglages" data-en="Settings">Réglages</button>
+        </nav>
+        <div class="grow" data-tauri-drag-region></div>
+        <button id="admin" class="admin"></button>
+        <div class="win">
+          <button id="win-min" aria-label="Réduire" data-afr="Réduire" data-aen="Minimize"><svg viewBox="0 0 11 11"><path d="M1 5.5h9" stroke="currentColor" stroke-width="1.1" /></svg></button>
+          <button id="win-max" aria-label="Agrandir" data-afr="Agrandir" data-aen="Maximize"><svg viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.1" /></svg></button>
+          <button id="win-close" aria-label="Fermer" data-afr="Fermer" data-aen="Close"><svg viewBox="0 0 11 11"><path d="M1.5 1.5l8 8M9.5 1.5l-8 8" stroke="currentColor" stroke-width="1.1" /></svg></button>
+        </div>
+      </header>
+      <main id="view"></main>
+    </div>
+    <div id="modal-root"></div>
+    <div id="toasts"></div>
+    <script src="cosmos.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

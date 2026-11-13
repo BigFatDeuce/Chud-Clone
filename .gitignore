@@ -1,0 +1,7 @@
+/target
+/dist
+*.img
+*.img.tmp
+/crates/app/gen
+.claude/
+/crates/*/Cargo.lock

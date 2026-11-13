@@ -1,0 +1,1042 @@
+// Généré par scripts/make-ui-mock-data.js — ne pas modifier à la main.
+window.MOCK_DATA_EN = {
+ "prep": {
+  "source": {
+   "id": "image:D:\\Images\\source.img",
+   "kind": "image",
+   "path": "D:\\Images\\source.img",
+   "number": null,
+   "model": "gpt-win.img",
+   "vendor": "",
+   "serial": "",
+   "firmware": "",
+   "bus": "File",
+   "media": "image",
+   "size": 201326592,
+   "sector_size": 512,
+   "physical_sector_size": 512,
+   "removable": false,
+   "read_only": false,
+   "offline": false,
+   "is_system": false,
+   "hosts_app": false,
+   "table": "gpt",
+   "partitions": [
+    {
+     "number": 1,
+     "offset": 1048576,
+     "size": 41943040,
+     "role": "esp",
+     "type_label": "EFI system partition",
+     "name": "EFI system partition",
+     "fs": "FAT32",
+     "label": "SYSTEM",
+     "used_bytes": 3777536,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 2,
+     "offset": 42991616,
+     "size": 16777216,
+     "role": "msr",
+     "type_label": "Microsoft reserved (MSR)",
+     "name": "Microsoft reserved partition",
+     "fs": null,
+     "label": null,
+     "used_bytes": null,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 3,
+     "offset": 59768832,
+     "size": 100663296,
+     "role": "basic_data",
+     "type_label": "Basic data",
+     "name": "Basic data partition",
+     "fs": "NTFS",
+     "label": "Windows",
+     "used_bytes": 14213120,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 4,
+     "offset": 160432128,
+     "size": 33554432,
+     "role": "recovery",
+     "type_label": "Windows recovery",
+     "name": null,
+     "fs": "NTFS",
+     "label": "Recovery",
+     "used_bytes": 5578752,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    }
+   ],
+   "used_bytes": 23569408,
+   "fingerprint": "0582411287ae6df4",
+   "deep": true,
+   "notes": []
+  },
+  "destination": {
+   "id": "image:D:\\Images\\clone.img",
+   "kind": "image",
+   "path": "D:\\Images\\clone.img",
+   "number": null,
+   "model": "dst.img (to be created)",
+   "vendor": "",
+   "serial": "",
+   "firmware": "",
+   "bus": "File",
+   "media": "image",
+   "size": 268435456,
+   "sector_size": 512,
+   "physical_sector_size": 512,
+   "removable": false,
+   "read_only": false,
+   "offline": false,
+   "is_system": false,
+   "hosts_app": false,
+   "table": "none",
+   "partitions": [],
+   "used_bytes": null,
+   "fingerprint": "4724e17b5c7f5b8a",
+   "deep": true,
+   "notes": [
+    "The file will be created."
+   ]
+  },
+  "analysis": {
+   "size": 201326592,
+   "sector_size": 512,
+   "layout": {
+    "kind": "gpt",
+    "sector_size": 512,
+    "disk_sectors": 393216,
+    "partitions": [
+     {
+      "number": 1,
+      "start_lba": 2048,
+      "sectors": 81920,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+       "unique_guid": "11111111-AAAA-4AAA-8AAA-000000000001",
+       "attributes": 0,
+       "name": "EFI system partition",
+       "slot": 0
+      }
+     },
+     {
+      "number": 2,
+      "start_lba": 83968,
+      "sectors": 32768,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",
+       "unique_guid": "22222222-AAAA-4AAA-8AAA-000000000002",
+       "attributes": 0,
+       "name": "Microsoft reserved partition",
+       "slot": 1
+      }
+     },
+     {
+      "number": 3,
+      "start_lba": 116736,
+      "sectors": 196608,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+       "unique_guid": "33333333-AAAA-4AAA-8AAA-000000000003",
+       "attributes": 0,
+       "name": "Basic data partition",
+       "slot": 2
+      }
+     },
+     {
+      "number": 4,
+      "start_lba": 313344,
+      "sectors": 65536,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "DE94BBA4-06D1-4D40-A16A-BFD50179D6AC",
+       "unique_guid": "44444444-AAAA-4AAA-8AAA-000000000004",
+       "attributes": 9223372036854776000,
+       "name": "",
+       "slot": 3
+      }
+     }
+    ],
+    "gpt": {
+     "disk_guid": "5A5A5A5A-1111-2222-3333-0123456789AB",
+     "num_entries": 128,
+     "entry_size": 128,
+     "first_usable_lba": 34,
+     "last_usable_lba": 393182,
+     "primary_valid": true,
+     "backup_valid": true,
+     "backup_at_end": true
+    },
+    "mbr": {
+     "signature": 0,
+     "boot_code_present": false,
+     "extended": null,
+     "ebr_lbas": []
+    },
+    "findings": []
+   },
+   "parts": [
+    {
+     "part": {
+      "number": 1,
+      "start_lba": 2048,
+      "sectors": 81920,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+       "unique_guid": "11111111-AAAA-4AAA-8AAA-000000000001",
+       "attributes": 0,
+       "name": "EFI system partition",
+       "slot": 0
+      }
+     },
+     "fs": {
+      "kind": "fat32",
+      "label": "SYSTEM",
+      "fs_size": 41943040,
+      "cluster_size": 512,
+      "used_bytes": 3777536,
+      "raw_reason": null,
+      "last_used_end": 3777536,
+      "grow_ready": false,
+      "grow_issue": null,
+      "findings": []
+     }
+    },
+    {
+     "part": {
+      "number": 2,
+      "start_lba": 83968,
+      "sectors": 32768,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",
+       "unique_guid": "22222222-AAAA-4AAA-8AAA-000000000002",
+       "attributes": 0,
+       "name": "Microsoft reserved partition",
+       "slot": 1
+      }
+     },
+     "fs": {
+      "kind": "unknown",
+      "label": null,
+      "fs_size": null,
+      "cluster_size": null,
+      "used_bytes": null,
+      "raw_reason": null,
+      "last_used_end": null,
+      "grow_ready": false,
+      "grow_issue": null,
+      "findings": []
+     }
+    },
+    {
+     "part": {
+      "number": 3,
+      "start_lba": 116736,
+      "sectors": 196608,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+       "unique_guid": "33333333-AAAA-4AAA-8AAA-000000000003",
+       "attributes": 0,
+       "name": "Basic data partition",
+       "slot": 2
+      }
+     },
+     "fs": {
+      "kind": "ntfs",
+      "label": "Windows",
+      "fs_size": 100662784,
+      "cluster_size": 4096,
+      "used_bytes": 14213120,
+      "raw_reason": null,
+      "last_used_end": 88313856,
+      "grow_ready": true,
+      "grow_issue": null,
+      "findings": []
+     }
+    },
+    {
+     "part": {
+      "number": 4,
+      "start_lba": 313344,
+      "sectors": 65536,
+      "info": {
+       "scheme": "gpt",
+       "type_guid": "DE94BBA4-06D1-4D40-A16A-BFD50179D6AC",
+       "unique_guid": "44444444-AAAA-4AAA-8AAA-000000000004",
+       "attributes": 9223372036854776000,
+       "name": "",
+       "slot": 3
+      }
+     },
+     "fs": {
+      "kind": "ntfs",
+      "label": "Recovery",
+      "fs_size": 33553920,
+      "cluster_size": 4096,
+      "used_bytes": 5578752,
+      "raw_reason": null,
+      "last_used_end": 21536768,
+      "grow_ready": true,
+      "grow_issue": null,
+      "findings": []
+     }
+    }
+   ]
+  },
+  "plan": {
+   "requested_mode": "smart",
+   "mode": "smart",
+   "table": "gpt",
+   "strategy": "trailing_moved",
+   "src_size": 201326592,
+   "dst_size": 268435456,
+   "partitions": [
+    {
+     "number": 1,
+     "role": "esp",
+     "type_label": "EFI system partition",
+     "name": "EFI system partition",
+     "fs": "fat32",
+     "fs_label": "SYSTEM",
+     "used_bytes": 3777536,
+     "src_start": 1048576,
+     "src_len": 41943040,
+     "dst_start": 1048576,
+     "dst_len": 41943040,
+     "method": "smart",
+     "copy_bytes": 3777536,
+     "moved": false,
+     "method_reason": null
+    },
+    {
+     "number": 2,
+     "role": "msr",
+     "type_label": "Microsoft reserved (MSR)",
+     "name": "Microsoft reserved partition",
+     "fs": "unknown",
+     "fs_label": null,
+     "used_bytes": null,
+     "src_start": 42991616,
+     "src_len": 16777216,
+     "dst_start": 42991616,
+     "dst_len": 16777216,
+     "method": "skip",
+     "copy_bytes": 0,
+     "moved": false,
+     "method_reason": "Microsoft reserved partition: no content to keep"
+    },
+    {
+     "number": 3,
+     "role": "basic_data",
+     "type_label": "Basic data",
+     "name": "Basic data partition",
+     "fs": "ntfs",
+     "fs_label": "Windows",
+     "used_bytes": 14213120,
+     "src_start": 59768832,
+     "src_len": 100663296,
+     "dst_start": 59768832,
+     "dst_len": 174063616,
+     "method": "smart",
+     "copy_bytes": 14458880,
+     "moved": false,
+     "method_reason": null
+    },
+    {
+     "number": 4,
+     "role": "recovery",
+     "type_label": "Windows recovery",
+     "name": null,
+     "fs": "ntfs",
+     "fs_label": "Recovery",
+     "used_bytes": 5578752,
+     "src_start": 160432128,
+     "src_len": 33554432,
+     "dst_start": 233832448,
+     "dst_len": 33554432,
+     "method": "smart",
+     "copy_bytes": 5586944,
+     "moved": true,
+     "method_reason": null
+    }
+   ],
+   "total_copy_bytes": 23823360,
+   "free_after_main": 0,
+   "main_partition": 3,
+   "grow": {
+    "number": 3,
+    "dst_start": 59768832,
+    "old_len": 100663296,
+    "new_len": 174063616
+   },
+   "findings": [
+    {
+     "severity": "info",
+     "code": "LAYOUT_TRAILING_MOVED",
+     "title": "Trailing partitions placed at the end of the disk",
+     "detail": "The partitions located after the main partition are placed at the end of the disk, so that the extra space is contiguous with partition 3.",
+     "blocking": false
+    },
+    {
+     "severity": "info",
+     "code": "NTFS_GROW_PLANNED",
+     "title": "Partition 3 grown automatically",
+     "detail": "Partition 3 will go from 96.0 MB to 166 MB (+70.0 MB). After the copy and its verification, its NTFS file system is extended in place, without moving any data (the same changes as the reference tool ntfsresize). The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.",
+     "blocking": false
+    },
+    {
+     "severity": "info",
+     "code": "RECOVERY_MOVED",
+     "title": "Recovery partition moved",
+     "detail": "The Windows recovery partition changes position. If the recovery environment shows as disabled on the clone, the command \"reagentc /enable\" (administrator prompt) re-enables it.",
+     "blocking": false
+    }
+   ]
+  },
+  "findings": [
+   {
+    "severity": "info",
+    "code": "LAYOUT_TRAILING_MOVED",
+    "title": "Trailing partitions placed at the end of the disk",
+    "detail": "The partitions located after the main partition are placed at the end of the disk, so that the extra space is contiguous with partition 3.",
+    "blocking": false
+   },
+   {
+    "severity": "info",
+    "code": "NTFS_GROW_PLANNED",
+    "title": "Partition 3 grown automatically",
+    "detail": "Partition 3 will go from 96.0 MB to 166 MB (+70.0 MB). After the copy and its verification, its NTFS file system is extended in place, without moving any data (the same changes as the reference tool ntfsresize). The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.",
+    "blocking": false
+   },
+   {
+    "severity": "info",
+    "code": "RECOVERY_MOVED",
+    "title": "Recovery partition moved",
+    "detail": "The Windows recovery partition changes position. If the recovery environment shows as disabled on the clone, the command \"reagentc /enable\" (administrator prompt) re-enables it.",
+    "blocking": false
+   }
+  ],
+  "blocked": false,
+  "boot": {
+   "style": "windows_uefi",
+   "windows_partition": 3,
+   "esp_partition": 1,
+   "checks": [
+    {
+     "key": "esp",
+     "label": "EFI system partition (ESP)",
+     "state": "present",
+     "required": true
+    },
+    {
+     "key": "esp_fat",
+     "label": "ESP in FAT format",
+     "state": "present",
+     "required": true
+    },
+    {
+     "key": "bootmgfw",
+     "label": "Windows Boot Manager (bootmgfw.efi)",
+     "state": "present",
+     "required": true
+    },
+    {
+     "key": "bcd",
+     "label": "Boot configuration (BCD)",
+     "state": "present",
+     "required": true
+    },
+    {
+     "key": "fallback",
+     "label": "Fallback loader (\\EFI\\Boot\\bootx64.efi)",
+     "state": "present",
+     "required": false
+    },
+    {
+     "key": "windows",
+     "label": "Windows partition (winload.efi)",
+     "state": "present",
+     "required": true
+    },
+    {
+     "key": "msr",
+     "label": "Microsoft reserved partition (MSR)",
+     "state": "present",
+     "required": false
+    }
+   ],
+   "findings": []
+  },
+  "smart_source": null,
+  "smart_destination": null
+ },
+ "report": {
+  "id": "2026-11-13_161245",
+  "app": "Chud Clone",
+  "version": "0.1.0",
+  "started_at": "2026-11-13 16:12:45",
+  "finished_at": "2026-11-13 16:12:45",
+  "source": {
+   "id": "image:D:\\Images\\source.img",
+   "kind": "image",
+   "path": "D:\\Images\\source.img",
+   "number": null,
+   "model": "gpt-win.img",
+   "vendor": "",
+   "serial": "",
+   "firmware": "",
+   "bus": "File",
+   "media": "image",
+   "size": 201326592,
+   "sector_size": 512,
+   "physical_sector_size": 512,
+   "removable": false,
+   "read_only": false,
+   "offline": false,
+   "is_system": false,
+   "hosts_app": false,
+   "table": "gpt",
+   "partitions": [
+    {
+     "number": 1,
+     "offset": 1048576,
+     "size": 41943040,
+     "role": "esp",
+     "type_label": "EFI system partition",
+     "name": "EFI system partition",
+     "fs": "FAT32",
+     "label": "SYSTEM",
+     "used_bytes": 3777536,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 2,
+     "offset": 42991616,
+     "size": 16777216,
+     "role": "msr",
+     "type_label": "Microsoft reserved (MSR)",
+     "name": "Microsoft reserved partition",
+     "fs": null,
+     "label": null,
+     "used_bytes": null,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 3,
+     "offset": 59768832,
+     "size": 100663296,
+     "role": "basic_data",
+     "type_label": "Basic data",
+     "name": "Basic data partition",
+     "fs": "NTFS",
+     "label": "Windows",
+     "used_bytes": 14213120,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    },
+    {
+     "number": 4,
+     "offset": 160432128,
+     "size": 33554432,
+     "role": "recovery",
+     "type_label": "Windows recovery",
+     "name": null,
+     "fs": "NTFS",
+     "label": "Recovery",
+     "used_bytes": 5578752,
+     "mounts": [],
+     "active": false,
+     "volume_path": null
+    }
+   ],
+   "used_bytes": 23569408,
+   "fingerprint": "0582411287ae6df4",
+   "deep": true,
+   "notes": []
+  },
+  "destination": {
+   "id": "image:D:\\Images\\clone.img",
+   "kind": "image",
+   "path": "D:\\Images\\clone.img",
+   "number": null,
+   "model": "dst.img",
+   "vendor": "",
+   "serial": "",
+   "firmware": "",
+   "bus": "File",
+   "media": "image",
+   "size": 268435456,
+   "sector_size": 512,
+   "physical_sector_size": 512,
+   "removable": false,
+   "read_only": false,
+   "offline": false,
+   "is_system": false,
+   "hosts_app": false,
+   "table": "none",
+   "partitions": [],
+   "used_bytes": null,
+   "fingerprint": "4724e17b5c7f5b8a",
+   "deep": true,
+   "notes": [
+    "The file will be created."
+   ]
+  },
+  "plan_options": {
+   "mode": "smart",
+   "optimize_layout": true,
+   "grow_main": true
+  },
+  "engine_options": {
+   "chunk_size": 4194304,
+   "retry_block": 65536,
+   "read_retries": 3,
+   "write_retries": 2,
+   "unreadable": "stop",
+   "verify": "hash"
+  },
+  "plan": {
+   "requested_mode": "smart",
+   "mode": "smart",
+   "table": "gpt",
+   "strategy": "trailing_moved",
+   "src_size": 201326592,
+   "dst_size": 268435456,
+   "partitions": [
+    {
+     "number": 1,
+     "role": "esp",
+     "type_label": "EFI system partition",
+     "name": "EFI system partition",
+     "fs": "fat32",
+     "fs_label": "SYSTEM",
+     "used_bytes": 3777536,
+     "src_start": 1048576,
+     "src_len": 41943040,
+     "dst_start": 1048576,
+     "dst_len": 41943040,
+     "method": "smart",
+     "copy_bytes": 3777536,
+     "moved": false,
+     "method_reason": null
+    },
+    {
+     "number": 2,
+     "role": "msr",
+     "type_label": "Microsoft reserved (MSR)",
+     "name": "Microsoft reserved partition",
+     "fs": "unknown",
+     "fs_label": null,
+     "used_bytes": null,
+     "src_start": 42991616,
+     "src_len": 16777216,
+     "dst_start": 42991616,
+     "dst_len": 16777216,
+     "method": "skip",
+     "copy_bytes": 0,
+     "moved": false,
+     "method_reason": "Microsoft reserved partition: no content to keep"
+    },
+    {
+     "number": 3,
+     "role": "basic_data",
+     "type_label": "Basic data",
+     "name": "Basic data partition",
+     "fs": "ntfs",
+     "fs_label": "Windows",
+     "used_bytes": 14213120,
+     "src_start": 59768832,
+     "src_len": 100663296,
+     "dst_start": 59768832,
+     "dst_len": 174063616,
+     "method": "smart",
+     "copy_bytes": 14458880,
+     "moved": false,
+     "method_reason": null
+    },
+    {
+     "number": 4,
+     "role": "recovery",
+     "type_label": "Windows recovery",
+     "name": null,
+     "fs": "ntfs",
+     "fs_label": "Recovery",
+     "used_bytes": 5578752,
+     "src_start": 160432128,
+     "src_len": 33554432,
+     "dst_start": 233832448,
+     "dst_len": 33554432,
+     "method": "smart",
+     "copy_bytes": 5586944,
+     "moved": true,
+     "method_reason": null
+    }
+   ],
+   "total_copy_bytes": 23823360,
+   "free_after_main": 0,
+   "main_partition": 3,
+   "grow": {
+    "number": 3,
+    "dst_start": 59768832,
+    "old_len": 100663296,
+    "new_len": 174063616
+   },
+   "findings": [
+    {
+     "severity": "info",
+     "code": "LAYOUT_TRAILING_MOVED",
+     "title": "Trailing partitions placed at the end of the disk",
+     "detail": "The partitions located after the main partition are placed at the end of the disk, so that the extra space is contiguous with partition 3.",
+     "blocking": false
+    },
+    {
+     "severity": "info",
+     "code": "NTFS_GROW_PLANNED",
+     "title": "Partition 3 grown automatically",
+     "detail": "Partition 3 will go from 96.0 MB to 166 MB (+70.0 MB). After the copy and its verification, its NTFS file system is extended in place, without moving any data (the same changes as the reference tool ntfsresize). The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.",
+     "blocking": false
+    },
+    {
+     "severity": "info",
+     "code": "RECOVERY_MOVED",
+     "title": "Recovery partition moved",
+     "detail": "The Windows recovery partition changes position. If the recovery environment shows as disabled on the clone, the command \"reagentc /enable\" (administrator prompt) re-enables it.",
+     "blocking": false
+    }
+   ]
+  },
+  "precheck": [
+   {
+    "severity": "info",
+    "code": "LAYOUT_TRAILING_MOVED",
+    "title": "Trailing partitions placed at the end of the disk",
+    "detail": "The partitions located after the main partition are placed at the end of the disk, so that the extra space is contiguous with partition 3.",
+    "blocking": false
+   },
+   {
+    "severity": "info",
+    "code": "NTFS_GROW_PLANNED",
+    "title": "Partition 3 grown automatically",
+    "detail": "Partition 3 will go from 96.0 MB to 166 MB (+70.0 MB). After the copy and its verification, its NTFS file system is extended in place, without moving any data (the same changes as the reference tool ntfsresize). The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.",
+    "blocking": false
+   },
+   {
+    "severity": "info",
+    "code": "RECOVERY_MOVED",
+    "title": "Recovery partition moved",
+    "detail": "The Windows recovery partition changes position. If the recovery environment shows as disabled on the clone, the command \"reagentc /enable\" (administrator prompt) re-enables it.",
+    "blocking": false
+   }
+  ],
+  "smart_source": {
+   "available": false,
+   "protocol": "",
+   "level": "unknown",
+   "drive_reports_failure": null,
+   "temperature_c": null,
+   "power_on_hours": null,
+   "power_cycles": null,
+   "wear_percent_used": null,
+   "attributes": [],
+   "nvme": null,
+   "findings": [],
+   "unavailable_reason": "an image file has no hardware health data"
+  },
+  "smart_destination": {
+   "available": false,
+   "protocol": "",
+   "level": "unknown",
+   "drive_reports_failure": null,
+   "temperature_c": null,
+   "power_on_hours": null,
+   "power_cycles": null,
+   "wear_percent_used": null,
+   "attributes": [],
+   "nvme": null,
+   "findings": [],
+   "unavailable_reason": "an image file has no hardware health data"
+  },
+  "outcome": {
+   "status": "success_verified",
+   "reasons": [
+    "All planned data was copied without errors, then verified (destination read back and compared with the source's checksums) with no differences at all. The clone's partition table and file systems match the source (apart from the growth noted below).",
+    "Partition 3 was grown from 96.0 MB to 166 MB; Windows will check this volume (chkdsk) once, on the clone's first boot."
+   ],
+   "stop": {
+    "kind": "completed"
+   },
+   "copy": {
+    "bytes_planned": 23823360,
+    "bytes_copied": 23823360,
+    "bytes_zero_filled": 0,
+    "read_error_events": 0,
+    "write_error_events": 0,
+    "recovered_bytes": 0,
+    "copy_ms": 9,
+    "avg_bps": 2647040000
+   },
+   "bad_ranges": [],
+   "recovered": [],
+   "table_written": true,
+   "table_check": {
+    "performed": true,
+    "ok": true,
+    "problems": []
+   },
+   "data_check": {
+    "mode": "hash",
+    "total_bytes": 23823360,
+    "checked_bytes": 23823360,
+    "completed": true,
+    "mismatches": [],
+    "duration_ms": 4
+   },
+   "structure_findings": [],
+   "boot_source": {
+    "style": "windows_uefi",
+    "windows_partition": 3,
+    "esp_partition": 1,
+    "checks": [
+     {
+      "key": "esp",
+      "label": "EFI system partition (ESP)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "esp_fat",
+      "label": "ESP in FAT format",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "bootmgfw",
+      "label": "Windows Boot Manager (bootmgfw.efi)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "bcd",
+      "label": "Boot configuration (BCD)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "fallback",
+      "label": "Fallback loader (\\EFI\\Boot\\bootx64.efi)",
+      "state": "present",
+      "required": false
+     },
+     {
+      "key": "windows",
+      "label": "Windows partition (winload.efi)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "msr",
+      "label": "Microsoft reserved partition (MSR)",
+      "state": "present",
+      "required": false
+     }
+    ],
+    "findings": []
+   },
+   "boot_destination": {
+    "style": "windows_uefi",
+    "windows_partition": 3,
+    "esp_partition": 1,
+    "checks": [
+     {
+      "key": "esp",
+      "label": "EFI system partition (ESP)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "esp_fat",
+      "label": "ESP in FAT format",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "bootmgfw",
+      "label": "Windows Boot Manager (bootmgfw.efi)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "bcd",
+      "label": "Boot configuration (BCD)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "fallback",
+      "label": "Fallback loader (\\EFI\\Boot\\bootx64.efi)",
+      "state": "present",
+      "required": false
+     },
+     {
+      "key": "windows",
+      "label": "Windows partition (winload.efi)",
+      "state": "present",
+      "required": true
+     },
+     {
+      "key": "msr",
+      "label": "Microsoft reserved partition (MSR)",
+      "state": "present",
+      "required": false
+     }
+    ],
+    "findings": []
+   },
+   "boot_findings": [],
+   "grow": {
+    "number": 3,
+    "attempted": true,
+    "done": true,
+    "summary": {
+     "old_size": 100662784,
+     "new_size": 174063104,
+     "cluster_size": 4096,
+     "old_clusters": 24575,
+     "new_clusters": 42495,
+     "bitmap_extra_clusters": 1
+    },
+    "error": null,
+    "modified": false
+   },
+   "duration_ms": 145
+  },
+  "log": [
+   {
+    "t_ms": 0,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Chud Clone 0.1.0 — report 2026-11-13_161245"
+   },
+   {
+    "t_ms": 5,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Source: gpt-win.img — 192 MB — image file"
+   },
+   {
+    "t_ms": 12,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Destination: dst.img (to be created) — 256 MB — image file"
+   },
+   {
+    "t_ms": 12,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Pre-check [Information] Trailing partitions placed at the end of the disk — The partitions located after the main partition are placed at the end of the disk, so that the extra space is contiguous with partition 3."
+   },
+   {
+    "t_ms": 12,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Pre-check [Information] Partition 3 grown automatically — Partition 3 will go from 96.0 MB to 166 MB (+70.0 MB). After the copy and its verification, its NTFS file system is extended in place, without moving any data (the same changes as the reference tool ntfsresize). The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes."
+   },
+   {
+    "t_ms": 12,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Pre-check [Information] Recovery partition moved — The Windows recovery partition changes position. If the recovery environment shows as disabled on the clone, the command \"reagentc /enable\" (administrator prompt) re-enables it."
+   },
+   {
+    "t_ms": 13,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Clone started — mode: Smart (used blocks); 22.7 MB to copy; verification: destination read back and compared with the source's checksums"
+   },
+   {
+    "t_ms": 13,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Preparing the destination"
+   },
+   {
+    "t_ms": 111,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Writing the partition table"
+   },
+   {
+    "t_ms": 141,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Verifying copied data"
+   },
+   {
+    "t_ms": 146,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Growing the Windows partition"
+   },
+   {
+    "t_ms": 149,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Partition 3 grown: 96.0 MB → 166 MB (17919 free clusters added)"
+   },
+   {
+    "t_ms": 149,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Checking the clone's structures"
+   },
+   {
+    "t_ms": 159,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Result: Clone succeeded and verified"
+   },
+   {
+    "t_ms": 159,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "  · All planned data was copied without errors, then verified (destination read back and compared with the source's checksums) with no differences at all. The clone's partition table and file systems match the source (apart from the growth noted below)."
+   },
+   {
+    "t_ms": 159,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "  · Partition 3 was grown from 96.0 MB to 166 MB; Windows will check this volume (chkdsk) once, on the clone's first boot."
+   },
+   {
+    "t_ms": 159,
+    "time": "16:12:45",
+    "level": "info",
+    "message": "Done"
+   }
+  ]
+ }
+};

@@ -1,0 +1,17 @@
+[package]
+name = "chud-clone-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Chud Clone — disk cloning and diagnostics (command line)"
+
+[[bin]]
+name = "chud-clone-cli"
+path = "src/main.rs"
+
+[dependencies]
+chud-clone-core = { path = "../core" }
+serde_json = "1"
+
+[build-dependencies]
+static_vcruntime = "3.0"

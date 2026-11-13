@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/cli", "crates/app"]
+default-members = ["crates/core", "crates/cli", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Chud Clone"]
+repository = "https://github.com/BigFatDeuce/Chud-Clone"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+# Le moteur doit s'arrêter proprement (fermeture des handles, déverrouillage des volumes) :
+# on garde le déroulement de pile plutôt que "abort".
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 1
