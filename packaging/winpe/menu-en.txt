@@ -3,6 +3,7 @@ T_TITLE=rescue key
 T_INTRO1=Windows is not running: the internal disks are at rest and
 T_INTRO2=can be cloned consistently.
 T_REPORTS=Reports:
+T_0=Full-screen interface (recommended)
 T_1=List disks
 T_2=Inspect a disk (partitions, boot)
 T_3=SMART health of a disk

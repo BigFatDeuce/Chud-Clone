@@ -3,6 +3,7 @@ T_TITLE=clé de secours
 T_INTRO1=Windows est arrêté : les disques internes sont au repos et
 T_INTRO2=peuvent être clonés de façon cohérente.
 T_REPORTS=Rapports :
+T_0=Interface plein écran (recommandée)
 T_1=Lister les disques
 T_2=Examiner un disque (partitions, démarrage)
 T_3=Santé SMART d'un disque

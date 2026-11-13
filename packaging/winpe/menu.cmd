@@ -1,6 +1,8 @@
 @echo off
 rem Chud Clone - WinPE rescue key menu (started by startnet.cmd).
 rem Every operation goes through chud-clone-cli.exe: same checks as the application.
+rem The full-screen interface ("chud-clone-cli tui") opens first; this text menu is
+rem the fallback (and stays reachable from the interface's Quit menu).
 rem Language: lang.txt ("en" or "fr", written by make-winpe.ps1); option 9 toggles it.
 rem This file stays pure ASCII: cmd misreads batch files containing UTF-8 characters.
 rem The messages are in menu-en.txt / menu-fr.txt (UTF-8), loaded with chcp 65001.
@@ -29,6 +31,31 @@ for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
 )
 if not exist "%REP%\" mkdir "%REP%" 2>nul
 
+rem --- Full-screen interface ---------------------------------------------------------
+rem Its exit code says what to do next: 20 command prompt, 21 classic menu, 22 restart,
+rem 23 shut down. Anything else (a CLI without "tui", a console error) falls back to the
+rem classic menu below. The interface writes the language it was left in to lang.txt.
+:tui
+"%CLI%" tui --winpe --lang !LNG! --reports "%REP%" --lang-file "%HOME%lang.txt"
+set "RC=!errorlevel!"
+if exist "%HOME%lang.txt" set /p LNG=<"%HOME%lang.txt"
+if /i not "!LNG!"=="fr" set "LNG=en"
+if "!RC!"=="22" (
+  wpeutil reboot
+  goto tui
+)
+if "!RC!"=="23" (
+  wpeutil shutdown
+  goto tui
+)
+if "!RC!"=="20" (
+  call :messages
+  echo.
+  echo   !T_EXIT!
+  cmd /k
+  goto tui
+)
+
 :menu
 call :messages
 set "CHUD_LANG=!LNG!"
@@ -42,6 +69,7 @@ echo     !T_INTRO2!
 echo.
 echo     !T_REPORTS! %REP%
 echo.
+echo     0. !T_0!
 echo     1. !T_1!
 echo     2. !T_2!
 echo     3. !T_3!
@@ -55,11 +83,11 @@ echo.
 rem WinPE has no choice.exe: the answer is read with set /p.
 set "C="
 set /p "C=   !T_CHOICE! "
-for %%k in (1 2 3 4 5 6 7 8 9) do if "!C!"=="%%k" goto choice%%k
+for %%k in (0 1 2 3 4 5 6 7 8 9) do if "!C!"=="%%k" goto choice%%k
 goto menu
 
 :choice0
-goto menu
+goto tui
 
 :choice1
 "%CLI%" list
@@ -134,6 +162,7 @@ if "!LNG!"=="fr" (
   set "LNG=fr"
   wpeutil SetKeyboardLayout 040c:0000040c >nul 2>&1
 )
+>"%HOME%lang.txt" echo !LNG!
 goto menu
 
 :pause

@@ -47,7 +47,8 @@ repository's GitHub releases.
 - **Disk health**: SMART for ATA, SAT (USB) and NVMe, a history kept at every reading, and alerts
   when something gets worse (pending or reallocated sectors, temperature, wear…).
 - **Read-only surface scan** with a "star map" of the disk, unreadable sectors and slow areas.
-- **WinPE rescue ISO** (bootable from Ventoy or a USB key) to clone the disk Windows itself runs
+- **WinPE rescue ISO** (bootable from Ventoy or a USB key), with a full-screen keyboard interface,
+  to clone the disk Windows itself runs
   from, with the computer booted on the key.
 - **Fast USB docks**: the source is read ahead while the destination is written, so a clone
   between two disks of the same dock uses both directions of the USB link at once.
@@ -74,10 +75,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.3.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.3.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.3.0.txt` | Checksums of the files above. |
-| `ChudClone-0.3.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.4.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.4.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.4.0.txt` | Checksums of the files above. |
+| `ChudClone-0.4.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -160,7 +161,13 @@ chud-clone-cli smart <disk:N> [--json]
 chud-clone-cli plan <source> <destination> [options]
 chud-clone-cli clone <source> <destination> --confirm-erase [options]
 chud-clone-cli report <report.json> (--txt | --html) [--out <file>]
+chud-clone-cli tui [--reports <folder>] [--image <file>]... [--only-virtual]
 ```
+
+`tui` opens a full-screen keyboard interface in the console, with the same steps as the
+application: source, destination (disk or image file), options, review with the pre-checks,
+typed confirmation, progress, result. It also shows SMART health, the analysis of a disk and
+runs the read-only surface scan.
 
 Targets are `disk:N` (Windows disk number, see `list`) or a path to a disk image. Add `--lang en`
 or `--lang fr` (or set `CHUD_LANG`) to choose the language. Run `chud-clone-cli --help` for every
@@ -176,11 +183,15 @@ Each release since 0.3.0 has a ready-made image, `ChudClone-<version>-winpe.iso`
   `ChudClone-reports` at the root of the Ventoy key.
 - **Plain USB key**: write the ISO with Rufus (or a similar tool).
 
-Option 9 of the menu switches between English (US keyboard) and French (AZERTY keyboard).
+The key opens a **full-screen interface** driven with the keyboard (arrows, Enter, Esc): pick
+the source, then the destination, check the options and the review, type `ERASE` (`EFFACER`),
+and follow the progress. It also reads SMART health, analyses a disk and runs the surface scan.
+`L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
+or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
 
 To build it yourself, `scripts\make-winpe.ps1` (administrator PowerShell) builds an ISO image and, with `-UsbDrive E:`,
 a USB key (after checks: USB disk, neither system nor boot disk, and a typed confirmation). It
-boots a minimal Windows in memory with a text menu: list, inspect, SMART, dry run, then clone.
+boots a minimal Windows in memory with the full-screen interface (and the text menu as a fallback).
 Reports are saved on the key (`ChudClone-reports`). The menu is in English or French
 (`-Language fr`, or switch it from the menu); `-Keyboard` sets the layout. Free prerequisites:
 the Windows ADK and its Windows PE add-on. The graphical interface (WebView2) does not exist in
@@ -189,7 +200,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 107 tests
+cargo test --workspace                                         # 109 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -215,6 +226,7 @@ crates/core   the engine (library), independent of any interface
   job.rs        preparation and execution; everything is re-checked right before writing
   win/          Windows: enumeration, \\.\PhysicalDriveN, volume locks, IOCTLs
 crates/cli    chud-clone-cli
+  tui/          full-screen keyboard interface (ratatui), used by the WinPE key
 crates/app    Tauri 2 application; HTML/CSS/JS interface with no build step (crates/app/ui)
   update.rs     update check (WinHTTP), checksum-verified download and installation
 packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with the app
@@ -229,6 +241,10 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
   unstable reads recovered, source disappearing, access denied, destination errors and removal,
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
   growth, write failure during growth), surface scan, and a complete job in English.
+- `crates/cli`: 2 tests that drive the full-screen interface with keys on image files: a complete
+  clone (choice of a new image as destination, wrong then right confirmation word, verified
+  result, reports written), analysis, SMART, surface scan, language switch, quit menu, and every
+  screen rendered at 60 x 18, 80 x 25 and 140 x 45.
 - `crates/app`: 5 unit tests for the updater (version comparison, release parsing, checksum
   lookup, refusal of releases without checksums or with a foreign page), plus a network test run
   on demand (`cargo test -p chud-clone-app -- --ignored`).

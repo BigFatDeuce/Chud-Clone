@@ -7,9 +7,9 @@
   be consistent. The rescue key boots a minimal Windows (WinPE) that runs entirely in memory; the
   internal disks are at rest there and can be cloned cleanly.
 
-  The graphical interface (WebView2) does not work in WinPE: the key opens a text menu that drives
-  chud-clone-cli.exe (list, inspect, SMART, dry run, clone), with the same checks as the
-  application. Reports are saved on the key (ChudClone-reports folder).
+  The graphical interface (WebView2) does not work in WinPE: the key opens the full-screen
+  keyboard interface of chud-clone-cli.exe ("tui": clone, SMART, analysis, surface scan), with the
+  same checks as the application, and a text menu as a fallback. Reports are saved on the key (ChudClone-reports folder).
 
   Steps:
     1. checks the prerequisites: ADMINISTRATOR prompt, Windows ADK + WinPE add-on;
@@ -166,7 +166,7 @@ $readme = @"
 Chud Clone rescue key (WinPE).
 Boot the computer from this key (BIOS/UEFI boot menu, often F12, F11, F8 or Esc).
 The ISO image can also be copied to a Ventoy key and started from its menu.
-A menu opens: list disks, inspect, SMART, dry run, then clone.
+A full-screen interface opens (arrows, Enter, Esc): choose the source, the destination, then clone.
 Clone reports are saved in the ChudClone-reports folder of this key (with Ventoy: at the
 root of the Ventoy key).
 If Secure Boot refuses the key (WinPE is signed by Microsoft), check the BIOS date and UEFI mode.

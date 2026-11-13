@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
 
+mod tui;
+
 fn usage() -> &'static str {
     chud_clone_core::t!(
         "\
@@ -39,6 +41,10 @@ UTILISATION
 
   chud-clone-cli report <rapport.json> (--txt | --html) [--out <fichier>]
       Convertit un rapport enregistré.
+
+  chud-clone-cli tui [--reports <dossier>] [--image <fichier>]… [--only-virtual]
+      Interface plein écran au clavier : mêmes étapes et mêmes vérifications que
+      l'application (clé de secours WinPE, ou toute console).
 
 CIBLES
   disk:N          disque Windows numéro N (voir « list »)
@@ -90,6 +96,10 @@ USAGE
   chud-clone-cli report <report.json> (--txt | --html) [--out <file>]
       Converts a saved report.
 
+  chud-clone-cli tui [--reports <folder>] [--image <file>]… [--only-virtual]
+      Full-screen keyboard interface: same steps and same checks as the
+      application (WinPE rescue key, or any console).
+
 TARGETS
   disk:N          Windows disk number N (see \"list\")
   <path>          disk image file
@@ -125,7 +135,7 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUE_FLAGS: [&str; 8] = ["--mode", "--verify", "--on-unreadable", "--retries", "--image-size", "--reports", "--out", "--chunk"];
+const VALUE_FLAGS: [&str; 10] = ["--mode", "--verify", "--on-unreadable", "--retries", "--image-size", "--reports", "--out", "--chunk", "--image", "--lang-file"];
 
 fn parse_args(raw: &[String]) -> Result<Args, String> {
     let mut a = Args { positional: vec![], flags: vec![] };
@@ -154,6 +164,9 @@ impl Args {
     }
     fn value(&self, f: &str) -> Option<&str> {
         self.flags.iter().find(|(k, _)| k == f).and_then(|(_, v)| v.as_deref())
+    }
+    fn values(&self, f: &str) -> Vec<String> {
+        self.flags.iter().filter(|(k, _)| k == f).filter_map(|(_, v)| v.clone()).collect()
     }
     fn check_known(&self, known: &[&str]) -> Result<(), String> {
         for (k, _) in &self.flags {
@@ -574,6 +587,21 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
                 FinalStatus::CompletedWithWarnings => 1,
                 FinalStatus::Incomplete => 2,
                 FinalStatus::Failed => 3,
+            })
+        }
+        "tui" => {
+            // --winpe, --lang-file and --no-disks are used by the rescue key menu and the tests.
+            a.check_known(&["--reports", "--image", "--only-virtual", "--winpe", "--lang-file", "--no-disks"])?;
+            if a.positional.len() > 1 {
+                return Err(chud_clone_core::t!("tui n'accepte pas d'argument (images : --image <fichier>)", "tui takes no argument (images: --image <file>)").into());
+            }
+            tui::run(tui::Options {
+                reports: PathBuf::from(a.value("--reports").unwrap_or(chud_clone_core::t!("rapports", "reports"))),
+                images: a.values("--image").into_iter().map(PathBuf::from).collect(),
+                list_disks: !a.has("--no-disks"),
+                only_virtual: a.has("--only-virtual"),
+                winpe: a.has("--winpe"),
+                lang_file: a.value("--lang-file").map(PathBuf::from),
             })
         }
         "report" => {
