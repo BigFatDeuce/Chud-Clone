@@ -273,7 +273,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.2.1", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: false, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.3.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },
@@ -373,7 +373,7 @@
     update_check: async () => {
       await wait(400);
       const avail = Q.has("update");
-      return { current: "0.2.1", latest: avail ? "0.3.0" : "0.2.1", available: avail, title: avail ? "Chud Clone 0.3.0" : "Chud Clone 0.2.1", notes: T("Nouveautés :\n- Recherche de mises à jour et mise à jour depuis le logiciel.", "What's new:\n- Update check and in-app update."), published: "2026-11-13T12:00:00Z", page_url: "https://github.com/example/releases/tag/v0.3.0", method: "portable", download_size: 6.1e6 };
+      return { current: "0.3.0", latest: avail ? "0.3.1" : "0.3.0", available: avail, title: avail ? "Chud Clone 0.3.1" : "Chud Clone 0.3.0", notes: T("Nouveautés :\n- Recherche de mises à jour et mise à jour depuis le logiciel.", "What's new:\n- Update check and in-app update."), published: "2026-11-13T12:00:00Z", page_url: "https://github.com/example/releases/tag/v0.3.1", method: "portable", download_size: 6.1e6 };
     },
     update_install: async () => {
       const total = 6.1e6;

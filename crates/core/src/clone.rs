@@ -21,6 +21,7 @@ use crate::partition::gpt;
 use crate::partition::mbr;
 use crate::partition::{MIB, PartInfo, TableKind};
 use crate::plan::{CloneMode, ClonePlan, CopyMethod, DiskAnalysis, GrowPlan, TablePlan, analyze_disk};
+use crate::readahead::{self, ReadAhead};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -440,15 +441,20 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         return outcome;
     }
 
-    // --- 2. Copie -------------------------------------------------------------
-    let (stop, stats) = {
-        let mut copier = Copier::new(req.src, req.dst, req.opts, req.ctl, req.obs, req.plan.total_copy_bytes);
+    // --- 2. Copy --------------------------------------------------------------
+    // The source is read one block ahead on a worker thread, so reading block N+1
+    // overlaps writing block N (see `readahead`).
+    let (stop, stats) = std::thread::scope(|sc| {
+        let mut sched = readahead::schedule(&req.plan.tasks, req.opts.chunk_size);
+        sched.extend(readahead::schedule(&req.plan.late_tasks, req.opts.chunk_size));
+        let mut src = ReadAhead::new(sc, &mut *req.src, sched);
+        let mut copier = Copier::new(&mut src, &mut *req.dst, req.opts, req.ctl, req.obs, req.plan.total_copy_bytes);
         let mut stop = copier.run(&req.plan.tasks);
         if stop == StopReason::Completed && !req.plan.late_tasks.is_empty() {
             stop = copier.run(&req.plan.late_tasks);
         }
         (stop, copier.stats)
-    };
+    });
     outcome.copy = CopySummary {
         bytes_planned: req.plan.total_copy_bytes,
         bytes_copied: stats.bytes_copied,

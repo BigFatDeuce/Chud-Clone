@@ -65,6 +65,7 @@ pub fn image_info(path: &Path, sector: u32) -> io::Result<(DiskInfo, DiskAnalysi
         fingerprint: fingerprint(&full, "", size, "Fichier", sector),
         deep: true,
         notes: vec![],
+        scsi_address: None,
     };
     Ok((info, analysis))
 }

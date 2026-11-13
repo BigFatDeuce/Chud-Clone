@@ -117,7 +117,7 @@ pub trait BlockDevice: Send {
     fn size(&self) -> u64;
     /// Logical sector size (LBA addressing unit).
     fn sector_size(&self) -> u32;
-    /// Taille de secteur physique (≥ logique).
+    /// Physical sector size (≥ logical).
     fn physical_sector_size(&self) -> u32 {
         self.sector_size()
     }
@@ -410,9 +410,9 @@ const BUF_ALIGN: usize = 4096;
 
 impl AlignedBuf {
     pub fn new(len: usize) -> Self {
-        assert!(len > 0, "tampon vide");
+        assert!(len > 0, "empty buffer");
         let layout = Layout::from_size_align(len, BUF_ALIGN).expect("layout");
-        // SAFETY: layout non nul, alignement valide.
+        // SAFETY: non-zero layout with a valid alignment.
         let ptr = unsafe { alloc_zeroed(layout) };
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);

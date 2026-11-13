@@ -26,12 +26,10 @@ identical, and tells you plainly whether the result can be trusted. It also read
 No telemetry, no account. The only network access is an optional update check against this
 repository's GitHub releases.
 
-> [!WARNING]
-> **Version 0.2 status.** The engine is validated on disk images and virtual disks (automated tests
-> plus checks by independent tools). **Writing to a real physical disk has not yet been proven on
-> hardware**, so it is disabled by default (Settings → Advanced). See
-> [Known limitations](#known-limitations). Always keep your source disk intact until the clone has
-> been checked in real use.
+> [!NOTE]
+> The engine is validated on disk images, virtual disks (automated tests plus checks by independent
+> tools) and, since 0.3.0, on real disks. See [Known limitations](#known-limitations). As with any
+> cloning tool, keep your source disk intact until the clone has been checked in real use.
 
 ## Features
 
@@ -49,7 +47,10 @@ repository's GitHub releases.
 - **Disk health**: SMART for ATA, SAT (USB) and NVMe, a history kept at every reading, and alerts
   when something gets worse (pending or reallocated sectors, temperature, wear…).
 - **Read-only surface scan** with a "star map" of the disk, unreadable sectors and slow areas.
-- **WinPE rescue key** to clone the disk Windows itself runs from, with the computer booted on the key.
+- **WinPE rescue ISO** (bootable from Ventoy or a USB key) to clone the disk Windows itself runs
+  from, with the computer booted on the key.
+- **Fast USB docks**: the source is read ahead while the destination is written, so a clone
+  between two disks of the same dock uses both directions of the USB link at once.
 - **English and French**: interface, diagnostics, reports and command line. The language follows
   Windows and can be changed in Settings.
 - **Updates from inside the app**: a new release is announced at startup and installed in a click,
@@ -73,9 +74,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.2.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.2.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.2.1.txt` | Checksums of the files above. |
+| `ChudClone-0.3.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.3.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.3.0.txt` | Checksums of the files above. |
+| `ChudClone-0.3.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -167,7 +169,16 @@ option. Exit codes: `0` succeeded and verified, `1` completed with warnings, `2`
 
 ## WinPE rescue key
 
-`scripts\make-winpe.ps1` (administrator PowerShell) builds an ISO image and, with `-UsbDrive E:`,
+Each release since 0.3.0 has a ready-made image, `ChudClone-<version>-winpe.iso`, built by the
+`WinPE ISO` workflow from the release's own `chud-clone-cli.exe`:
+
+- **Ventoy**: copy the ISO to the Ventoy key and pick it in Ventoy's menu. Reports are saved in
+  `ChudClone-reports` at the root of the Ventoy key.
+- **Plain USB key**: write the ISO with Rufus (or a similar tool).
+
+Option 9 of the menu switches between English (US keyboard) and French (AZERTY keyboard).
+
+To build it yourself, `scripts\make-winpe.ps1` (administrator PowerShell) builds an ISO image and, with `-UsbDrive E:`,
 a USB key (after checks: USB disk, neither system nor boot disk, and a typed confirmation). It
 boots a minimal Windows in memory with a text menu: list, inspect, SMART, dry run, then clone.
 Reports are saved on the key (`ChudClone-reports`). The menu is in English or French
@@ -178,7 +189,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 104 tests
+cargo test --workspace                                         # 107 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -211,7 +222,7 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 
 ## Tests
 
-- `crates/core`: 61 unit tests and 38 integration tests on **real disk images**
+- `crates/core`: 64 unit tests and 38 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
@@ -236,9 +247,6 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 
 ## Known limitations
 
-- **Writing to a real physical disk is not validated on hardware** (`PHYSICAL_WRITE_VALIDATED =
-  false` in `crates/core/src/win/mod.rs`). Disabled by default; can be enabled knowingly in
-  Settings → Advanced. Image files and VHD/VHDX virtual disks are not affected.
 - No hot cloning of the running Windows (no VSS): use another Windows or the rescue key.
 - Growth: NTFS only (not FAT, exFAT, BitLocker…), main partition only, and on MBR only when it is
   the last partition. Never shrinking: on a smaller disk partitions are packed together but keep
@@ -246,8 +254,8 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 - Growth was validated by the Linux reference tools (ntfsresize, ntfs-3g) and by Windows:
   `scripts/validate-vhd.ps1` passes (VHDX 256 MB → 512 MB, partition grown from 96 to 422 MB) with
   `chkdsk /f` finding nothing to fix. That validation is on virtual disks.
-- WinPE rescue key: the script is provided but has not been built or booted in the development
-  environment; test it on a spare machine before relying on it.
+- WinPE rescue ISO: built automatically for each release, but not booted in the development
+  environment; try it on a spare machine before relying on it.
 - The surface scan does not repair sectors (rewriting an unreadable sector destroys its content)
   and reads the whole disk: on a dying disk, clone first.
 - Refused with an explanation: dynamic disks, different logical sector sizes between source and

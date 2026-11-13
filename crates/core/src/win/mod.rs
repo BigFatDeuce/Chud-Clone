@@ -14,11 +14,10 @@ use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, H
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
-/// Writing to a real physical disk has not been validated on hardware yet
-/// (only on images and, through the provided script, on VHDX virtual disks).
-/// While this constant is `false`, opening a non-virtual disk for writing
-/// requires explicit consent from the caller.
-pub const PHYSICAL_WRITE_VALIDATED: bool = false;
+/// Writing to a real physical disk has been validated on hardware (after images and
+/// VHDX virtual disks). Were this constant `false`, opening a non-virtual disk for
+/// writing would require explicit consent from the caller.
+pub const PHYSICAL_WRITE_VALIDATED: bool = true;
 
 /// Win32 handle closed automatically.
 pub struct Handle(pub HANDLE);

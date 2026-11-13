@@ -366,6 +366,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
                 fingerprint: String::new(),
                 deep: false,
                 notes: vec![tf!("Windows refuse l'accès à ce disque ({e}).", "Windows denies access to this disk ({e}).")],
+                scsi_address: None,
             });
         }
     };
@@ -415,6 +416,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
         _ => (false, false),
     };
 
+    let scsi_address = scsi_address(&h);
     let (table, mut partitions, lnotes) = layout_partitions(&h, number, sector, volumes);
     notes.extend(lnotes);
     drop(h);
@@ -489,7 +491,20 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
         partitions,
         deep: is_deep,
         notes,
+        scsi_address,
     })
+}
+
+/// SCSI address of the disk (port, path, target, LUN), from `IOCTL_SCSI_GET_ADDRESS`.
+fn scsi_address(h: &Handle) -> Option<[u8; 4]> {
+    // CTL_CODE(IOCTL_SCSI_BASE, 0x0406, METHOD_BUFFERED, FILE_ANY_ACCESS)
+    const IOCTL_SCSI_GET_ADDRESS: u32 = 0x0004_1018;
+    // SCSI_ADDRESS: Length (u32), PortNumber, PathId, TargetId, Lun (u8 each).
+    let mut a = [0u8; 8];
+    match ioctl(h, IOCTL_SCSI_GET_ADDRESS, &[], &mut a) {
+        Ok(n) if n >= 8 => Some([a[4], a[5], a[6], a[7]]),
+        _ => None,
+    }
 }
 
 /// Lists the disks seen by Windows. `deep` enables direct reading (read-only)

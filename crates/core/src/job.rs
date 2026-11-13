@@ -161,6 +161,7 @@ pub fn describe(target: &Target, deep: bool, app_paths: &[String], missing_image
                     fingerprint: fingerprint(&full, "", size - size % 512, "Fichier", 512),
                     deep: true,
                     notes: vec![t!("Le fichier sera créé.", "The file will be created.").into()],
+                    scsi_address: None,
                 })
             } else {
                 Err(tf!("fichier image introuvable : {}", "image file not found: {}", path.display()))
@@ -506,12 +507,28 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         },
     };
 
+    // USB bridges handle fewer, larger requests better: with the default block size,
+    // copies involving a USB disk use 8 MiB blocks.
+    let mut engine = cfg.engine.clone();
+    if (source.bus == "USB" || destination.bus == "USB") && engine.chunk_size == EngineOptions::default().chunk_size {
+        engine.chunk_size = 8 * 1024 * 1024;
+    }
+    if crate::precheck::same_usb_bridge(&source, &destination) {
+        journal.note(
+            LogLevel::Info,
+            t!(
+                "Source et destination dans le même dock USB : lecture anticipée et blocs de 8 Mio.",
+                "Source and destination in the same USB dock: read-ahead and 8 MiB blocks."
+            ),
+        );
+    }
+
     let outcome = run_clone(CloneRequest {
         src: opened.src.as_mut(),
         dst: opened.dst.as_mut(),
         src_analysis: &analysis,
         plan: &plan,
-        opts: &cfg.engine,
+        opts: &engine,
         ctl,
         obs: &journal,
     });
@@ -553,7 +570,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         source,
         destination,
         plan_options: cfg.plan.clone(),
-        engine_options: cfg.engine.clone(),
+        engine_options: engine,
         plan,
         precheck: findings,
         smart_source,

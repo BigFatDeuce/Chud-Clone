@@ -13,9 +13,15 @@ if exist "%HOME%lang.txt" set /p LNG=<"%HOME%lang.txt"
 if /i not "!LNG!"=="fr" set "LNG=en"
 
 rem Reports folder: on the key when it is writable, otherwise in memory (lost at shutdown).
+rem A key written from the ISO carries ChudClone-rescue.txt at its root. When the ISO is
+rem started from Ventoy, the ISO itself is read-only: the reports go to the Ventoy key's
+rem data partition (the one with a "ventoy" folder at its root).
 set "REP=X:\ChudClone-reports"
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
-  if exist "%%d:\ChudClone-rescue.txt" (
+  set "KEY="
+  if exist "%%d:\ChudClone-rescue.txt" set "KEY=1"
+  if exist "%%d:\ventoy\" set "KEY=1"
+  if defined KEY (
     if not exist "%%d:\ChudClone-reports\" mkdir "%%d:\ChudClone-reports" 2>nul
     if exist "%%d:\ChudClone-reports\" set "REP=%%d:\ChudClone-reports"
   )
@@ -97,7 +103,7 @@ if /i not "!OK!"=="!T_WORD!" (
   echo   !T_ABORTED!
   goto pause
 )
-"%CLI%" clone disk:!S! disk:!D! --confirm-erase --allow-unvalidated-physical-write --reports "%REP%"
+"%CLI%" clone disk:!S! disk:!D! --confirm-erase --reports "%REP%"
 echo.
 echo   !T_SAVED! %REP%
 goto pause
@@ -116,7 +122,14 @@ wpeutil shutdown
 goto menu
 
 :choice9
-if "!LNG!"=="fr" (set "LNG=en") else (set "LNG=fr")
+rem The keyboard layout follows the language: French AZERTY or US QWERTY.
+if "!LNG!"=="fr" (
+  set "LNG=en"
+  wpeutil SetKeyboardLayout 0409:00000409 >nul 2>&1
+) else (
+  set "LNG=fr"
+  wpeutil SetKeyboardLayout 040c:0000040c >nul 2>&1
+)
 goto menu
 
 :pause

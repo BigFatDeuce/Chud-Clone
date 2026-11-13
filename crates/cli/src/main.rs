@@ -57,9 +57,6 @@ OPTIONS DE CLONAGE
   --reports <dossier>            dossier des rapports (défaut : ./rapports)
   --only-virtual                 refuser toute destination qui n'est pas une image
                                  ou un disque virtuel (VHD/VHDX)
-  --allow-unvalidated-physical-write
-                                 autoriser l'écriture sur un disque physique réel
-                                 (voie non encore validée sur du matériel)
   --json                         sortie JSON
 
 OPTION GÉNÉRALE
@@ -110,9 +107,6 @@ CLONE OPTIONS
   --reports <folder>             reports folder (default: ./reports)
   --only-virtual                 refuse any destination that is not an image
                                  or a virtual disk (VHD/VHDX)
-  --allow-unvalidated-physical-write
-                                 allow writing to a real physical disk
-                                 (path not yet validated on hardware)
   --json                         JSON output
 
 GENERAL OPTION

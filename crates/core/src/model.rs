@@ -103,6 +103,10 @@ pub struct DiskInfo {
     pub deep: bool,
     /// Notes about detection (access denied, partial information…).
     pub notes: Vec<String>,
+    /// SCSI address of the disk: port (storage adapter), path, target, LUN. The bays of
+    /// a multi-disk USB dock share the port and differ by target or LUN.
+    #[serde(default)]
+    pub scsi_address: Option<[u8; 4]>,
 }
 
 impl DiskInfo {
@@ -154,6 +158,7 @@ impl DiskInfo {
             fingerprint: String::new(),
             deep: false,
             notes: vec![],
+            scsi_address: None,
         }
     }
 }

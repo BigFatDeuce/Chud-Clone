@@ -43,6 +43,7 @@ pub mod model;
 pub mod partition;
 pub mod plan;
 pub mod precheck;
+pub mod readahead;
 pub mod report;
 pub mod scan;
 pub mod smart;

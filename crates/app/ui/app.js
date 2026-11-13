@@ -100,7 +100,7 @@ const S = {
   prepBusy: false,
   prepError: null,
   confirmText: "",
-  opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3, allow_unvalidated: false }),
+  opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3 }),
   ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null }),
   update: { info: null, checking: false, error: null, checkedAt: null, installing: false },
   run: null,
@@ -679,9 +679,6 @@ function viewSettings() {
       <select data-ui="lang"><option value="fr" ${LANG === "fr" ? "selected" : ""}>Français</option><option value="en" ${LANG === "en" ? "selected" : ""}>English</option></select></div>
       <div class="opt"><div><label>Animations</label><small>${L("Le ciel étoilé, le faisceau de transfert et les transitions. « Réduites » fige le fond.", "The starry sky, the transfer beam and the transitions. \"Reduced\" freezes the background.")}</small></div>
       <select data-ui="motion"><option value="full" ${S.ui.motion === "full" ? "selected" : ""}>${L("Complètes", "Full")}</option><option value="reduced" ${S.ui.motion === "reduced" ? "selected" : ""}>${L("Réduites", "Reduced")}</option><option value="off" ${S.ui.motion === "off" ? "selected" : ""}>${L("Aucune", "None")}</option></select></div></div>
-    <div class="panel"><h2>${L("Avancé", "Advanced")}</h2>
-      <div class="finding warning" style="margin-bottom:12px"><div class="ico">!</div><div><b>${L("Écriture sur disque physique : pas encore validée sur du matériel", "Writing to a physical disk: not yet validated on hardware")}</b><p>${L(`Le moteur de Chud Clone ${esc(e.version || "")} a été testé sur des images disque (tables GPT/MBR, NTFS, FAT, secteurs illisibles, pannes simulées) et vérifié par des outils indépendants. L'écriture sur un vrai disque sous Windows, elle, n'a pas encore été éprouvée. Tant que ce n'est pas fait, elle reste désactivée par défaut. Le clonage vers un fichier image ou un disque virtuel (VHDX) fonctionne sans ce réglage.`, `The Chud Clone ${esc(e.version || "")} engine has been tested on disk images (GPT/MBR tables, NTFS, FAT, unreadable sectors, simulated failures) and checked by independent tools. Writing to a real disk under Windows has not been proven yet. Until it is, it stays disabled by default. Cloning to an image file or a virtual disk (VHDX) works without this setting.`)}</p></div></div>
-      <label class="toggle"><input type="checkbox" data-opt="allow_unvalidated" ${S.opts.allow_unvalidated ? "checked" : ""} ${e.physical_write_validated ? "disabled" : ""}><span>${L("Autoriser l'écriture sur un disque physique réel, en connaissance de cause", "Allow writing to a real physical disk, knowingly")}</span></label></div>
     ${updatePanel()}
     <div class="panel"><h2>${L("À propos", "About")}</h2><div class="about-head"><img src="${esc(logoUrl())}" alt="" /><div><b>${esc(e.name || "Chud Clone")}</b><span class="muted">${L("Clonage et diagnostic de disques", "Disk cloning and diagnostics")}</span></div></div>${kv([["Version", `${esc(e.name)} ${esc(e.version)}`], ["Mode", e.portable ? L("Portable (données à côté du programme)", "Portable (data next to the program)") : L("Installé", "Installed")], [L("Droits", "Rights"), e.elevated ? L("Administrateur", "Administrator") : L("Limités (lecture des propriétés uniquement)", "Limited (properties only)")], [L("Données", "Data"), `<code>${esc(e.data_dir)}</code>`], [L("Rapports", "Reports"), `<code>${esc(e.reports_dir)}</code>`], [L("Confidentialité", "Privacy"), L("Aucune télémétrie. Seule connexion réseau : la recherche de mises à jour sur GitHub, désactivable ci-dessus.", "No telemetry. Only network connection: the update check on GitHub, which can be turned off above.")]])}</div></div>`;
 }
@@ -895,7 +892,7 @@ function params() {
   const o = S.opts;
   return {
     source_id: S.srcId, destination_id: S.dstId, mode: o.mode, optimize_layout: !!o.optimize_layout, grow_main: o.grow_main !== false, verify: o.verify, unreadable: o.unreadable,
-    read_retries: Number(o.read_retries), allow_unvalidated_physical_write: !!o.allow_unvalidated,
+    read_retries: Number(o.read_retries), allow_unvalidated_physical_write: false,
     source_fingerprint: S.prep?.source.fingerprint ?? null, destination_fingerprint: S.prep?.destination.fingerprint ?? null,
   };
 }

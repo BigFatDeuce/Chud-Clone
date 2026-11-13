@@ -165,8 +165,10 @@ finally {
 $readme = @"
 Chud Clone rescue key (WinPE).
 Boot the computer from this key (BIOS/UEFI boot menu, often F12, F11, F8 or Esc).
+The ISO image can also be copied to a Ventoy key and started from its menu.
 A menu opens: list disks, inspect, SMART, dry run, then clone.
-Clone reports are saved in the ChudClone-reports folder of this key.
+Clone reports are saved in the ChudClone-reports folder of this key (with Ventoy: at the
+root of the Ventoy key).
 If Secure Boot refuses the key (WinPE is signed by Microsoft), check the BIOS date and UEFI mode.
 "@
 [IO.File]::WriteAllText((Join-Path $WorkDir 'media\ChudClone-rescue.txt'), $readme.Replace("`n", "`r`n"), (New-Object Text.UTF8Encoding $true))

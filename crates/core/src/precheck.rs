@@ -9,6 +9,16 @@ use crate::partition::TableKind;
 use crate::plan::{CloneMode, ClonePlan, DiskAnalysis};
 
 /// Checks on the identity and state of the two disks.
+/// True if both disks are USB disks in two bays of the same dock: same storage adapter
+/// (SCSI port), different target or LUN. Two separate single-disk enclosures both sit
+/// at target 0, LUN 0 and are not taken for a dock.
+pub fn same_usb_bridge(src: &DiskInfo, dst: &DiskInfo) -> bool {
+    match (src.scsi_address, dst.scsi_address) {
+        (Some(a), Some(b)) => src.bus == "USB" && dst.bus == "USB" && src.id != dst.id && a[0] == b[0] && a[1..] != b[1..],
+        _ => false,
+    }
+}
+
 pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalysis>, plan: Option<&ClonePlan>) -> Vec<Finding> {
     let mut out = Vec::new();
 
@@ -216,7 +226,15 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
     }
 
     // --- Hardware ---------------------------------------------------------------------
-    if src.bus == "USB" || dst.bus == "USB" {
+    if same_usb_bridge(src, dst) {
+        out.push(Finding::info(
+            "SAME_USB_DOCK",
+            t!("Les deux disques sont sur le même dock USB", "Both disks are in the same USB dock"),
+            t!("La source et la destination passent par le même pont USB. La source est lue en avance pendant l'écriture \
+             de la destination, pour utiliser les deux sens du lien USB en même temps. Branchez le dock sur un port USB 3 \
+             (ou plus rapide) relié directement à l'ordinateur.", "The source and the destination go through the same USB bridge. The source is read ahead while the destination is written, so both directions of the USB link are used at the same time. Plug the dock into a USB 3 (or faster) port directly on the computer."),
+        ));
+    } else if src.bus == "USB" || dst.bus == "USB" {
         out.push(Finding::info(
             "USB_INVOLVED",
             t!("Connexion USB", "USB connection"),
@@ -320,6 +338,7 @@ mod tests {
             fingerprint: String::new(),
             deep: true,
             notes: vec![],
+            scsi_address: None,
         }
     }
 
@@ -338,6 +357,21 @@ mod tests {
             active: false,
             volume_path: None,
         }
+    }
+
+    #[test]
+    fn same_usb_dock_is_detected() {
+        let usb = |n, addr| DiskInfo { bus: "USB".into(), scsi_address: addr, ..disk(n, 500 << 30) };
+        // Two bays of one dock: same port, different LUN.
+        let (a, b) = (usb(1, Some([3, 0, 0, 0])), usb(2, Some([3, 0, 0, 1])));
+        assert!(same_usb_bridge(&a, &b));
+        let c = codes(&precheck(&a, &b, None, None)).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(c.contains(&"SAME_USB_DOCK".into()) && !c.contains(&"USB_INVOLVED".into()));
+        // Other adapter, or two single enclosures at the same position: not a dock.
+        assert!(!same_usb_bridge(&a, &usb(2, Some([4, 0, 0, 1]))));
+        assert!(!same_usb_bridge(&a, &usb(2, Some([3, 0, 0, 0]))));
+        assert!(!same_usb_bridge(&usb(1, None), &usb(2, None)));
+        assert!(!same_usb_bridge(&DiskInfo { scsi_address: Some([3, 0, 0, 0]), ..disk(1, 1 << 30) }, &b));
     }
 
     fn codes(f: &[Finding]) -> Vec<&str> {

@@ -34,12 +34,12 @@ WHAT YOU CAN CLONE
     nothing changes underneath it.
   - The disk of the Windows that is currently running cannot be cloned from that same
     Windows (the copy would be inconsistent): use another Windows, or the WinPE rescue
-    key (scripts\make-winpe.ps1 in the source repository).
+    key or ISO (ChudClone-<version>-winpe.iso on the releases page; it boots from
+    Ventoy or from a USB key written with Rufus).
+  - Both disks in the same USB dock: supported. The source is read ahead while the
+    destination is written, so both directions of the USB link work at the same time.
 
 BEFORE CLONING TO A REAL DISK - PLEASE READ
-  - In this version 0.2, writing to a real physical disk has not yet been validated on
-    hardware. It is disabled by default (Settings > Advanced). Cloning to an image file
-    or to a virtual disk (VHD/VHDX) works without that setting.
   - The destination's content is permanently erased. Always keep the source disk intact
     until the clone has been checked in real use.
   - "Clone succeeded and verified" means: everything was copied, read back and compared,
