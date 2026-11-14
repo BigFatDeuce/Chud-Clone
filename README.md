@@ -54,7 +54,8 @@ repository's GitHub releases.
 - **Whole-disk formatting**: new GPT or MBR table, one NTFS, exFAT or FAT32 partition with the
   name you choose, after the same typed confirmation. FAT32 works beyond Windows' 32 GB limit.
   Also on the WinPE key (`M`).
-- The computer does not go to sleep while a clone, a scan or a format runs.
+- **No sleep while the application is open** (can be turned off in Settings); in any case the
+  computer stays awake while a clone, a scan or a format runs.
 - **WinPE rescue ISO** (bootable from Ventoy or a USB key), with a full-screen keyboard interface,
   to clone the disk Windows itself runs
   from, with the computer booted on the key.
@@ -64,7 +65,9 @@ repository's GitHub releases.
   Windows and can be changed in Settings.
 - **Updates from inside the app**: a new release is announced at startup and installed in a click,
   after its SHA-256 checksum has been verified (installed and portable versions).
-- A space-themed interface with a reduced-motion mode.
+- A space-themed interface with a reduced-motion mode. During a clone, the progress ring is a star:
+  it grows while the data is copied, explodes when the copy is complete, and cools down into a
+  brown dwarf once the clone is verified.
 
 <table>
   <tr>
@@ -194,8 +197,9 @@ Each release since 0.3.0 has a ready-made image, `ChudClone-<version>-winpe.iso`
 
 The key opens a **full-screen interface** driven with the keyboard (arrows, Enter, Esc): pick
 the source, then the destination, check the options and the review, type `ERASE` (`EFFACER`),
-and follow the progress. It also reads SMART health, analyses a disk, runs the surface scan
-and formats a disk (`M`).
+and follow the progress. The options include ejecting the destination and shutting the computer
+down when the clone is finished (60-second countdown, Esc cancels). It also reads SMART health,
+analyses a disk, runs the surface scan and formats a disk (`M`; `F` in the text menu).
 `L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
 or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
 
@@ -210,7 +214,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 113 tests
+cargo test --workspace                                         # 115 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -245,18 +249,24 @@ packaging/    Inno Setup installer, WinPE rescue menu, README.txt shipped with t
 
 ## Tests
 
-- `crates/core`: 68 unit tests and 38 integration tests on **real disk images**
+Every state machine of the program (application, interface, rescue key, engine) is described in
+[docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
+application.
+
+- `crates/core`: 69 unit tests and 38 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
   unstable reads recovered, source disappearing, access denied, destination errors and removal,
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
   growth, write failure during growth), surface scan, and a complete job in English.
-- `crates/cli`: 2 tests that drive the full-screen interface with keys on image files: a complete
+- `crates/cli`: 2 tests that drive the full-screen interface with keys on image files, checking
+  after every key that the states that must go together still do: a complete
   clone (choice of a new image as destination, wrong then right confirmation word, verified
   result, reports written), analysis, SMART, surface scan, formatting refused on an image, language switch, quit menu, and every
   screen rendered at 60 x 18, 80 x 25 and 140 x 45.
-- `crates/app`: 5 unit tests for the updater (version comparison, release parsing, checksum
+- `crates/app`: 6 unit tests: one activity at a time (clone, scan, format, update), and the
+  updater (version comparison, release parsing, checksum
   lookup, refusal of releases without checksums or with a foreign page), plus a network test run
   on demand (`cargo test -p chud-clone-app -- --ignored`).
 - `scripts/validate-clone.sh`: **independent** check of a clone on Linux (sgdisk -v,

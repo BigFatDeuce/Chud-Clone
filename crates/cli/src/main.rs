@@ -651,6 +651,19 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
                 let out = chud_clone_core::format::format_disk(number, &info.fingerprint, &req, &[], &|s| eprintln!("  {s}"))?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
+                } else {
+                    println!(
+                        "{}",
+                        chud_clone_core::tf!(
+                            "Disque formaté : {} {} « {} » {} {}",
+                            "Disk formatted: {} {} \"{}\" {} {}",
+                            out.table.label(),
+                            out.fs.label(),
+                            out.label,
+                            human_size(out.partition_size),
+                            out.mount.clone().unwrap_or_default()
+                        )
+                    );
                 }
                 Ok(0)
             }

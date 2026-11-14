@@ -1,7 +1,7 @@
 //! Drives the full-screen interface with keys, on image files only (never a disk),
 //! and renders every screen into an in-memory terminal.
 
-use super::app::{App, Modal, Options, Screen};
+use super::app::{App, FormatStage, Modal, Options, Screen};
 use super::view;
 use chud_clone_core::clone::FinalStatus;
 use chud_clone_core::i18n::{Lang, set_lang};
@@ -31,6 +31,8 @@ fn fixture(dir: &Path) -> PathBuf {
 
 fn press(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    // The states that must go together still do, after every key.
+    app.check_invariants().unwrap();
 }
 
 fn typ(app: &mut App, text: &str) {
@@ -43,6 +45,7 @@ fn wait(app: &mut App, what: &str, cond: impl Fn(&App) -> bool) {
     let start = Instant::now();
     loop {
         app.pump();
+        app.check_invariants().unwrap();
         if cond(app) {
             return;
         }
@@ -131,6 +134,15 @@ fn clone_scan_and_screens_on_images() {
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Left);
     assert!(app.settings.optimize);
+    // End-of-clone options: eject (nothing to eject for an image) and shutdown.
+    for _ in 0..6 {
+        press(&mut app, KeyCode::Down);
+    }
+    render_all_sizes(&mut app, "Shut the computer down when done");
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Right);
+    assert!(app.settings.shutdown && app.settings.eject);
     press(&mut app, KeyCode::Enter);
     wait(&mut app, "preparation", |a| a.busy.is_none());
     let shot = render(&mut app, 100, 30);
@@ -157,6 +169,14 @@ fn clone_scan_and_screens_on_images() {
     wait(&mut app, "end of the clone", |a| a.screen == Screen::Result);
     let text = render_all_sizes(&mut app, "Report:");
     assert_eq!(app.final_status(), Some(FinalStatus::SuccessVerified), "{text}");
+    // The shutdown countdown runs on the result screen; Esc cancels it and stays there.
+    assert!(app.shutdown_at.is_some());
+    render_all_sizes(&mut app, "The computer shuts down in");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.shutdown_at.is_none());
+    assert_eq!(app.screen, Screen::Result);
+    assert_eq!(app.exit, None);
+    app.settings.shutdown = false;
     let id = app.report.as_ref().unwrap().id.clone();
     for ext in ["json", "txt", "html", "log"] {
         assert!(reports.join(format!("{id}.{ext}")).exists(), "{ext} report missing");
@@ -218,6 +238,17 @@ fn destination_rules() {
     // The WinPE exit menu offers restart, shut down, prompt and the classic menu.
     let codes: Vec<u8> = app.exit_items().iter().map(|(_, c)| *c).collect();
     assert_eq!(codes, vec![super::app::exit::REBOOT, super::app::exit::SHUTDOWN, super::app::exit::SHELL, super::app::exit::CLASSIC_MENU]);
+    // On the rescue key, the end of the shutdown countdown leaves with the exit code
+    // the menu turns into "wpeutil shutdown" (nothing is shut down from here).
+    app.run_error = Some("x".into());
+    app.screen = Screen::Result;
+    app.shutdown_at = Some(Instant::now());
+    app.pump();
+    assert_eq!(app.exit, Some(super::app::exit::SHUTDOWN));
+    assert!(app.shutdown_at.is_none());
+    app.exit = None;
+    app.run_error = None;
+    app.screen = Screen::Home;
     // A source image that does not exist is reported, not added.
     press(&mut app, KeyCode::Char('f'));
     typ(&mut app, &dir.join("missing.img").to_string_lossy());
@@ -242,7 +273,7 @@ fn destination_rules() {
     press(&mut app, KeyCode::Down);
     typ(&mut app, "ERASE");
     press(&mut app, KeyCode::Enter);
-    assert!(!app.fmt.as_ref().unwrap().running && app.fmt.as_ref().unwrap().result.is_none());
+    assert!(matches!(app.fmt.as_ref().unwrap().stage, FormatStage::Edit));
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.screen, Screen::Home);
     let _ = std::fs::remove_dir_all(&dir);

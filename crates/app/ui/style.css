@@ -293,7 +293,7 @@ details.adv .body { padding: 4px 14px 14px; display: grid; gap: 12px; }
 .scene .body.src .lbl { color: var(--cyan); } .scene .body.dst .lbl { color: var(--violet); }
 .ring { position: absolute; left: 50%; top: 50%; width: 176px; height: 176px; transform: translate(-50%, -54%); }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ring .track { fill: rgba(5, 6, 13, 0.75); stroke: rgba(146, 170, 255, 0.14); stroke-width: 7; }
+.ring .track { fill: rgba(5, 6, 13, 0.38); stroke: rgba(146, 170, 255, 0.14); stroke-width: 7; }
 .ring .bar { fill: none; stroke: url(#ringflow); stroke-width: 7; stroke-linecap: round; transition: stroke-dashoffset 0.35s ease-out; filter: drop-shadow(0 0 6px rgba(79, 227, 255, 0.55)); }
 .ring .txt { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
 .ring .pct { font-size: 34px; font-weight: 680; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1; }
@@ -427,3 +427,9 @@ button.qtab:hover { border-color: var(--line-strong); color: var(--text); }
 .fmt-steps { margin: 10px 0 0; padding-left: 20px; font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
 .danger-zone + .panel, .panel + .danger-zone, .panel + .verdict { margin-top: 14px; }
 @media (max-width: 900px) { .fmt-grid { grid-template-columns: 1fr; } }
+
+/* Star around the percentage (canvas drawn by Cosmos.Star): behind the gauge and the text. */
+.ring canvas#star { inset: auto; left: 50%; top: 50%; width: 340px; height: 340px; transform: translate(-50%, -50%); pointer-events: none; }
+.ring svg { position: relative; z-index: 1; }
+.ring .txt { z-index: 2; text-shadow: 0 1px 2px rgba(5, 6, 13, 0.95), 0 0 12px rgba(5, 6, 13, 0.9); }
+.ring .ph { color: var(--text); }

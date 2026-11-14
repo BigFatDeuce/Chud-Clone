@@ -3,7 +3,7 @@
 //! Only the 16 basic console colours and characters of the classic console fonts
 //! (box drawing, blocks) are used: the WinPE console has nothing more.
 
-use super::app::{App, Modal, OPTION_ROWS, Screen, confirm_word};
+use super::app::{App, FormatStage, Modal, OPTION_ROWS, Screen, confirm_word};
 use chud_clone_core::boot::{BootAssessment, CheckState};
 use chud_clone_core::clone::FinalStatus;
 use chud_clone_core::diag::{Finding, Severity, human_size};
@@ -371,14 +371,15 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             }
             Screen::Running => vec![(t!("Échap", "Esc"), t!("Annuler le clonage", "Cancel the clone"))],
             Screen::Format => {
-                if app.fmt.as_ref().is_some_and(|x| x.running) {
+                if app.fmt.as_ref().is_some_and(|x| matches!(x.stage, FormatStage::Running)) {
                     vec![]
-                } else if app.fmt.as_ref().is_some_and(|x| x.result.is_some()) {
+                } else if app.fmt.as_ref().is_some_and(|x| matches!(x.stage, FormatStage::Done(_))) {
                     vec![(t!("Entrée", "Enter"), t!("Retour aux disques", "Back to the disks"))]
                 } else {
                     vec![("↑↓", t!("Ligne", "Row")), ("← →", t!("Changer", "Change")), (t!("Entrée", "Enter"), t!("Valider / formater", "Next / format")), (t!("Échap", "Esc"), t!("Retour", "Back"))]
                 }
             }
+            Screen::Result if app.shutdown_at.is_some() => vec![(t!("Échap", "Esc"), t!("Annuler l'extinction", "Cancel the shutdown"))],
             Screen::Result => vec![("↑↓", t!("Défiler", "Scroll")), (t!("Entrée", "Enter"), t!("Retour aux disques", "Back to the disks"))],
             Screen::Scan => {
                 if app.scan.as_ref().is_some_and(|s| s.result.is_some() || s.error.is_some()) {
@@ -390,6 +391,13 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let mut lines = vec![];
+    if let Some(at) = app.shutdown_at {
+        let left = at.saturating_duration_since(std::time::Instant::now()).as_secs();
+        lines.push(Line::from(Span::styled(
+            tf!("Extinction de l'ordinateur dans {left} s.", "The computer shuts down in {left} s."),
+            Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+        )));
+    }
     if let Some(n) = &app.notice {
         lines.push(Line::from(Span::styled(n.clone(), Style::new().fg(Color::Yellow))));
     }
@@ -501,6 +509,22 @@ fn option_rows(app: &App) -> Vec<(&'static str, String, &'static str)> {
             t!("Nouvelles lectures par secteur", "Re-reads per sector"),
             s.retries.to_string(),
             t!("Tentatives supplémentaires sur un secteur difficile à lire (0 à 10).", "Extra attempts on a sector that is hard to read (0 to 10)."),
+        ),
+        (
+            t!("Éjecter la destination à la fin", "Eject the destination when done"),
+            yes_no(s.eject),
+            t!(
+                "Après un clonage réussi, le disque de destination est retiré proprement (disques USB, boîtiers, docks).",
+                "After a successful clone, the destination disk is safely removed (USB disks, enclosures, docks)."
+            ),
+        ),
+        (
+            t!("Éteindre l'ordinateur à la fin", "Shut the computer down when done"),
+            yes_no(s.shutdown),
+            t!(
+                "L'ordinateur s'éteint 60 secondes après la fin du clonage ; Échap annule. Le rapport est déjà enregistré.",
+                "The computer shuts down 60 seconds after the end of the clone; Esc cancels. The report is already saved."
+            ),
         ),
     ]
 }
@@ -902,7 +926,8 @@ fn draw_format(f: &mut Frame, app: &mut App, area: Rect) {
         (tf!("Tapez {}", "Type {}", confirm_word()), st.confirm.clone()),
     ];
     for (i, (k, v)) in rows.iter().enumerate() {
-        let on = i == st.row && !st.running && st.result.is_none();
+        let editing = matches!(st.stage, FormatStage::Edit);
+        let on = i == st.row && editing;
         let style = if on { Style::default().fg(Color::Black).bg(Color::Cyan) } else { Style::default() };
         let cursor = if on && i >= 2 && (app.tick / 5).is_multiple_of(2) { "_" } else { " " };
         lines.push(Line::from(vec![Span::raw(format!("  {k:<24} ")), Span::styled(format!(" {v}{cursor} "), style)]));
@@ -914,23 +939,24 @@ fn draw_format(f: &mut Frame, app: &mut App, area: Rect) {
     for r in &refusals {
         lines.push(Line::from(Span::styled(format!("x {r}"), Style::default().fg(Color::LightRed))));
     }
-    if refusals.is_empty() && st.result.is_none() && !st.running {
+    if refusals.is_empty() && matches!(st.stage, FormatStage::Edit) {
         lines.push(Line::from(Span::styled(
             tf!("TOUT le contenu de ce disque sera effacé ({}).", "ALL content of this disk will be erased ({}).", human_size(d.size)),
             Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
         )));
     }
-    if st.running || !st.steps.is_empty() {
+    let running = matches!(st.stage, FormatStage::Running);
+    if running || !st.steps.is_empty() {
         lines.push(Line::from(""));
         for s in &st.steps {
             lines.push(Line::from(format!("  - {s}")));
         }
-        if st.running {
+        if running {
             lines.push(Line::from(Span::styled(t!("  Formatage en cours...", "  Formatting..."), Style::default().fg(Color::Yellow))));
         }
     }
-    match &st.result {
-        Some(Ok(o)) => {
+    match &st.stage {
+        FormatStage::Done(Ok(o)) => {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 tf!(
@@ -945,11 +971,11 @@ fn draw_format(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
             )));
         }
-        Some(Err(e)) => {
+        FormatStage::Done(Err(e)) => {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(tf!("Échec : {e}", "Failed: {e}"), Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))));
         }
-        None => {}
+        FormatStage::Edit | FormatStage::Running => {}
     }
     let block = Block::default().borders(ratatui::widgets::Borders::ALL).title(title(t!(" Formater (disque entier) ", " Format (whole disk) ")));
     f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), area);

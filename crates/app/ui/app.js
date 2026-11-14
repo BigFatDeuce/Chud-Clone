@@ -93,7 +93,6 @@ const S = {
   disks: [],
   loadingDisks: true,
   view: "clone",
-  step: "source",
   srcId: null,
   dstId: null,
   // Several destinations can be cloned one after another from the same source.
@@ -103,14 +102,14 @@ const S = {
   queue: null,
   resultIdx: 0,
   shutdown: false,
-  fmt: { id: null, fs: "ntfs", table: "gpt", label: "", check: null, checking: false, confirm: "", running: false, steps: [], outcome: null, error: null },
+  fmt: { id: null, fs: "ntfs", table: "gpt", label: "", check: null, confirm: "", steps: [], outcome: null, error: null },
   prep: null,
   prepBusy: false,
   prepError: null,
   confirmText: "",
   opts: store.get("opts", { mode: "smart", optimize_layout: true, grow_main: true, verify: "hash", unreadable: "ask", read_retries: 3, eject: false }),
-  ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null, sound: true }),
-  update: { info: null, checking: false, error: null, checkedAt: null, installing: false },
+  ui: store.get("ui", { motion: "full", lang: null, autoUpdate: true, skipVersion: null, sound: true, keepAwake: true }),
+  update: { info: null, error: null, checkedAt: null, get checking() { return M.update.is("checking"); }, get installing() { return M.update.is("installing"); } },
   run: null,
   report: null,
   runError: null,
@@ -122,7 +121,50 @@ const S = {
   health: {},
   busy: {},
 };
-let beam = null;
+let beam = null, star = null;
+
+// ------------------------------------------------------------ State machines
+// The states live in machines.js; this file only asks `can()` and moves with `to()`.
+const M = window.Machines;
+// The wizard step is the state of the clone machine (read-only here).
+Object.defineProperty(S, "step", { get: () => M.clone.state, enumerable: true });
+
+/** What the interface is busy with: one thing at a time, like the engine. */
+function activity() {
+  if (M.clone.is("run")) return "cloning";
+  if (M.format.is("running")) return "formatting";
+  if (M.scan.is("running", "cancelling")) return "scanning";
+  if (M.update.is("installing")) return "updating";
+  return "idle";
+}
+const BUSY = () => ({
+  cloning: L("Un clonage est en cours.", "A clone is running."),
+  formatting: L("Un formatage est en cours.", "A format is running."),
+  scanning: L("Un test de surface est en cours : arrêtez-le d'abord.", "A surface scan is running: stop it first."),
+  updating: L("Une mise à jour est en cours d'installation.", "An update is being installed."),
+});
+/** True (with a message) when something else is running. */
+function busy() {
+  const a = activity();
+  if (a === "idle") return false;
+  toast(BUSY()[a], true);
+  return true;
+}
+/** State of one destination's analysis: "busy", "error", "blocked" or "ready". */
+const prepState = (x) => (!x || x.busy ? "busy" : x.error ? "error" : x.prep?.blocked ? "blocked" : x.prep ? "ready" : "busy");
+/** State of one clone of the queue: "waiting", "running", "ok" or "failed". */
+const itemState = (it, i) => (it.done ? (itemGood(it) ? "ok" : "failed") : S.queue && i === S.queue.idx && M.clone.is("run") ? "running" : "waiting");
+function newScan(id, cells) {
+  return { id, cells, progress: null, result: null, error: null, cursor: 0, get running() { return M.scan.is("running", "cancelling"); }, get cancelling() { return M.scan.is("cancelling"); } };
+}
+/** Everything a test or a tool needs to know where the application is. */
+window.ChudState = () => ({
+  view: S.view,
+  activity: activity(),
+  ...M.snapshot(),
+  queue: S.queue ? { index: S.queue.idx, items: S.queue.items.map((it, i) => ({ destination: it.id, state: itemState(it, i) })) } : null,
+  destinations: S.dstIds.map((id, i) => ({ id, state: prepState(S.preps[i]) })),
+});
 
 const disk = (id) => S.disks.find((d) => d.id === id);
 const src = () => disk(S.srcId);
@@ -312,7 +354,7 @@ function viewReview() {
     const p = S.prep, plan = p.plan;
     const blocking = p.findings.filter((f) => f.blocking);
     const others = p.findings.filter((f) => !f.blocking);
-    const readyList = S.preps.filter((x) => x.prep && !x.prep.blocked);
+    const readyList = S.preps.filter((x) => prepState(x) === "ready");
     const ready = readyList.length > 0;
     const word = confirmWord();
     const good = S.confirmText.trim().toUpperCase() === word;
@@ -355,8 +397,8 @@ function viewReview() {
   } else body = "";
   const tabs = S.dstIds.length > 1 ? `<div class="qtabs">${S.dstIds.map((id, i) => {
     const x = S.preps[i] || {}, dd = disk(id);
-    const st = x.busy ? ["", "…"] : x.error ? ["bad", L("erreur", "error")] : x.prep?.blocked ? ["bad", L("bloqué", "blocked")] : x.prep ? ["ok", L("prêt", "ready")] : ["", "—"];
-    return `<button class="qtab ${i === S.prepIdx ? "on" : ""}" data-act="prep-tab" data-i="${i}"><span class="n">${i + 1}</span>${esc(dd?.model || id)}<span class="chip ${st[0]}">${st[1]}</span></button>`;
+    const st = { busy: ["", "…"], error: ["bad", L("erreur", "error")], blocked: ["bad", L("bloqué", "blocked")], ready: ["ok", L("prêt", "ready")] }[prepState(x)];
+    return `<button class="qtab ${i === S.prepIdx ? "on" : ""}" data-act="prep-tab" data-i="${i}" data-state="${prepState(x)}"><span class="n">${i + 1}</span>${esc(dd?.model || id)}<span class="chip ${st[0]}">${st[1]}</span></button>`;
   }).join("")}</div>` : "";
   return `<div class="page">${flight()}
     <div class="page-head"><div><h1>${L("Vérification", "Review")}</h1><p class="mono">${s && d ? `${esc(s.model)} → ${S.dstIds.length > 1 ? `${S.dstIds.length} destinations` : esc(d.model)}` : ""}</p></div></div>
@@ -373,12 +415,12 @@ function checkRow(c) {
 function viewRun() {
   const s = S.run.source, d = S.run.destination;
   const q = S.queue;
-  const qbar = q && q.items.length > 1 ? `<div class="qtabs">${q.items.map((it, i) => `<span class="qtab ${i === q.idx ? "on" : ""}"><span class="n">${i + 1}</span>${esc(it.prep.destination.model)}<span class="chip ${it.done ? (itemGood(it) ? "ok" : "bad") : ""}">${it.done ? (itemGood(it) ? "OK" : L("échec", "failed")) : i === q.idx ? L("en cours", "running") : L("en attente", "waiting")}</span></span>`).join("")}</div>` : "";
+  const qbar = q && q.items.length > 1 ? `<div class="qtabs">${q.items.map((it, i) => `<span class="qtab ${i === q.idx ? "on" : ""}" data-state="${itemState(it, i)}"><span class="n">${i + 1}</span>${esc(it.prep.destination.model)}<span class="chip ${{ ok: "ok", failed: "bad" }[itemState(it, i)] || ""}">${{ ok: "OK", failed: L("échec", "failed"), running: L("en cours", "running"), waiting: L("en attente", "waiting") }[itemState(it, i)]}</span></span>`).join("")}</div>` : "";
   return `<div class="page">${flight()}${qbar}
     <div class="scene"><canvas id="beam"></canvas>
       <div class="body src"><div class="planet">${Cosmos.planet(s)}</div><div class="lbl">Source</div><div class="name" title="${esc(s.model)}">${esc(s.model)}</div></div>
       <div class="body dst"><div class="planet" id="dst-planet">${Cosmos.planet(d)}</div><div class="lbl">Destination</div><div class="name" title="${esc(d.model)}">${esc(d.model)}</div></div>
-      <div class="ring"><svg viewBox="0 0 100 100"><defs><linearGradient id="ringflow" x1="0" x2="1"><stop offset="0" stop-color="#4fe3ff"/><stop offset=".55" stop-color="#3a7bff"/><stop offset="1" stop-color="#9a6bff"/></linearGradient></defs><circle class="track" cx="50" cy="50" r="44"/><circle class="bar" id="ring-bar" cx="50" cy="50" r="44" stroke-dasharray="276.46" stroke-dashoffset="276.46"/></svg>
+      <div class="ring"><canvas id="star"></canvas><svg viewBox="0 0 100 100"><defs><linearGradient id="ringflow" x1="0" x2="1"><stop offset="0" stop-color="#4fe3ff"/><stop offset=".55" stop-color="#3a7bff"/><stop offset="1" stop-color="#9a6bff"/></linearGradient></defs><circle class="track" cx="50" cy="50" r="44"/><circle class="bar" id="ring-bar" cx="50" cy="50" r="44" stroke-dasharray="276.46" stroke-dashoffset="276.46"/></svg>
         <div class="txt"><div class="pct"><span id="r-pct">0</span><small>%</small></div><div class="ph" id="r-phase">${L("Démarrage…", "Starting…")}</div></div></div>
     </div>
     <div class="phases" id="phases"></div>
@@ -393,7 +435,7 @@ function viewRun() {
       <div class="stat"><div class="k">${L("Position (LBA source)", "Position (source LBA)")}</div><div class="v mono" style="font-size:15px" id="s-lba">—</div></div>
     </div>
     <details class="log" ${S.logOpen ? "open" : ""} data-keep="log"><summary>${L("Journal de l'opération", "Operation log")}</summary><pre id="log"></pre></details>
-    <div class="footer-bar"><span class="muted">${L("Ne débranchez aucun disque. Veille bloquée pendant l'opération.", "Do not unplug any disk. Sleep is blocked during the operation.")}${q?.shutdown ? ` · <b style="color:var(--warn)">${L("extinction à la fin", "shutdown when done")}</b>` : ""}${q?.eject ? ` · ${L("éjection à la fin", "eject when done")}` : ""}</span><span class="spacer"></span><button class="btn" data-act="cancel" id="btn-cancel">${L("Annuler…", "Cancel…")}</button></div></div>`;
+    <div class="footer-bar"><span class="muted">${L("Ne débranchez aucun disque.", "Do not unplug any disk.")}${q?.shutdown ? ` · <b style="color:var(--warn)">${L("extinction à la fin", "shutdown when done")}</b>` : ""}${q?.eject ? ` · ${L("éjection à la fin", "eject when done")}` : ""}</span><span class="spacer"></span><button class="btn" data-act="cancel" id="btn-cancel">${L("Annuler…", "Cancel…")}</button></div></div>`;
 }
 
 function updateRun() {
@@ -424,6 +466,17 @@ function updateRun() {
   $("#b-rerr").className = "stat" + (r.err.read ? " alert" : "");
   $("#b-bad").className = "stat" + (r.err.bad ? " bad" : r.err.rec ? " alert" : "");
   $("#b-werr").className = "stat" + (r.err.write ? " bad" : "");
+  if (star) {
+    // The star grows while the data is copied, explodes when the copy is complete,
+    // and what is left cools down while the clone is verified and checked.
+    const frac = p && p.total > 0 ? Math.min(1, p.done / p.total) : 0;
+    if (phase === "copying") r.copied = Math.max(r.copied || 0, frac);
+    // Once the result is known, what is left of the star no longer changes.
+    if (r.ended) star.set(r.ended === "ok" || r.ended === "warn" ? "dwarf" : "dead", 1, r.ended === "warn");
+    else if (phase === "preparing") star.set("proto", 0, false);
+    else if (phase === "copying" || phase === "recovering") star.set("grow", r.copied || 0, phase === "recovering" || r.err.read > 0);
+    else star.set("remnant", { writing_table: 0.02, verifying: 0.05 + 0.8 * frac, growing: 0.9, checking: 0.96, done: 1 }[phase] ?? 0.5, false);
+  }
   if (beam) {
     const k = p?.speed_bps ? Math.min(1, Math.max(0.12, Math.log10(p.speed_bps / 1e6) / 3)) : 0.25;
     beam.set({ preparing: "prepare", copying: "copy", recovering: "recover", writing_table: "table", verifying: "verify", growing: "table", checking: "check", done: "check" }[phase], k, r.err.read > 0);
@@ -712,7 +765,8 @@ const FS_MAX = { ntfs: 32, exfat: 15, fat32: 11 };
 function viewFormat() {
   const f = S.fmt;
   if (S.loadingDisks) return `<div class="page"><div class="empty"><div class="orbit-loader"></div></div></div>`;
-  const list = S.disks.map((d) => diskCard(d, { mini: true, act: "fmt-sel", selected: d.id === f.id, locked: f.running })).join("");
+  const fm = M.format;
+  const list = S.disks.map((d) => diskCard(d, { mini: true, act: "fmt-sel", selected: d.id === f.id, locked: fm.is("running") })).join("");
   const sel = disk(f.id);
   let right;
   if (!sel) right = `<div class="panel empty">${L("Choisir un disque à gauche.", "Pick a disk on the left.")}</div>`;
@@ -725,24 +779,24 @@ function viewFormat() {
     if (f.fs === "fat32") notes.push(L("FAT32 : fichiers de 4 Go maximum.", "FAT32: 4 GB maximum file size."));
     if (c?.own_fat32) notes.push(L("FAT32 > 32 Go : écrit par Chud Clone (Windows refuse au-delà).", "FAT32 > 32 GB: written by Chud Clone (Windows refuses beyond)."));
     if (f.table === "mbr") notes.push(L("MBR : démarrage BIOS hérité, 2 To max.", "MBR: legacy BIOS boot, 2 TB max."));
-    const sel1 = (k, list) => `<select data-fmt="${k}" ${f.running ? "disabled" : ""}>${list.map(([v, l]) => `<option value="${v}" ${f[k] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+    const sel1 = (k, list) => `<select data-fmt="${k}" ${fm.is("running") ? "disabled" : ""}>${list.map(([v, l]) => `<option value="${v}" ${f[k] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
     const form = `<div class="panel">
       <div class="fmt-head"><div class="planet">${Cosmos.planet(sel)}</div><div><h2 style="margin:0">${esc(sel.model || "—")}</h2><div class="mono dim">${sel.number != null ? "disk " + sel.number : esc(sel.path)} · ${size(sel.size)} · ${TABLE[sel.table]} · ${esc(sel.partitions.flatMap((p) => p.mounts).join(" ") || "—")}</div></div></div>
       ${strip(sel.partitions, sel.size)}
       <div class="fmt-grid">
         <label>${L("Système de fichiers", "File system")}${sel1("fs", [["ntfs", "NTFS"], ["exfat", "exFAT"], ["fat32", "FAT32"]])}</label>
         <label>${L("Table", "Table")}${sel1("table", [["gpt", "GPT"], ["mbr", "MBR"]])}</label>
-        <label>${L("Nom du volume", "Volume name")} <span class="dim">(${f.label.length}/${FS_MAX[f.fs]})</span><input type="text" id="fmt-label" value="${esc(f.label)}" maxlength="${FS_MAX[f.fs]}" spellcheck="false" ${f.running ? "disabled" : ""} placeholder="${L("sans nom", "no name")}"></label>
+        <label>${L("Nom du volume", "Volume name")} <span class="dim">(${f.label.length}/${FS_MAX[f.fs]})</span><input type="text" id="fmt-label" value="${esc(f.label)}" maxlength="${FS_MAX[f.fs]}" spellcheck="false" ${fm.is("running") ? "disabled" : ""} placeholder="${L("sans nom", "no name")}"></label>
       </div>
       ${c && c.label !== f.label && !refused.length ? `<p class="dim">${L("Nom écrit :", "Name written:")} <b class="mono">${esc(c.label)}</b></p>` : ""}
       ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
-      ${f.checking ? `<div class="loader"></div>` : refused.length ? findingsHtml(refused.map((r) => ({ severity: "error", title: r, detail: "", blocking: true }))) : ""}
+      ${fm.is("checking") ? `<div class="loader"></div>` : refused.length ? findingsHtml(refused.map((r) => ({ severity: "error", title: r, detail: "", blocking: true }))) : ""}
     </div>`;
     let action = "";
-    if (f.running) action = `<div class="panel"><h2>${L("Formatage…", "Formatting…")}</h2><div class="loader"></div><ol class="fmt-steps">${f.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>`;
-    else if (f.outcome) action = `<div class="verdict ok"><div class="badge">${badge("ok")}</div><div><h1>${L("Disque formaté", "Disk formatted")}</h1><ul class="selectable"><li class="mono">${esc(f.outcome.table.toUpperCase())} · ${esc({ ntfs: "NTFS", exfat: "exFAT", fat32: "FAT32" }[f.outcome.fs])} · « ${esc(f.outcome.label || "—")} » · ${size(f.outcome.partition_size)} · ${esc(f.outcome.mount || L("sans lettre", "no letter"))}</li>${f.outcome.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn primary" data-act="fmt-again">OK</button></div>`;
-    else if (f.error) action = `<div class="verdict failed"><div class="badge">${badge("failed")}</div><div><h1>${L("Formatage échoué", "Formatting failed")}</h1><ul><li class="selectable">${esc(f.error)}</li></ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn" data-act="fmt-again">OK</button></div>`;
-    else if (c && !refused.length && !f.checking) action = `<div class="danger-zone"><h2 class="dz-title">${L("Irréversible", "Irreversible")}</h2>
+    if (fm.is("running")) action = `<div class="panel"><h2>${L("Formatage…", "Formatting…")}</h2><div class="loader"></div><ol class="fmt-steps">${f.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>`;
+    else if (fm.is("done")) action = `<div class="verdict ok"><div class="badge">${badge("ok")}</div><div><h1>${L("Disque formaté", "Disk formatted")}</h1><ul class="selectable"><li class="mono">${esc(f.outcome.table.toUpperCase())} · ${esc({ ntfs: "NTFS", exfat: "exFAT", fat32: "FAT32" }[f.outcome.fs])} · « ${esc(f.outcome.label || "—")} » · ${size(f.outcome.partition_size)} · ${esc(f.outcome.mount || L("sans lettre", "no letter"))}</li>${f.outcome.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn primary" data-act="fmt-again">OK</button></div>`;
+    else if (fm.is("failed")) action = `<div class="verdict failed"><div class="badge">${badge("failed")}</div><div><h1>${L("Formatage échoué", "Formatting failed")}</h1><ul><li class="selectable">${esc(f.error)}</li></ul></div></div><div class="footer-bar"><span class="spacer"></span><button class="btn" data-act="fmt-again">OK</button></div>`;
+    else if (fm.is("ready")) action = `<div class="danger-zone"><h2 class="dz-title">${L("Irréversible", "Irreversible")}</h2>
       <p class="big">${L(`Tout le contenu de « ${esc(sel.model)} » (${size(sel.size)}) sera effacé.`, `All content of “${esc(sel.model)}” (${size(sel.size)}) will be erased.`)}</p>
       <div class="row wrap" style="margin-top:12px"><span>${L("Saisir", "Type")} <b class="mono">${word}</b> ${L("puis Entrée", "then Enter")}</span><input type="text" id="fmt-confirm" class="${good ? "good" : ""}" value="${esc(f.confirm)}" autocomplete="off" spellcheck="false" maxlength="12"><span class="spacer"></span><button class="btn danger" data-act="fmt-start" ${good ? "" : "disabled"}>${L("Formater", "Format")}</button></div></div>`;
     right = form + action;
@@ -754,14 +808,17 @@ function viewFormat() {
 let fmtCheckGen = 0;
 async function formatCheck() {
   const f = S.fmt;
-  if (!f.id) return;
+  // Not while formatting; a check already running is simply replaced by this one.
+  if (!f.id || !(M.format.can("checking") || M.format.is("checking"))) return;
   const gen = ++fmtCheckGen;
-  f.checking = true;
+  M.format.to("checking");
+  f.outcome = null; f.error = null;
   render();
   let check = null;
   try { check = await api.invoke("format_check", { id: f.id, request: { fs: f.fs, table: f.table, label: f.label } }); } catch (e) { check = { refusals: [typeof e === "string" ? e : String(e)], label: f.label }; }
   if (gen !== fmtCheckGen) return;
-  f.check = check; f.checking = false;
+  f.check = check;
+  M.format.to(check.refusals.length ? "refused" : "ready");
   if (S.view === "format") render();
 }
 
@@ -799,6 +856,7 @@ function viewSettings() {
       <select data-ui="lang"><option value="fr" ${LANG === "fr" ? "selected" : ""}>Français</option><option value="en" ${LANG === "en" ? "selected" : ""}>English</option></select></div>
       <div class="opt"><div><label>Animations</label><small>${L("Le ciel étoilé, le faisceau de transfert et les transitions. « Réduites » fige le fond.", "The starry sky, the transfer beam and the transitions. \"Reduced\" freezes the background.")}</small></div>
       <select data-ui="motion"><option value="full" ${S.ui.motion === "full" ? "selected" : ""}>${L("Complètes", "Full")}</option><option value="reduced" ${S.ui.motion === "reduced" ? "selected" : ""}>${L("Réduites", "Reduced")}</option><option value="off" ${S.ui.motion === "off" ? "selected" : ""}>${L("Aucune", "None")}</option></select></div>
+      <div class="opt"><div><label>${L("Empêcher la veille", "Prevent sleep")}</label><small>${L("Tant que Chud Clone est ouvert, le PC ne se met pas en veille. Désactivé : la veille reste bloquée pendant un clonage, un test ou un formatage.", "While Chud Clone is open, the PC does not go to sleep. Off: sleep stays blocked during a clone, a scan or a format.")}</small></div><label class="toggle"><input type="checkbox" data-uicheck="keepAwake" ${S.ui.keepAwake !== false ? "checked" : ""}><span>${L("Activé", "On")}</span></label></div>
       <div class="opt"><div><label>${L("Sons de fin de clonage", "End-of-clone sounds")}</label><small>${L("Son de réussite ou d'échec.", "Success or failure sound.")}</small></div><label class="toggle"><input type="checkbox" data-uicheck="sound" ${S.ui.sound !== false ? "checked" : ""}><span>${L("Activés", "On")}</span></label></div></div>
     ${updatePanel()}
     <div class="panel"><h2>${L("À propos", "About")}</h2><div class="about-head"><img src="${esc(logoUrl())}" alt="" /><div><b>${esc(e.name || "Chud Clone")}</b><span class="muted">${L("Clonage et diagnostic de disques", "Disk cloning and diagnostics")}</span></div></div>${kv([["Version", `${esc(e.name)} ${esc(e.version)}`], ["Mode", e.portable ? L("Portable (données à côté du programme)", "Portable (data next to the program)") : L("Installé", "Installed")], [L("Droits", "Rights"), e.elevated ? L("Administrateur", "Administrator") : L("Limités (lecture des propriétés uniquement)", "Limited (properties only)")], [L("Données", "Data"), `<code>${esc(e.data_dir)}</code>`], [L("Rapports", "Reports"), `<code>${esc(e.reports_dir)}</code>`], [L("Confidentialité", "Privacy"), L("Aucune télémétrie. Seule connexion réseau : la recherche de mises à jour sur GitHub, désactivable ci-dessus.", "No telemetry. Only network connection: the update check on GitHub, which can be turned off above.")]])}</div></div>`;
@@ -831,8 +889,8 @@ function updatePanel() {
 
 async function checkUpdate(manual) {
   const u = S.update;
-  if (u.checking || u.installing) return;
-  u.checking = true; u.error = null;
+  if (!M.update.can("checking")) return;
+  M.update.to("checking"); u.error = null;
   if (S.view === "settings") render();
   try {
     u.info = await api.invoke("update_check");
@@ -843,7 +901,7 @@ async function checkUpdate(manual) {
     u.error = typeof e === "string" ? e : String(e);
     if (manual) fail(e);
   }
-  u.checking = false;
+  M.update.to("idle");
   if (S.view === "settings") render();
 }
 
@@ -891,11 +949,11 @@ function updateProgress(p) {
 }
 
 async function updateInstall() {
-  if (S.step === "run" || S.scan?.running) { toast(L("Une opération est en cours : la mise à jour attendra qu'elle soit terminée.", "An operation is running: the update will wait until it has finished."), true); return; }
-  S.update.installing = true;
+  if (!M.update.can("installing") || busy()) return;
+  M.update.to("installing");
   modal(`<h2>${L("Mise à jour de Chud Clone", "Updating Chud Clone")}</h2><p class="muted">${L(`Version ${esc(S.update.info.latest)}.`, `Version ${esc(S.update.info.latest)}.`)}</p>
     <div class="ubar busy" id="update-bar"><i></i></div><p id="update-text" class="dim">${L("Connexion…", "Connecting…")}</p>`);
-  try { await api.invoke("update_install"); } catch (e) { S.update.installing = false; closeModal(); fail(e); }
+  try { await api.invoke("update_install"); } catch (e) { M.update.to("idle"); closeModal(); fail(e); }
 }
 
 // -------------------------------------------------------------------- Render
@@ -963,6 +1021,9 @@ function render() {
   const screen = S.view + ":" + (S.view === "clone" ? S.step : S.view === "reports" ? S.reportOpen?.id || "" : "");
   const sameScreen = view.dataset.screen === screen;
   if (beam) { beam.destroy(); beam = null; }
+  if (star) { star.destroy(); star = null; }
+  document.documentElement.dataset.currentView = S.view;
+  document.documentElement.dataset.activity = activity();
   view.innerHTML = { clone: viewClone, disks: viewDisks, format: viewFormat, reports: viewReports, settings: viewSettings }[S.view]();
   view.dataset.screen = screen;
   view.scrollTop = sameScreen ? scroll : 0;
@@ -980,6 +1041,7 @@ function render() {
   if (S.view === "disks") drawScanMap();
   if (S.view === "clone" && S.step === "run") {
     beam = new Cosmos.Beam($("#beam"));
+    star = new Cosmos.Star($("#star"));
     const pre = $("#log");
     for (const e of S.run.logs) {
       const line = document.createElement("div");
@@ -1069,9 +1131,11 @@ async function startQueueItem() {
   S.report = null; S.runError = null; S.runBlocked = null;
   try {
     await api.invoke("start_clone", { params: params(it.id, it.prep), confirmation: q.word });
-    S.step = "run";
+    M.clone.to("run");
     render();
   } catch (e) {
+    // Nothing started at all (first clone refused): stay on the review, say why.
+    if (M.clone.is("review")) { S.queue = null; S.run = null; fail(e); render(); return; }
     queueDone({ report: null, error: typeof e === "string" ? e : e?.message || String(e), blocked: [] });
   }
 }
@@ -1092,7 +1156,7 @@ function queueDone(payload) {
   playSound(allGood);
   const firstBad = q.items.findIndex((x) => !itemGood(x));
   showResult(firstBad >= 0 ? firstBad : q.items.length - 1);
-  S.step = "result"; S.run = null;
+  M.clone.to("result"); S.run = null;
   render();
   loadDisks(true);
   if (q.shutdown) shutdownCountdown();
@@ -1114,6 +1178,8 @@ function playSound(good) {
 
 let shutdownTimer = null;
 function shutdownCountdown() {
+  if (!M.shutdown.can("counting")) return;
+  M.shutdown.to("counting");
   let left = 60;
   const draw = () => modal(`<h2 style="color:var(--warn)">${L("Extinction du PC", "Shutting down")}</h2><p class="big mono" style="font-size:40px;margin:10px 0">${left} s</p><p class="muted">${L("Rapports enregistrés.", "Reports saved.")}</p>
     <div class="actions"><button class="btn primary" data-act="shutdown-cancel">${L("Annuler l'extinction", "Cancel shutdown")}</button><button class="btn danger" data-act="shutdown-now">${L("Éteindre maintenant", "Shut down now")}</button></div>`);
@@ -1135,19 +1201,27 @@ const actions = {
     render();
   },
   next() {
-    if (S.step === "source" && S.srcId) S.step = "destination";
-    else if (S.step === "destination" && S.dstIds.length) { S.step = "review"; S.prepIdx = 0; prepare(); return; }
+    if (M.clone.is("source") && S.srcId) M.clone.to("destination");
+    else if (M.clone.is("destination") && S.dstIds.length) { M.clone.to("review"); S.prepIdx = 0; prepare(); return; }
     render();
   },
   "prep-tab"(el) { selectPrep(Number(el.dataset.i)); render(); },
   "result-sel"(el) { showResult(Number(el.dataset.i)); render(); },
-  "shutdown-cancel"() { clearInterval(shutdownTimer); shutdownTimer = null; closeModal(); toast(L("Extinction annulée.", "Shutdown cancelled.")); },
-  async "shutdown-now"() {
+  "shutdown-cancel"() {
+    if (!M.shutdown.is("counting")) return;
     clearInterval(shutdownTimer); shutdownTimer = null; closeModal();
-    try { await api.invoke("shutdown_pc"); } catch (e) { fail(e); }
+    M.shutdown.to("idle");
+    toast(L("Extinction annulée.", "Shutdown cancelled."));
+  },
+  async "shutdown-now"() {
+    if (!M.shutdown.can("requested")) return;
+    clearInterval(shutdownTimer); shutdownTimer = null; closeModal();
+    M.shutdown.to("requested");
+    try { await api.invoke("shutdown_pc"); } catch (e) { M.shutdown.to("idle"); fail(e); }
   },
   back() {
-    S.step = S.step === "review" ? "destination" : "source";
+    if (M.clone.is("review")) M.clone.to("destination");
+    else if (M.clone.is("destination")) M.clone.to("source");
     render();
   },
   refresh() { loadDisks(); },
@@ -1177,11 +1251,12 @@ const actions = {
     } catch (e) { fail(e); }
   },
   async start() {
-    const ready = S.preps.map((x, i) => ({ id: S.dstIds[i], prep: x.prep })).filter((x) => x.prep && !x.prep.blocked);
-    if (!ready.length || S.queue?.running) return;
+    const ready = S.preps.map((x, i) => ({ id: S.dstIds[i], prep: x.prep, state: prepState(x) })).filter((x) => x.state === "ready");
+    // Only from the review, only once, and never while something else is running.
+    if (!ready.length || !M.clone.is("review") || S.queue) return;
     const word = S.confirmText.trim().toUpperCase();
-    if (word !== confirmWord()) return;
-    S.queue = { items: ready, idx: 0, word, eject: !!S.opts.eject, shutdown: S.shutdown, running: true };
+    if (word !== confirmWord() || busy()) return;
+    S.queue = { items: ready, idx: 0, word, eject: !!S.opts.eject, shutdown: S.shutdown };
     await startQueueItem();
   },
   cancel() {
@@ -1198,7 +1273,7 @@ const actions = {
   "update-skip"() { S.ui.skipVersion = S.update.info?.latest || null; store.set("ui", S.ui); $("#update-toast")?.remove(); },
   "unreadable-stop"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: false }); },
   "unreadable-zero"() { closeModal(); api.invoke("answer_unreadable", { zeroFill: true }); },
-  restart() { S.step = "source"; S.prep = null; S.preps = []; S.prepIdx = 0; S.queue = null; S.report = null; S.runError = null; S.run = null; S.confirmText = ""; S.dstId = null; S.dstIds = []; S.shutdown = false; loadDisks(); },
+  restart() { if (!M.clone.can("source")) return; M.clone.to("source"); S.prep = null; S.preps = []; S.prepIdx = 0; S.queue = null; S.report = null; S.runError = null; S.run = null; S.confirmText = ""; S.dstId = null; S.dstIds = []; S.shutdown = false; loadDisks(); },
   async export(el) {
     const fmt = el.dataset.fmt, id = el.dataset.id;
     try {
@@ -1210,20 +1285,25 @@ const actions = {
   },
   "disk-sel"(el) { S.diskSel = el.dataset.id; render(); },
   "fmt-sel"(el) {
-    if (S.fmt.running) return;
-    Object.assign(S.fmt, { id: el.dataset.id, check: null, confirm: "", outcome: null, error: null, steps: [] });
+    if (M.format.is("running")) return;
+    Object.assign(S.fmt, { id: el.dataset.id, check: null, confirm: "", steps: [] });
     formatCheck();
   },
-  "fmt-again"() { Object.assign(S.fmt, { outcome: null, error: null, steps: [], confirm: "" }); formatCheck(); },
+  "fmt-again"() { Object.assign(S.fmt, { steps: [], confirm: "" }); formatCheck(); },
   async "fmt-start"() {
     const f = S.fmt;
-    if (f.running || !f.check || f.check.refusals.length || f.confirm.trim().toUpperCase() !== confirmWord()) return;
-    Object.assign(f, { running: true, steps: [], outcome: null, error: null });
+    if (!M.format.can("running") || f.confirm.trim().toUpperCase() !== confirmWord() || busy()) return;
+    M.format.to("running");
+    Object.assign(f, { steps: [], outcome: null, error: null });
     render();
     try {
       f.outcome = await api.invoke("format_disk", { id: f.id, fingerprint: f.check.disk.fingerprint, request: { fs: f.fs, table: f.table, label: f.label }, confirmation: f.confirm.trim().toUpperCase() });
-    } catch (e) { f.error = typeof e === "string" ? e : e?.message || String(e); }
-    f.running = false; f.confirm = "";
+      M.format.to("done");
+    } catch (e) {
+      f.error = typeof e === "string" ? e : e?.message || String(e);
+      M.format.to("failed");
+    }
+    f.confirm = "";
     render();
     loadDisks(true);
   },
@@ -1239,13 +1319,15 @@ const actions = {
   async scan(el) {
     const id = el.dataset.id, d = disk(id);
     if (!d) return;
+    if (!M.scan.can("running") || busy()) return;
     try {
-      S.scan = { id, running: true, cells: new Array(Math.min(2400, Math.max(1, Math.ceil(d.size / 1048576)))).fill(255), progress: null, result: null, error: null, cursor: 0 };
+      S.scan = newScan(id, new Array(Math.min(2400, Math.max(1, Math.ceil(d.size / 1048576)))).fill(255));
+      M.scan.to("running");
       await api.invoke("start_scan", { id });
-    } catch (e) { S.scan = null; fail(e); }
+    } catch (e) { M.scan.to("idle"); S.scan = null; fail(e); }
     render();
   },
-  "scan-cancel"() { if (S.scan) { S.scan.cancelling = true; api.invoke("cancel_scan"); render(); } },
+  "scan-cancel"() { if (S.scan && M.scan.can("cancelling")) { M.scan.to("cancelling"); api.invoke("cancel_scan"); render(); } },
   async "report-open"(el) {
     try { S.reportOpen = await api.invoke("get_report", { id: el.dataset.id }); render(); } catch (e) { fail(e); }
   },
@@ -1279,8 +1361,9 @@ async function surveyHealth() {
 }
 
 async function goto(view) {
-  if (S.view === "clone" && S.step === "run" && view !== "clone") { toast(L("Un clonage est en cours : restez sur cet écran pour le suivre.", "A clone is running: stay on this screen to follow it.")); return; }
-  if (S.fmt.running && view !== "format") { toast(L("Formatage en cours.", "Formatting in progress.")); return; }
+  // A clone and a format are followed on their own screen until they end.
+  const home = { cloning: "clone", formatting: "format" }[activity()];
+  if (home && view !== home) { toast(BUSY()[activity()]); return; }
   S.view = view;
   // Analysis shown in another language: it is redone.
   if (view === "clone" && S.step === "review" && !S.prepBusy && S.prepLang !== LANG) return void prepare();
@@ -1313,6 +1396,7 @@ document.addEventListener("change", (ev) => {
   if (t.dataset.uicheck) {
     S.ui[t.dataset.uicheck] = t.checked;
     store.set("ui", S.ui);
+    if (t.dataset.uicheck === "keepAwake") api.invoke("set_keep_awake", { enabled: t.checked }).catch(fail);
   }
   if (t.dataset.ui) {
     S.ui[t.dataset.ui] = t.value;
@@ -1361,7 +1445,10 @@ async function boot() {
     const st = report ? STATUS[report.outcome.status][0] : "failed";
     // Lets the final state of the beam show before the next clone or the report.
     if (beam) beam.set({ ok: "ok", warn: "warn", incomplete: "incomplete", failed: "fail" }[st], 0.3, false);
-    setTimeout(() => queueDone(e.payload), document.documentElement.classList.contains("no-motion") ? 0 : 1600);
+    // What is left of the star settles: a brown dwarf after a good clone.
+    if (S.run) S.run.ended = st;
+    updateRun();
+    setTimeout(() => queueDone(e.payload), document.documentElement.classList.contains("no-motion") ? 0 : 2600);
   });
   await api.listen("format-step", (e) => { S.fmt.steps.push(e.payload); if (S.view === "format") render(); });
   await api.listen("scan-progress", (e) => {
@@ -1373,22 +1460,25 @@ async function boot() {
   });
   await api.listen("scan-done", (e) => {
     const { id, result, error, saved } = e.payload;
-    if (!S.scan || S.scan.id !== id) S.scan = { id };
-    Object.assign(S.scan, { running: false, cancelling: false, result, error, saved, cells: result ? result.cells : S.scan.cells || [] });
+    if (!S.scan || S.scan.id !== id) S.scan = newScan(id, []);
+    Object.assign(S.scan, { result, error, saved, cells: result ? result.cells : S.scan.cells || [] });
+    M.scan.to(result ? "done" : "failed");
     if (result?.bad_sectors) toast(L(`Scan terminé : ${num(result.bad_sectors)} secteur(s) illisible(s).`, `Scan finished: ${num(result.bad_sectors)} unreadable sector(s).`), true);
     else if (result) toast(L("Scan de surface terminé.", "Surface scan finished."));
     if (S.view === "disks") render();
   });
-  await api.listen("close-blocked", () => toast(L("Un clonage est en cours. Annulez-le d'abord si vous voulez vraiment fermer.", "A clone is running. Cancel it first if you really want to close."), true));
+  await api.listen("close-blocked", () => toast(activity() === "formatting" ? L("Un formatage est en cours : attendez qu'il se termine.", "A format is running: wait until it has finished.") : L("Un clonage est en cours. Annulez-le d'abord si vous voulez vraiment fermer.", "A clone is running. Cancel it first if you really want to close."), true));
   await api.listen("update-progress", (e) => updateProgress(e.payload));
   await api.listen("update-failed", (e) => {
-    S.update.installing = false;
+    M.update.to("idle");
     closeModal();
     toast(L(`Mise à jour impossible : ${e.payload}`, `Update failed: ${e.payload}`), true);
     if (S.view === "settings") render();
   });
   setInterval(() => { if (S.step === "run" && S.run) updateRun(); }, 1000);
   try { S.env = await api.invoke("env_info"); } catch (e) { fail(e); }
+  // No sleep while the application is open, unless turned off in Settings.
+  api.invoke("set_keep_awake", { enabled: S.ui.keepAwake !== false }).catch(() => {});
   // No saved choice: Windows language.
   if (!S.ui.lang && S.env?.system_lang) applyLang(S.env.system_lang);
   render();

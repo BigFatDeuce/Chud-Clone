@@ -326,6 +326,8 @@
       job = { params, prep, t0: Date.now(), log: [], err: { read: 0, bad: 0, rec: 0, write: 0 }, cancel: false };
       setTimeout(runJob, 50);
     },
+    set_keep_awake: () => null,
+    app_state: () => ({ activity: job ? "cloning" : "idle", keep_awake: true }),
     shutdown_pc: async () => { throw T("Banc d'essai : extinction simulée.", "Test bench: simulated shutdown."); },
     format_check: async ({ id, request }) => {
       await wait(300);

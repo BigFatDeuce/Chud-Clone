@@ -33,3 +33,52 @@ impl Drop for KeepAwake {
         }
     }
 }
+
+/// Keeps the computer awake for as long as a program wants, switchable at any time
+/// from any thread. The request belongs to a thread: the switch owns a parked one.
+pub struct AwakeSwitch {
+    tx: std::sync::mpsc::Sender<bool>,
+}
+
+impl AwakeSwitch {
+    pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        let _ = std::thread::Builder::new().name("keep-awake".into()).spawn(move || {
+            let mut guard: Option<KeepAwake> = None;
+            // Ends (and releases the request) when the switch is dropped.
+            for on in rx {
+                guard = if on { guard.or_else(|| Some(KeepAwake::new())) } else { None };
+            }
+            drop(guard);
+        });
+        AwakeSwitch { tx }
+    }
+
+    /// `true`: no sleep from now on; `false`: back to the normal Windows behaviour.
+    pub fn set(&self, on: bool) {
+        let _ = self.tx.send(on);
+    }
+}
+
+impl Default for AwakeSwitch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_and_guard_can_be_combined() {
+        let s = AwakeSwitch::new();
+        s.set(true);
+        s.set(true);
+        {
+            let _work = KeepAwake::new();
+        }
+        s.set(false);
+        drop(s);
+    }
+}

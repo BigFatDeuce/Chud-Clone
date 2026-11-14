@@ -37,18 +37,86 @@ struct RunningJob {
     decision: Arc<(Mutex<Option<Decision>>, Condvar)>,
 }
 
+/// What the application is doing. There is exactly one activity at a time: a clone, a
+/// surface scan, a format and an update exclude each other. Every command that starts
+/// something goes through [`ActivitySlot::begin`], the only place where this is decided
+/// (see docs/STATE-MACHINES.md).
+enum Activity {
+    Idle,
+    Cloning(RunningJob),
+    Scanning(Arc<Control>),
+    Formatting,
+    Updating,
+}
+
+impl Activity {
+    /// Name given to the interface and to tools (`app_state`).
+    fn name(&self) -> &'static str {
+        match self {
+            Activity::Idle => "idle",
+            Activity::Cloning(_) => "cloning",
+            Activity::Scanning(_) => "scanning",
+            Activity::Formatting => "formatting",
+            Activity::Updating => "updating",
+        }
+    }
+
+    /// Why nothing else can start meanwhile (`None` when idle).
+    fn busy(&self) -> Option<String> {
+        Some(
+            match self {
+                Activity::Idle => return None,
+                Activity::Cloning(_) => chud_clone_core::t!("un clonage est en cours", "a clone is running"),
+                Activity::Scanning(_) => {
+                    chud_clone_core::t!("un test de surface est en cours : arrêtez-le d'abord", "a surface scan is running: stop it first")
+                }
+                Activity::Formatting => chud_clone_core::t!("un formatage est en cours", "a format is running"),
+                Activity::Updating => chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed"),
+            }
+            .to_string(),
+        )
+    }
+
+    /// Closing the window now would leave a disk half written.
+    fn blocks_close(&self) -> bool {
+        matches!(self, Activity::Cloning(_) | Activity::Formatting)
+    }
+}
+
+struct ActivitySlot(Mutex<Activity>);
+
+impl ActivitySlot {
+    fn get(&self) -> std::sync::MutexGuard<'_, Activity> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Idle → `next`. Refused, with the reason, while anything else is running.
+    fn begin(&self, next: Activity) -> Result<(), String> {
+        let mut current = self.get();
+        if let Some(reason) = current.busy() {
+            return Err(reason);
+        }
+        *current = next;
+        Ok(())
+    }
+
+    /// Back to idle (end of the operation, whatever its result).
+    fn end(&self) {
+        *self.get() = Activity::Idle;
+    }
+}
+
 struct Inner {
     images: Mutex<Vec<ImageEntry>>,
-    job: Mutex<Option<RunningJob>>,
-    /// Surface scan in progress (one at a time, never during a clone).
-    scan: Mutex<Option<Arc<Control>>>,
+    activity: ActivitySlot,
+    /// No sleep while the application is open (Settings; on by default).
+    awake: chud_clone_core::awake::AwakeSwitch,
+    keep_awake: std::sync::atomic::AtomicBool,
     data_dir: PathBuf,
     reports_dir: PathBuf,
     portable: bool,
     /// Result of the last update check (with the package to download).
     update: Mutex<Option<update::UpdateInfo>>,
-    /// An update is being downloaded or installed: no clone or scan may start.
-    updating: std::sync::atomic::AtomicBool,
 }
 
 type Shared = Arc<Inner>;
@@ -414,24 +482,9 @@ fn start_clone(app: AppHandle, state: State<'_, Shared>, params: CloneParams, co
         .into());
     }
     let cfg = config(&state, &params)?;
-    if state.updating.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed").into());
-    }
-    if state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!(
-            "un scan de surface est en cours : arrêtez-le avant de lancer un clonage",
-            "a surface scan is running: stop it before starting a clone"
-        )
-        .into());
-    }
-    let mut slot = state.job.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.is_some() {
-        return Err(chud_clone_core::t!("un clonage est déjà en cours", "a clone is already running").into());
-    }
     let ctl = Arc::new(Control::new());
     let decision = Arc::new((Mutex::new(None), Condvar::new()));
-    *slot = Some(RunningJob { ctl: ctl.clone(), decision: decision.clone() });
-    drop(slot);
+    state.activity.begin(Activity::Cloning(RunningJob { ctl: ctl.clone(), decision: decision.clone() }))?;
 
     let shared = state.inner().clone();
     let params = params.clone();
@@ -463,11 +516,11 @@ fn start_clone(app: AppHandle, state: State<'_, Shared>, params: CloneParams, co
                     vec![],
                 ),
             };
-            *shared.job.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            shared.activity.end();
             let _ = app.emit("clone-done", event);
         })
         .map_err(|e| {
-            *state.job.lock().unwrap_or_else(|x| x.into_inner()) = None;
+            state.activity.end();
             chud_clone_core::tf!("impossible de démarrer le clonage : {e}", "cannot start the clone: {e}")
         })?;
     Ok(())
@@ -497,23 +550,8 @@ struct ScanDone {
 #[tauri::command]
 fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<(), String> {
     let (target, _) = state.target(&id)?;
-    if state.updating.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed").into());
-    }
-    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!(
-            "un clonage est en cours : le scan attendra qu'il soit terminé",
-            "a clone is running: the scan will wait until it has finished"
-        )
-        .into());
-    }
-    let mut slot = state.scan.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.is_some() {
-        return Err(chud_clone_core::t!("un scan est déjà en cours", "a scan is already running").into());
-    }
     let ctl = Arc::new(Control::new());
-    *slot = Some(ctl.clone());
-    drop(slot);
+    state.activity.begin(Activity::Scanning(ctl.clone()))?;
     let shared = state.inner().clone();
     let paths = state.app_paths();
     std::thread::Builder::new()
@@ -542,11 +580,11 @@ fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<()
                     saved: None,
                 },
             };
-            *shared.scan.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            shared.activity.end();
             let _ = app.emit("scan-done", event);
         })
         .map_err(|e| {
-            *state.scan.lock().unwrap_or_else(|x| x.into_inner()) = None;
+            state.activity.end();
             chud_clone_core::tf!("impossible de démarrer le scan : {e}", "cannot start the scan: {e}")
         })?;
     Ok(())
@@ -555,8 +593,8 @@ fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<()
 /// Shuts the computer down (end of a clone queue, after the interface's countdown).
 #[tauri::command]
 fn shutdown_pc(state: State<'_, Shared>) -> Result<(), String> {
-    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!("un clonage est en cours", "a clone is running").into());
+    if let Some(reason) = state.activity.get().busy() {
+        return Err(reason);
     }
     #[cfg(windows)]
     return chud_clone_core::win::eject::shutdown_now();
@@ -610,17 +648,7 @@ async fn format_disk(
         .strip_prefix("disk:")
         .and_then(|n| n.parse::<u32>().ok())
         .ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être formatés", "only disks can be formatted").to_string())?;
-    if state.updating.load(std::sync::atomic::Ordering::SeqCst) || state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!("une autre opération est en cours", "another operation is running").into());
-    }
-    // The clone slot is held during formatting: no clone can start meanwhile.
-    {
-        let mut slot = state.job.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.is_some() {
-            return Err(chud_clone_core::t!("un clonage est en cours", "a clone is running").into());
-        }
-        *slot = Some(RunningJob { ctl: Arc::new(Control::new()), decision: Arc::new((Mutex::new(None), Condvar::new())) });
-    }
+    state.activity.begin(Activity::Formatting)?;
     let shared = state.inner().clone();
     let paths = state.app_paths();
     let result = blocking(move || {
@@ -640,20 +668,20 @@ async fn format_disk(
         }
     })
     .await;
-    *shared.job.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    shared.activity.end();
     result?
 }
 
 #[tauri::command]
 fn cancel_scan(state: State<'_, Shared>) {
-    if let Some(ctl) = state.scan.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Activity::Scanning(ctl) = &*state.activity.get() {
         ctl.cancel();
     }
 }
 
 #[tauri::command]
 fn cancel_clone(state: State<'_, Shared>) {
-    if let Some(job) = state.job.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Activity::Cloning(job) = &*state.activity.get() {
         job.ctl.cancel();
         job.decision.1.notify_all();
     }
@@ -661,7 +689,7 @@ fn cancel_clone(state: State<'_, Shared>) {
 
 #[tauri::command]
 fn answer_unreadable(state: State<'_, Shared>, zero_fill: bool) {
-    if let Some(job) = state.job.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Activity::Cloning(job) = &*state.activity.get() {
         let (lock, cv) = &*job.decision;
         *lock.lock().unwrap_or_else(|e| e.into_inner()) = Some(if zero_fill { Decision::ZeroFill } else { Decision::Abort });
         cv.notify_all();
@@ -670,7 +698,28 @@ fn answer_unreadable(state: State<'_, Shared>, zero_fill: bool) {
 
 #[tauri::command]
 fn clone_running(state: State<'_, Shared>) -> bool {
-    state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    matches!(&*state.activity.get(), Activity::Cloning(_))
+}
+
+#[derive(Serialize)]
+struct AppState {
+    /// "idle", "cloning", "scanning", "formatting" or "updating".
+    activity: &'static str,
+    keep_awake: bool,
+}
+
+/// Current state of the application, for the interface, diagnostics and tools.
+#[tauri::command]
+fn app_state(state: State<'_, Shared>) -> AppState {
+    AppState { activity: state.activity.get().name(), keep_awake: state.keep_awake.load(std::sync::atomic::Ordering::SeqCst) }
+}
+
+/// No sleep while the application is open (Settings). While a clone, a scan or a
+/// format runs, the engine keeps the computer awake by itself in any case.
+#[tauri::command]
+fn set_keep_awake(state: State<'_, Shared>, enabled: bool) {
+    state.keep_awake.store(enabled, std::sync::atomic::Ordering::SeqCst);
+    state.awake.set(enabled);
 }
 
 #[tauri::command]
@@ -703,8 +752,8 @@ async fn export_report(state: State<'_, Shared>, id: String, format: String, pat
 
 #[tauri::command]
 fn relaunch_elevated(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> {
-    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!("un clonage est en cours", "a clone is running").into());
+    if let Some(reason) = state.activity.get().busy() {
+        return Err(reason);
     }
     #[cfg(windows)]
     {
@@ -741,21 +790,11 @@ struct UpdateProgress {
 /// application closes (and restarts) once the new version is in place.
 #[tauri::command]
 fn update_install(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
     let info = state.update.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some(info) = info.filter(|i| i.available && i.method != update::Method::Manual) else {
         return Err(chud_clone_core::t!("aucune mise à jour installable", "no installable update").into());
     };
-    if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() || state.scan.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Err(chud_clone_core::t!(
-            "une opération est en cours : la mise à jour attendra qu'elle soit terminée",
-            "an operation is running: the update will wait until it has finished"
-        )
-        .into());
-    }
-    if state.updating.swap(true, Ordering::SeqCst) {
-        return Err(chud_clone_core::t!("une mise à jour est déjà en cours", "an update is already in progress").into());
-    }
+    state.activity.begin(Activity::Updating)?;
     let shared = state.inner().clone();
     std::thread::Builder::new()
         .name("update".into())
@@ -770,13 +809,13 @@ fn update_install(app: AppHandle, state: State<'_, Shared>) -> Result<(), String
             match result {
                 Ok(()) => app.exit(0),
                 Err(e) => {
-                    shared.updating.store(false, Ordering::SeqCst);
+                    shared.activity.end();
                     let _ = app.emit("update-failed", e);
                 }
             }
         })
         .map_err(|e| {
-            state.updating.store(false, Ordering::SeqCst);
+            state.activity.end();
             e.to_string()
         })?;
     Ok(())
@@ -856,14 +895,16 @@ fn main() {
 
     let shared: Shared = Arc::new(Inner {
         images: Mutex::new(Vec::new()),
-        job: Mutex::new(None),
-        scan: Mutex::new(None),
+        activity: ActivitySlot(Mutex::new(Activity::Idle)),
+        awake: chud_clone_core::awake::AwakeSwitch::new(),
+        keep_awake: std::sync::atomic::AtomicBool::new(true),
         data_dir,
         reports_dir,
         portable,
         update: Mutex::new(None),
-        updating: std::sync::atomic::AtomicBool::new(false),
     });
+    // On until the interface applies the saved setting.
+    shared.awake.set(true);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -894,14 +935,16 @@ fn main() {
             open_release_page,
             shutdown_pc,
             format_check,
-            format_disk
+            format_disk,
+            app_state,
+            set_keep_awake
         ])
         .on_window_event(|window, event| {
-            // Closing the window during a clone would leave the destination incomplete:
-            // the interface asks for confirmation first.
+            // Closing the window during a clone or a format would leave a disk half
+            // written: the interface says so instead.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Shared>();
-                if state.job.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                if state.activity.get().blocks_close() {
                     api.prevent_close();
                     let _ = window.emit("close-blocked", ());
                 }
@@ -909,4 +952,34 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("failed to start Chud Clone");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One activity at a time, whatever the order; `end` frees the slot.
+    #[test]
+    fn activities_exclude_each_other() {
+        let slot = ActivitySlot(Mutex::new(Activity::Idle));
+        assert_eq!(slot.get().name(), "idle");
+        assert!(slot.get().busy().is_none());
+        slot.begin(Activity::Scanning(Arc::new(Control::new()))).unwrap();
+        assert_eq!(slot.get().name(), "scanning");
+        assert!(!slot.get().blocks_close());
+        for next in [Activity::Formatting, Activity::Updating, Activity::Scanning(Arc::new(Control::new()))] {
+            assert!(slot.begin(next).is_err(), "nothing starts during a scan");
+        }
+        assert_eq!(slot.get().name(), "scanning", "a refused start changes nothing");
+        slot.end();
+        slot.begin(Activity::Formatting).unwrap();
+        assert!(slot.get().blocks_close());
+        assert!(slot.begin(Activity::Updating).is_err());
+        slot.end();
+        slot.begin(Activity::Cloning(RunningJob { ctl: Arc::new(Control::new()), decision: Arc::new((Mutex::new(None), Condvar::new())) })).unwrap();
+        assert!(slot.get().blocks_close());
+        assert_eq!(slot.get().name(), "cloning");
+        slot.end();
+        assert_eq!(slot.get().name(), "idle");
+    }
 }

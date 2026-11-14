@@ -100,6 +100,10 @@ pub struct CloneSettings {
     pub verify: VerifyMode,
     pub unreadable: UnreadablePolicy,
     pub retries: u32,
+    /// Safely remove the destination disk after a usable clone.
+    pub eject: bool,
+    /// Shut the computer down when the clone is finished (cancellable countdown).
+    pub shutdown: bool,
 }
 
 impl Default for CloneSettings {
@@ -111,11 +115,15 @@ impl Default for CloneSettings {
             verify: VerifyMode::Hash,
             unreadable: UnreadablePolicy::Ask,
             retries: 3,
+            eject: false,
+            shutdown: false,
         }
     }
 }
 
-pub const OPTION_ROWS: usize = 6;
+pub const OPTION_ROWS: usize = 8;
+/// Seconds left to cancel the shutdown requested at the end of a clone.
+pub const SHUTDOWN_DELAY: u64 = 60;
 
 pub struct RunState {
     pub started: Instant,
@@ -136,6 +144,13 @@ pub struct ScanState {
     pub cancel_requested: bool,
 }
 
+/// Where the formatting screen is: choosing, writing, or showing the result.
+pub enum FormatStage {
+    Edit,
+    Running,
+    Done(Result<FormatOutcome, String>),
+}
+
 /// Whole-disk formatting screen. Rows: 0 file system, 1 table, 2 name, 3 confirmation.
 pub struct FormatState {
     pub idx: usize,
@@ -144,9 +159,8 @@ pub struct FormatState {
     pub label: String,
     pub row: usize,
     pub confirm: String,
-    pub running: bool,
     pub steps: Vec<String>,
-    pub result: Option<Result<FormatOutcome, String>>,
+    pub stage: FormatStage,
 }
 
 pub enum Msg {
@@ -162,6 +176,7 @@ pub enum Msg {
     ScanDone(Box<Result<ScanResult, String>>),
     FormatStep(String),
     Formatted(Box<Result<FormatOutcome, String>>),
+    Notice(String),
 }
 
 pub struct App {
@@ -190,6 +205,9 @@ pub struct App {
     pub run_error: Option<String>,
     pub scan: Option<ScanState>,
     pub fmt: Option<FormatState>,
+    /// Shutdown requested at the end of a clone: the computer goes down at this time
+    /// unless the user cancels (result screen only).
+    pub shutdown_at: Option<Instant>,
     /// Status line message (warning or information).
     pub notice: Option<String>,
     pub app_paths: Vec<String>,
@@ -236,6 +254,7 @@ impl App {
             run_error: None,
             scan: None,
             fmt: None,
+            shutdown_at: None,
             notice: None,
             app_paths,
             tx,
@@ -284,6 +303,74 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             self.handle(msg);
         }
+        if self.shutdown_at.is_some_and(|at| Instant::now() >= at) {
+            self.shutdown_at = None;
+            self.shutdown();
+        }
+    }
+
+    /// Shuts the computer down: the WinPE menu does it on the exit code; elsewhere
+    /// Windows is asked directly.
+    fn shutdown(&mut self) {
+        if self.opts.winpe {
+            self.exit = Some(exit::SHUTDOWN);
+            return;
+        }
+        #[cfg(windows)]
+        match chud_clone_core::win::eject::shutdown_now() {
+            Ok(()) => self.exit = Some(exit::QUIT),
+            Err(e) => self.message(t!("Extinction", "Shutdown"), e),
+        }
+    }
+
+    /// End-of-clone options: eject the destination after a usable clone, then start
+    /// the shutdown countdown.
+    fn after_clone(&mut self) {
+        use chud_clone_core::clone::FinalStatus;
+        let good = self.report.as_ref().is_some_and(|r| matches!(r.outcome.status, FinalStatus::SuccessVerified | FinalStatus::CompletedWithWarnings));
+        if self.settings.eject
+            && good
+            && let Some(Target::Disk(n)) = self.dest.and_then(|i| self.entries.get(i)).map(|e| e.target.clone())
+        {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                #[cfg(windows)]
+                let text = match chud_clone_core::win::eject::eject_disk(n) {
+                    Ok(()) => tf!("Disque {n} éjecté : il peut être débranché.", "Disk {n} ejected: it can be unplugged."),
+                    Err(e) => e,
+                };
+                #[cfg(not(windows))]
+                let text = format!("disk {n}");
+                let _ = tx.send(Msg::Notice(text));
+            });
+        }
+        if self.settings.shutdown {
+            self.shutdown_at = Some(Instant::now() + std::time::Duration::from_secs(SHUTDOWN_DELAY));
+        }
+    }
+
+    /// The states that must go together (see docs/STATE-MACHINES.md). Checked after
+    /// every key and every engine message in the tests.
+    #[cfg(test)]
+    pub fn check_invariants(&self) -> Result<(), String> {
+        let need = |ok: bool, what: &str| if ok { Ok(()) } else { Err(format!("{:?}: {what}", self.screen)) };
+        match self.screen {
+            Screen::Home => {
+                need(self.run.is_none(), "a clone state is left on the home screen")?;
+                need(self.scan.is_none() && self.fmt.is_none(), "a scan or format state is left on the home screen")?;
+            }
+            Screen::Text => {}
+            Screen::PickDest => need(self.source.is_some(), "no source")?,
+            Screen::Options => need(self.source.is_some() && self.dest.is_some(), "no source or destination")?,
+            Screen::Review => need(self.prep.is_some() && self.dest.is_some(), "no analysis to review")?,
+            Screen::Running => need(self.run.is_some() && self.prep.is_some(), "no clone running")?,
+            Screen::Result => need(self.report.is_some() || self.run_error.is_some(), "no result")?,
+            Screen::Scan => need(self.scan.is_some(), "no scan")?,
+            Screen::Format => need(self.fmt.is_some(), "no format state")?,
+        }
+        need(self.shutdown_at.is_none() || self.screen == Screen::Result, "shutdown countdown outside the result screen")?;
+        need(!matches!(self.modal, Some(Modal::Unreadable { .. })) || self.screen == Screen::Running, "unreadable-sector question outside a clone")?;
+        Ok(())
     }
 
     fn handle(&mut self, msg: Msg) {
@@ -386,7 +473,9 @@ impl App {
                 }
                 self.scroll = 0;
                 self.screen = Screen::Result;
+                self.after_clone();
             }
+            Msg::Notice(text) => self.notice = Some(text),
             Msg::ScanProgress(p) => {
                 if let Some(s) = &mut self.scan {
                     for &(i, c) in &p.cells {
@@ -404,9 +493,8 @@ impl App {
             }
             Msg::Formatted(res) => {
                 if let Some(f) = &mut self.fmt {
-                    f.running = false;
                     f.confirm.clear();
-                    f.result = Some(*res);
+                    f.stage = FormatStage::Done(*res);
                 }
             }
             Msg::ScanDone(res) => {
@@ -474,6 +562,15 @@ impl App {
                     self.ask_cancel(ConfirmAction::CancelClone);
                 }
             }
+            // A pending shutdown is cancelled first; the result stays on screen.
+            Screen::Result if self.shutdown_at.is_some() => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                    self.shutdown_at = None;
+                    self.notice = Some(t!("Extinction annulée.", "Shutdown cancelled.").into());
+                } else {
+                    self.scroll_key(key.code);
+                }
+            }
             Screen::Result => match key.code {
                 KeyCode::Esc | KeyCode::Enter => self.back_home(true),
                 _ => self.scroll_key(key.code),
@@ -499,6 +596,7 @@ impl App {
         self.run = None;
         self.scan = None;
         self.fmt = None;
+        self.shutdown_at = None;
         self.confirm.clear();
         self.scroll = 0;
         if refresh {
@@ -569,9 +667,8 @@ impl App {
                         label: String::new(),
                         row: 0,
                         confirm: String::new(),
-                        running: false,
                         steps: Vec::new(),
-                        result: None,
+                        stage: FormatStage::Edit,
                     });
                     self.screen = Screen::Format;
                 }
@@ -613,14 +710,15 @@ impl App {
         let refused = !self.format_refusals().is_empty();
         let word_ok = self.fmt.as_ref().is_some_and(|f| f.confirm.trim().eq_ignore_ascii_case(confirm_word()));
         let Some(f) = self.fmt.as_mut() else { return };
-        if f.running {
-            return;
-        }
-        if f.result.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-                self.back_home(true);
+        match f.stage {
+            FormatStage::Edit => {}
+            FormatStage::Running => return,
+            FormatStage::Done(_) => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                    self.back_home(true);
+                }
+                return;
             }
-            return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -665,7 +763,7 @@ impl App {
         let Some(req) = self.format_request() else { return };
         let Some(f) = self.fmt.as_mut() else { return };
         let Some(entry) = self.entries.get(f.idx).cloned() else { return };
-        f.running = true;
+        f.stage = FormatStage::Running;
         f.steps.clear();
         let tx = self.tx.clone();
         let paths = self.app_paths.clone();
@@ -815,9 +913,11 @@ impl App {
             2 => s.grow = !s.grow,
             3 => s.verify = cycle(&[VerifyMode::Hash, VerifyMode::Full, VerifyMode::None], s.verify, forward),
             4 => s.unreadable = cycle(&[UnreadablePolicy::Ask, UnreadablePolicy::Stop, UnreadablePolicy::ZeroFill], s.unreadable, forward),
-            _ => {
+            5 => {
                 s.retries = if forward { (s.retries + 1).min(10) } else { s.retries.saturating_sub(1) };
             }
+            6 => s.eject = !s.eject,
+            _ => s.shutdown = !s.shutdown,
         }
     }
 

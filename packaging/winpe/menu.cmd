@@ -79,11 +79,12 @@ echo     6. !T_6!
 echo     7. !T_7!
 echo     8. !T_8!
 echo     9. !T_9!
+echo     F. !T_F!
 echo.
 rem WinPE has no choice.exe: the answer is read with set /p.
 set "C="
 set /p "C=   !T_CHOICE! "
-for %%k in (0 1 2 3 4 5 6 7 8 9) do if "!C!"=="%%k" goto choice%%k
+for %%k in (0 1 2 3 4 5 6 7 8 9 F) do if /i "!C!"=="%%k" goto choice%%k
 goto menu
 
 :choice0
@@ -164,6 +165,36 @@ if "!LNG!"=="fr" (
 )
 >"%HOME%lang.txt" echo !LNG!
 goto menu
+
+:choiceF
+rem Whole-disk format: new table (GPT), one partition, a file system and a name.
+"%CLI%" list
+echo.
+call :disk N "!T_ASK_FORMAT!"
+if errorlevel 1 goto menu
+set "FS="
+set /p "FS=  !T_ASK_FS! : "
+set "FSOK="
+for %%f in (ntfs exfat fat32) do if /i "!FS!"=="%%f" set "FSOK=1"
+if not defined FSOK (
+  echo   !T_BADFS!
+  goto pause
+)
+set "LBL="
+set /p "LBL=  !T_ASK_LABEL! : "
+if defined LBL set "LBL=!LBL:"=!"
+echo.
+echo   ----------------------------------------------------------
+echo   !T_WARN1! !N! !T_WARN1B!
+echo   ----------------------------------------------------------
+set "OK="
+set /p "OK=  !T_CONFIRM! !T_WORD! : "
+if /i not "!OK!"=="!T_WORD!" (
+  echo   !T_FABORTED!
+  goto pause
+)
+"%CLI%" format disk:!N! --fs !FS! --label "!LBL!" --confirm-erase
+goto pause
 
 :pause
 echo.

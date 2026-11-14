@@ -342,5 +342,251 @@
     }
   }
 
-  window.Cosmos = { startSky, setQuality, planet, bodyKind, Beam, hash };
+  // ---------------------------------------------------------------------- Star
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const easeOut = (x) => 1 - Math.pow(1 - clamp01(x), 3);
+  const easeInOut = (x) => { x = clamp01(x); return x * x * (3 - 2 * x); };
+  /** Colour along a list of [position, [r, g, b]] stops. */
+  function ramp(stops, k) {
+    k = clamp01(k);
+    for (let i = 1; i < stops.length; i++) {
+      if (k <= stops[i][0]) {
+        const [a, ca] = stops[i - 1], [b, cb] = stops[i];
+        const u = (k - a) / (b - a || 1);
+        return ca.map((v, j) => Math.round(v + (cb[j] - v) * u));
+      }
+    }
+    return stops[stops.length - 1][1];
+  }
+  // A star that burns its fuel: blue-white, then yellow, orange, and a swollen red giant.
+  const BURN = [[0, [190, 225, 255]], [0.35, [255, 244, 214]], [0.6, [255, 214, 120]], [0.85, [255, 150, 70]], [1, [255, 92, 62]]];
+  // What is left after the explosion cools down.
+  const COOL = [[0, [235, 245, 255]], [0.4, [255, 230, 160]], [0.75, [255, 140, 80]], [1, [176, 78, 62]]];
+
+  /**
+   * Life of a star around the percentage of a clone. Stages, set by the interface:
+   *   "proto"    preparation: a small young star;
+   *   "grow"     copy: it grows and reddens with the progress `k`, 0 → 1;
+   *   "remnant"  copy complete: it explodes, then the core cools with `k` (verification);
+   *   "dwarf"    good result: the core settles into a brown dwarf;
+   *   "dead"     failed or incomplete: it goes out.
+   */
+  class Star {
+    constructor(canvas) {
+      this.c = canvas;
+      this.ctx = canvas.getContext("2d");
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.size = canvas.getBoundingClientRect().width || 340;
+      canvas.width = canvas.height = Math.max(1, Math.floor(this.size * dpr));
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.stage = "proto";
+      this.k = 0;
+      this.errors = false;
+      this.r = 14;
+      this.novaAt = -1;
+      this.novaR = 0;
+      this.endAt = -1;
+      this.ejecta = [];
+      this.last = 0;
+      this.loop = this.loop.bind(this);
+      this.raf = requestAnimationFrame(this.loop);
+    }
+    destroy() {
+      cancelAnimationFrame(this.raf);
+    }
+    set(stage, k, errors) {
+      const now = performance.now() / 1000;
+      if (stage !== this.stage) {
+        const alive = this.stage === "proto" || this.stage === "grow";
+        if (alive && (stage === "remnant" || stage === "dwarf")) {
+          this.novaAt = now;
+          this.novaR = this.r;
+          for (let i = 0; i < 70; i++) this.ejecta.push({ a: Math.random() * TAU, v: 60 + Math.random() * 190, r: 0.8 + Math.random() * 2.2, hue: Math.random() });
+        }
+        if (stage === "dwarf" || stage === "dead") this.endAt = now;
+        this.stage = stage;
+      }
+      if (k != null) this.k = clamp01(k);
+      this.errors = !!errors;
+    }
+    loop(nowMs) {
+      this.raf = requestAnimationFrame(this.loop);
+      if (document.hidden) return;
+      const t = nowMs / 1000;
+      const dt = Math.min(0.05, t - this.last || 0.016);
+      this.last = t;
+      this.draw(t, dt, document.documentElement.classList.contains("no-motion"));
+    }
+    glow(x, y, r, col, a) {
+      if (a <= 0 || r <= 0) return;
+      const { ctx } = this;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(${col},${a})`);
+      g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, TAU);
+      ctx.fill();
+    }
+    draw(t, dt, still) {
+      const { ctx, stage, k } = this;
+      const c = this.size / 2;
+      ctx.clearRect(0, 0, this.size, this.size);
+      // Without motion every transition is shown in its final state.
+      const na = this.novaAt < 0 ? -1 : still ? 99 : t - this.novaAt;
+      const ea = this.endAt < 0 ? -1 : still ? 99 : t - this.endAt;
+      const wave = still ? 0 : t;
+      ctx.globalCompositeOperation = "lighter";
+
+      // ---- The living star (and its last light when the clone fails during the copy).
+      if (this.novaAt < 0) {
+        const target = stage === "proto" ? 15 : stage === "grow" ? 20 + 50 * easeInOut(k) + 7 * clamp01((k - 0.94) / 0.06) : this.r;
+        this.r = still ? target : this.r + (target - this.r) * Math.min(1, dt * 3.5);
+        const alpha = stage === "dead" ? clamp01(1 - ea / 1.4) : 1;
+        if (alpha > 0) {
+          const heat = stage === "proto" ? 0 : k;
+          let col = ramp(BURN, heat);
+          if (this.errors) {
+            const m = 0.35 + 0.25 * Math.sin(wave * 6);
+            col = col.map((v, i) => Math.round(v + ([255, 197, 107][i] - v) * m));
+          }
+          const rr = this.r * (1 + (0.012 + 0.035 * heat * heat) * Math.sin(wave * (1.6 + 3.2 * heat)));
+          // Corona.
+          const cg = ctx.createRadialGradient(c, c, rr * 0.85, c, c, rr * 1.95);
+          cg.addColorStop(0, `rgba(${col},${0.4 * alpha})`);
+          cg.addColorStop(1, `rgba(${col},0)`);
+          ctx.fillStyle = cg;
+          ctx.beginPath();
+          ctx.arc(c, c, rr * 1.95, 0, TAU);
+          ctx.fill();
+          // Body: a bright limb, a translucent heart so the percentage stays readable.
+          const bg = ctx.createRadialGradient(c, c, 0, c, c, rr);
+          bg.addColorStop(0, `rgba(${col},${0.1 * alpha})`);
+          bg.addColorStop(0.55, `rgba(${col},${0.17 * alpha})`);
+          bg.addColorStop(0.86, `rgba(${col},${0.55 * alpha})`);
+          bg.addColorStop(0.97, `rgba(${col},${0.95 * alpha})`);
+          bg.addColorStop(1, `rgba(${col},0)`);
+          ctx.fillStyle = bg;
+          ctx.beginPath();
+          ctx.arc(c, c, rr, 0, TAU);
+          ctx.fill();
+          // Prominences on the limb, larger as the star ages.
+          for (let i = 0; i < 5; i++) {
+            const ang = (i * TAU) / 5 + wave * 0.15 + Math.sin(wave * 0.7 + i) * 0.2;
+            const len = rr * (0.1 + 0.1 * (0.5 + 0.5 * Math.sin(wave * 1.3 + i * 2.1))) * (0.6 + heat);
+            this.glow(c + Math.cos(ang) * (rr + len * 0.4), c + Math.sin(ang) * (rr + len * 0.4), len * 1.3, col, 0.5 * alpha);
+          }
+        }
+      }
+
+      // ---- The explosion: flash, shock waves, ejected matter.
+      if (na >= 0 && na < 1.9) {
+        const fr = this.novaR + (165 - this.novaR) * easeOut(na / 0.5);
+        this.glow(c, c, fr, "255,240,215", clamp01(1 - na / 0.75));
+        for (const [delay, col] of [[0, "190,235,255"], [0.16, "170,130,255"]]) {
+          const u = na - delay;
+          if (u <= 0) continue;
+          const a = clamp01(1 - u / 1.5);
+          ctx.strokeStyle = `rgba(${col},${a})`;
+          ctx.lineWidth = 1 + 3 * a;
+          ctx.beginPath();
+          ctx.arc(c, c, this.novaR + 150 * easeOut(u / 1.5), 0, TAU);
+          ctx.stroke();
+        }
+        const fade = clamp01(1 - na / 1.9);
+        for (const p of this.ejecta) {
+          const d = this.novaR * 0.6 + p.v * easeOut(na / 1.9);
+          const col = p.hue < 0.4 ? "120,235,255" : p.hue < 0.75 ? "170,130,255" : "255,197,107";
+          this.glow(c + Math.cos(p.a) * d, c + Math.sin(p.a) * d, p.r * 3.2, col, 0.8 * fade);
+        }
+      } else if (na >= 1.9 && this.ejecta.length) this.ejecta = [];
+
+      if (this.novaAt >= 0) {
+        // ---- The nebula left behind: it thins out while the clone is verified.
+        const born = clamp01((na - 0.25) / 1.0);
+        let neb = born * (0.5 - 0.28 * (stage === "remnant" ? k : 1));
+        if (stage === "dwarf") neb *= 1 - 0.55 * easeOut(ea / 1.6);
+        if (stage === "dead") neb *= clamp01(1 - ea / 1.2);
+        if (neb > 0.01) {
+          const shells = [["154,107,255", 62], ["79,227,255", 72], ["255,120,170", 82]];
+          shells.forEach(([col, base], i) => {
+            const R = base + 3 * Math.sin(wave * 0.4 + i * 1.7);
+            const x = c + Math.cos(wave * 0.1 + i * 2) * 5, y = c + Math.sin(wave * 0.13 + i * 2) * 5;
+            const g = ctx.createRadialGradient(x, y, R * 0.5, x, y, R * 1.25);
+            g.addColorStop(0, `rgba(${col},0)`);
+            g.addColorStop(0.55, `rgba(${col},${neb})`);
+            g.addColorStop(1, `rgba(${col},0)`);
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(x, y, R * 1.25, 0, TAU);
+            ctx.fill();
+          });
+        }
+        // ---- The core: white-hot after the explosion, then cooling.
+        if (stage === "remnant" || (stage === "dwarf" && ea < 1.6)) {
+          const heat = stage === "remnant" ? k : 1;
+          const col = ramp(COOL, heat);
+          const rc = 12 - 2 * heat;
+          const a = clamp01(na / 0.5) * (stage === "dwarf" ? clamp01(1 - ea / 1.6) : 1);
+          this.glow(c, c, rc * 3.2, col, 0.5 * (1 - 0.5 * heat) * a);
+          this.glow(c, c, rc * 1.25, col, 0.95 * a);
+        }
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+      // ---- The brown dwarf: a dim, banded body that no longer shines by itself.
+      if (stage === "dwarf") {
+        const b = easeOut(ea / 1.6);
+        const r = 10 + 20 * b;
+        const tint = this.errors ? "255,197,107" : "205,98,72";
+        ctx.globalCompositeOperation = "lighter";
+        const hg = ctx.createRadialGradient(c, c, r * 0.9, c, c, r * 2.2);
+        hg.addColorStop(0, `rgba(${tint},${0.3 * b})`);
+        hg.addColorStop(1, `rgba(${tint},0)`);
+        ctx.fillStyle = hg;
+        ctx.beginPath();
+        ctx.arc(c, c, r * 2.2, 0, TAU);
+        ctx.fill();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.save();
+        ctx.globalAlpha = b;
+        ctx.beginPath();
+        ctx.arc(c, c, r, 0, TAU);
+        ctx.clip();
+        const sg = ctx.createRadialGradient(c - r * 0.3, c - r * 0.35, r * 0.1, c, c, r * 1.05);
+        sg.addColorStop(0, "#bd664c");
+        sg.addColorStop(0.5, "#7a3a32");
+        sg.addColorStop(1, "#2a1420");
+        ctx.fillStyle = sg;
+        ctx.fillRect(c - r, c - r, 2 * r, 2 * r);
+        // Cloud bands, drifting slowly.
+        [-0.58, -0.22, 0.1, 0.42, 0.7].forEach((y, i) => {
+          const dy = Math.sin(wave * 0.25 + i * 1.9) * r * 0.015;
+          ctx.fillStyle = i % 2 ? "rgba(236,160,118,.2)" : "rgba(38,14,24,.36)";
+          ctx.fillRect(c - r, c + y * r + dy - r * 0.07, 2 * r, r * (i % 2 ? 0.1 : 0.15));
+        });
+        const shade = ctx.createRadialGradient(c - r * 0.35, c - r * 0.4, r * 0.4, c, c, r * 1.1);
+        shade.addColorStop(0, "rgba(5,6,13,0)");
+        shade.addColorStop(1, "rgba(5,6,13,.62)");
+        ctx.fillStyle = shade;
+        ctx.fillRect(c - r, c - r, 2 * r, 2 * r);
+        ctx.restore();
+      }
+      // ---- Failure: nothing left but a cold cinder.
+      if (stage === "dead") {
+        const a = clamp01(ea / 1.4);
+        ctx.fillStyle = `rgba(13,11,20,${a})`;
+        ctx.beginPath();
+        ctx.arc(c, c, 16, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255,79,130,${0.6 * a})`;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([3, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  window.Cosmos = { startSky, setQuality, planet, bodyKind, Beam, Star, hash };
 })();
