@@ -79,6 +79,8 @@ Write-Host "Portable : $zip" -ForegroundColor Green
 # --- Installer
 $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
   Where-Object { Test-Path $_ } | Select-Object -First 1
+# Otherwise wherever it was installed, as long as it is on the PATH.
+if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
 if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found' }
 & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$stage" packaging\installer.iss
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
