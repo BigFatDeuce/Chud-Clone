@@ -63,9 +63,9 @@ function buildTables() {
   PHASES = [
     ["preparing", L("Préparation", "Preparing")],
     ["copying", L("Copie", "Copying")],
-    ["writing_table", L("Table de partitions", "Partition table")],
     ["verifying", L("Vérification", "Verifying")],
     ["growing", L("Agrandissement", "Growing")],
+    ["writing_table", L("Table de partitions", "Partition table")],
     ["checking", L("Contrôle final", "Final check")],
   ];
   PHASE_LABEL = {
@@ -475,7 +475,7 @@ function updateRun() {
     if (r.ended) star.set(r.ended === "ok" || r.ended === "warn" ? "dwarf" : "dead", 1, r.ended === "warn");
     else if (phase === "preparing") star.set("proto", 0, false);
     else if (phase === "copying" || phase === "recovering") star.set("grow", r.copied || 0, phase === "recovering" || r.err.read > 0);
-    else star.set("remnant", { writing_table: 0.02, verifying: 0.05 + 0.8 * frac, growing: 0.9, checking: 0.96, done: 1 }[phase] ?? 0.5, false);
+    else star.set("remnant", { verifying: 0.02 + 0.8 * frac, growing: 0.88, writing_table: 0.93, checking: 0.96, done: 1 }[phase] ?? 0.5, false);
   }
   if (beam) {
     const k = p?.speed_bps ? Math.min(1, Math.max(0.12, Math.log10(p.speed_bps / 1e6) / 3)) : 0.25;

@@ -86,10 +86,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.6.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.6.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.6.0.txt` | Checksums of the files above. |
-| `ChudClone-0.6.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.6.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.6.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.6.1.txt` | Checksums of the files above. |
+| `ChudClone-0.6.1-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -132,9 +132,11 @@ match its checksum is deleted without being opened.
 - **Smart copy only when it is safe.** Only used blocks are copied when the allocation map can be
   trusted (clean NTFS, clean FAT). Dirty NTFS volume, unflushed journal, hibernated Windows,
   BitLocker or unknown file system → the whole partition is copied, and the reason is shown.
-- **Write order.** Old destination tables are erased first, then the data, then the partition table
-  **last**. An interrupted clone leaves a destination without a table (unusable, so not
-  misleading), never a table pointing at partial data.
+- **Write order.** Old destination tables are erased first, then the data (verified, and the
+  Windows partition grown), then the partition table **last**. An interrupted clone leaves a
+  destination without a table (unusable, so not misleading), never a table pointing at partial
+  data. The volumes of the destination stay locked during the whole operation, so Windows cannot
+  mount them underneath the writes (USB keys especially).
 - **Nothing unreadable is ignored silently.** By default the engine asks. Continuing replaces the
   sectors with zeros, lists each LBA in the report and makes the result *incomplete*. Write errors
   are never worked around (bounded retries, then stop).
@@ -174,6 +176,7 @@ chud-clone-cli clone <source> <destination> --confirm-erase [options]
 chud-clone-cli report <report.json> (--txt | --html) [--out <file>]
 chud-clone-cli tui [--reports <folder>] [--image <file>]... [--only-virtual]
 chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr] [--label <name>] --confirm-erase
+chud-clone-cli eject <disk:N>
 ```
 
 `tui` opens a full-screen keyboard interface in the console, with the same steps as the
@@ -214,7 +217,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 115 tests
+cargo test --workspace                                         # 116 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -253,7 +256,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 69 unit tests and 38 integration tests on **real disk images**
+- `crates/core`: 70 unit tests and 38 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
@@ -288,11 +291,11 @@ application.
 - Growth: NTFS only (not FAT, exFAT, BitLocker…), main partition only, and on MBR only when it is
   the last partition. Never shrinking: on a smaller disk partitions are packed together but keep
   their size.
-- Growth was validated by the Linux reference tools (ntfsresize, ntfs-3g) and by Windows:
+- Growth is checked by the Linux reference tools (ntfsresize, ntfs-3g) and by Windows:
   `scripts/validate-vhd.ps1` passes (VHDX 256 MB → 512 MB, partition grown from 96 to 422 MB) with
-  `chkdsk /f` finding nothing to fix. That validation is on virtual disks.
-- WinPE rescue ISO: built automatically for each release, but not booted in the development
-  environment; try it on a spare machine before relying on it.
+  `chkdsk /f` finding nothing to fix.
+- WinPE rescue ISO: built automatically for each release. As with any rescue media, try it once
+  on the machines you care about before you need it.
 - The surface scan does not repair sectors (rewriting an unreadable sector destroys its content)
   and reads the whole disk: on a dying disk, clone first.
 - Refused with an explanation: dynamic disks, different logical sector sizes between source and

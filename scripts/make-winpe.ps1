@@ -105,7 +105,8 @@ if ($UsbDrive) {
 # --- 2. Program to embed --------------------------------------------------------------
 if (-not $Cli) {
   Say 'Building chud-clone-cli.exe (release)...' Cyan
-  $cargo = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+  $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+  $cargo = Join-Path $cargoHome 'bin\cargo.exe'
   if (-not (Test-Path $cargo)) { $cargo = 'cargo' }
   & $cargo build --release -p chud-clone-cli --manifest-path (Join-Path $root 'Cargo.toml')
   if ($LASTEXITCODE -ne 0) { Fail 'build failed' }

@@ -259,9 +259,7 @@ fn gpt_larger_destination_moves_trailing_partitions() {
     assert_eq!(rec.start_lba % 2048, 0);
     assert!(gpt.last_usable_lba + 1 - rec.end_lba() < 2048);
     // The first three partitions have not moved.
-    for i in 0..3 {
-        assert!(!r.plan.partitions[i].moved);
-    }
+    assert!(r.plan.partitions[..3].iter().all(|p| !p.moved));
     assert!(r.plan.partitions[3].moved);
     assert_tasks_equal(&r, src, &[]);
     assert_same_files(&r, src);

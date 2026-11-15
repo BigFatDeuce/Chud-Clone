@@ -197,10 +197,6 @@
     if (job.fail) log("error", T("La destination ne répond plus (périphérique déconnecté) après 2 nouvelles tentatives d'écriture", "The destination no longer responds (device disconnected) after 2 write retries"));
     let tableOk = false;
     if (ok) {
-      log("info", T("Écriture de la table de partitions", "Writing the partition table"));
-      emit("clone-progress", { phase: "writing_table", done: 0, total: 0, elapsed_ms: 0, speed_bps: 0, avg_bps: 0, eta_secs: null, read_errors: job.err.read, bad_bytes: job.err.bad, recovered_bytes: job.err.rec, write_errors: 0, current_lba: 0 });
-      await wait(900);
-      tableOk = true;
       if (job.params.verify !== "none") { log("info", T("Vérification des données copiées", "Verifying copied data")); ok = await phase("verifying", total, 7); }
       const g = job.prep.plan.grow;
       if (ok && g) {
@@ -209,6 +205,11 @@
         await wait(1300);
         log("info", T(`Partition ${g.number} agrandie : ${GB(g.old_len)} → ${GB(g.new_len)}`, `Partition ${g.number} grown: ${GB(g.old_len)} → ${GB(g.new_len)}`));
       }
+      // As in the engine, the partition table is the last write.
+      log("info", T("Écriture de la table de partitions", "Writing the partition table"));
+      emit("clone-progress", { phase: "writing_table", done: 0, total: 0, elapsed_ms: 0, speed_bps: 0, avg_bps: 0, eta_secs: null, read_errors: job.err.read, bad_bytes: job.err.bad, recovered_bytes: job.err.rec, write_errors: 0, current_lba: 0 });
+      await wait(900);
+      tableOk = true;
       if (ok) { log("info", T("Contrôle des structures du clone", "Checking the clone's structures")); emit("clone-progress", { phase: "checking", done: 0, total: 0, elapsed_ms: 0, speed_bps: 0, avg_bps: 0, eta_secs: null, read_errors: job.err.read, bad_bytes: job.err.bad, recovered_bytes: job.err.rec, write_errors: 0, current_lba: 0 }); await wait(1500); }
     }
     if (job.cancel && !job.fail) log("warning", T("Clonage annulé par l'utilisateur", "Clone cancelled by the user"));
@@ -274,7 +275,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.6.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.6.1", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },

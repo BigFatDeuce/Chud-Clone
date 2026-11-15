@@ -159,7 +159,7 @@ why and returns true when something else is running.
 
 | Machine | Where | States |
 | --- | --- | --- |
-| Clone phases | `engine::Phase` | `Preparing → Copying ⇄ Recovering → WritingTable → Verifying → Growing → Checking → Done` |
+| Clone phases | `engine::Phase` | `Preparing → Copying ⇄ Recovering → Verifying → Growing → WritingTable → Checking → Done` (the table is the last write) |
 | Result of a clone | `clone::FinalStatus` | `SuccessVerified`, `CompletedWithWarnings`, `Incomplete`, `Failed`: decided in one function from the facts of the run |
 | End of a surface scan | `scan::ScanEnd` | `Completed`, `Cancelled`, `DeviceLost`, `TooManyErrors` |
 | Cancellation | `engine::Control` | one flag, set once |

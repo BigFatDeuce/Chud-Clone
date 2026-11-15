@@ -171,30 +171,63 @@ pub fn refusals(disk: &DiskInfo, req: &FormatRequest) -> Vec<String> {
     out
 }
 
-/// `diskpart` script for one disk. `format` false: the partition is created but left
+/// The `diskpart` scripts of a whole-disk format, run one after the other: Windows
+/// needs time between them on a USB key (the disk is re-read and its volumes come and
+/// go after `clean` and after `create partition`).
+pub struct DiskpartSteps {
+    /// Erases the disk.
+    pub clean: String,
+    /// New table and its single partition.
+    pub partition: String,
+    /// Windows' formatter; `None` when Chud Clone writes the FAT32 volume itself.
+    pub format: Option<String>,
+}
+
+/// `diskpart` scripts for one disk. `format` false: the partition is created but left
 /// unformatted (large FAT32, written by [`format_fat32`] afterwards).
-pub fn diskpart_script(number: u32, req: &FormatRequest, format: bool) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("select disk {number}\r\n"));
+pub fn diskpart_steps(number: u32, req: &FormatRequest, format: bool) -> DiskpartSteps {
+    let select = format!("select disk {number}\r\n");
     // A disk taken offline by Windows (same signature as another one, typical after a
     // clone) or marked read-only by an attribute is brought back first.
-    s.push_str("online disk noerr\r\n");
-    s.push_str("attributes disk clear readonly noerr\r\n");
-    s.push_str("clean\r\n");
-    match req.table {
-        TableChoice::Gpt => s.push_str("convert gpt\r\n"),
-        TableChoice::Mbr => s.push_str("convert mbr noerr\r\n"),
-    }
-    s.push_str("create partition primary\r\n");
-    if format {
+    let clean = format!("{select}online disk noerr\r\nattributes disk clear readonly noerr\r\nclean\r\n");
+    // `clean` does not always reset the partition style: some USB keys stay GPT (or
+    // MBR) afterwards, and converting to the style a disk already has is an error.
+    // `noerr` lets the script go on; format_disk then checks the table really created.
+    let convert = match req.table {
+        TableChoice::Gpt => "convert gpt noerr\r\n",
+        TableChoice::Mbr => "convert mbr noerr\r\n",
+    };
+    let partition = format!("{select}{convert}create partition primary\r\n");
+    let format = format.then(|| {
         let label = req.label.trim();
-        if label.is_empty() {
-            s.push_str(&format!("format fs={} quick\r\n", req.fs.diskpart_name()));
-        } else {
-            s.push_str(&format!("format fs={} label=\"{label}\" quick\r\n", req.fs.diskpart_name()));
-        }
+        let fs = req.fs.diskpart_name();
+        let cmd = if label.is_empty() { format!("format fs={fs} quick") } else { format!("format fs={fs} label=\"{label}\" quick") };
+        format!("{select}select partition 1\r\n{cmd}\r\n")
+    });
+    DiskpartSteps { clean, partition, format }
+}
+
+/// Checks the table read back after `diskpart`: the requested style, with exactly one
+/// partition.
+pub fn check_new_table(layout: &crate::partition::DiskLayout, wanted: TableChoice) -> Result<(), String> {
+    use crate::partition::TableKind;
+    let ok = matches!((wanted, layout.kind), (TableChoice::Gpt, TableKind::Gpt) | (TableChoice::Mbr, TableKind::Mbr));
+    if !ok {
+        return Err(tf!(
+            "Windows n'a pas créé la table demandée ({} au lieu de {}). Le disque a été effacé mais n'est pas formaté.",
+            "Windows did not create the requested table ({} instead of {}). The disk was erased but is not formatted.",
+            layout.kind.label(),
+            wanted.label()
+        ));
     }
-    s
+    if layout.partitions.len() != 1 {
+        return Err(tf!(
+            "{} partition(s) trouvée(s) après le formatage au lieu d'une seule.",
+            "{} partition(s) found after formatting instead of one.",
+            layout.partitions.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Uses Windows' formatter (`diskpart format`) for this request, or this module.
@@ -376,13 +409,36 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         "Erasing disk {number} and creating a new {} table",
         req.table.label()
     ));
-    run_diskpart(&diskpart_script(number, &req, !own_fat32))?;
-    let mut partition_size = estimated;
+    let steps_dp = diskpart_steps(number, &req, !own_fat32);
+    // Erase, then table and partition. A table of the wrong style (conversion refused
+    // while Windows was still re-reading the disk) is retried once from the start.
+    let mut layout = None;
+    for attempt in 0..2 {
+        run_diskpart_retry(&steps_dp.clean)?;
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        run_diskpart_retry(&steps_dp.partition)?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // The table actually written, read back from the disk: a conversion skipped
+        // by `noerr` must not go unnoticed.
+        let read = {
+            let mut dev = RawDisk::open_read_only(&disk.path).map_err(|e| e.to_string())?;
+            crate::partition::read_layout(&mut dev).map_err(|e| tf!("nouvelle table illisible : {e}", "new table unreadable: {e}"))?
+        };
+        match check_new_table(&read, req.table) {
+            Ok(()) => {
+                layout = Some(read);
+                break;
+            }
+            Err(e) if attempt == 1 => return Err(e),
+            Err(_) => std::thread::sleep(std::time::Duration::from_secs(3)),
+        }
+    }
+    let layout = layout.ok_or_else(|| t!("nouvelle table introuvable", "new table not found").to_string())?;
+    // Windows announces the new volume a moment after the partition is created.
+    wait_for_volume(number);
+    let mut partition_size = layout.partitions.first().map(|p| p.sectors * disk.sector_size as u64).unwrap_or(estimated);
     if own_fat32 {
         note(tf!("Formatage FAT32 ({}) par Chud Clone", "FAT32 formatting ({}) by Chud Clone", crate::diag::human_size(estimated)));
-        let mut dev = RawDisk::open_read_only(&disk.path).map_err(|e| e.to_string())?;
-        let layout = crate::partition::read_layout(&mut dev).map_err(|e| tf!("nouvelle table illisible : {e}", "new table unreadable: {e}"))?;
-        drop(dev);
         let p = layout
             .partitions
             .first()
@@ -398,8 +454,9 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         let _ = refresh_disk(&dev);
         drop(dev);
         drop(locks);
-    } else {
+    } else if let Some(script) = &steps_dp.format {
         note(tf!("Formatage {} par Windows", "{} formatting by Windows", req.fs.label()));
+        run_diskpart_retry(script)?;
     }
     // A drive letter, unless Windows already gave one.
     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -414,6 +471,35 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         None => t!("Volume prêt (sans lettre de lecteur)", "Volume ready (no drive letter)").to_string(),
     });
     Ok(FormatOutcome { fs: req.fs, table: req.table, label, partition_size, mount, steps })
+}
+
+/// Runs a `diskpart` script, up to three times: on a USB key that Windows is still
+/// re-reading, diskpart answers "device not ready" or "no volume selected" for a moment.
+#[cfg(windows)]
+fn run_diskpart_retry(script: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 0..3u64 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(2000 * attempt));
+        }
+        match run_diskpart(script) {
+            Ok(out) => return Ok(out),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Waits (20 s at most) until Windows lists a volume on the disk.
+#[cfg(windows)]
+fn wait_for_volume(number: u32) {
+    for _ in 0..40 {
+        if !crate::win::enumerate::volumes_of_disk(number).is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 /// Runs a `diskpart` script; its output is returned in the error when it fails.
@@ -458,13 +544,32 @@ mod tests {
     }
 
     #[test]
+    fn new_table_is_checked() {
+        use crate::partition::{DiskLayout, PartInfo, Partition, TableKind};
+        let part = Partition {
+            number: 1,
+            start_lba: 2048,
+            sectors: 4096,
+            info: PartInfo::Mbr { type_id: 0x0c, active: false, logical: false, slot: 0, ebr_lba: None },
+        };
+        let layout = |kind, partitions| DiskLayout { kind, sector_size: 512, disk_sectors: 8192, partitions, gpt: None, mbr: None, findings: Vec::new() };
+        assert!(check_new_table(&layout(TableKind::Mbr, vec![part.clone()]), TableChoice::Mbr).is_ok());
+        // Conversion skipped by diskpart's noerr: wrong style is refused.
+        assert!(check_new_table(&layout(TableKind::Mbr, vec![part.clone()]), TableChoice::Gpt).is_err());
+        assert!(check_new_table(&layout(TableKind::None, vec![]), TableChoice::Gpt).is_err());
+        assert!(check_new_table(&layout(TableKind::Mbr, vec![]), TableChoice::Mbr).is_err());
+        assert!(check_new_table(&layout(TableKind::Mbr, vec![part.clone(), Partition { number: 2, ..part }]), TableChoice::Mbr).is_err());
+    }
+
+    #[test]
     fn script() {
-        let s = diskpart_script(3, &req(FsChoice::Ntfs, "Data"), true);
-        assert!(s.starts_with("select disk 3\r\n"));
-        assert!(s.contains("clean\r\nconvert gpt\r\ncreate partition primary\r\nformat fs=ntfs label=\"Data\" quick\r\n"));
-        let s = diskpart_script(3, &FormatRequest { fs: FsChoice::Fat32, table: TableChoice::Mbr, label: String::new() }, false);
-        assert!(s.contains("convert mbr noerr"));
-        assert!(!s.contains("format"));
+        let s = diskpart_steps(3, &req(FsChoice::Ntfs, "Data"), true);
+        assert!(s.clean.starts_with("select disk 3\r\n") && s.clean.ends_with("clean\r\n"));
+        assert_eq!(s.partition, "select disk 3\r\nconvert gpt noerr\r\ncreate partition primary\r\n");
+        assert_eq!(s.format.as_deref(), Some("select disk 3\r\nselect partition 1\r\nformat fs=ntfs label=\"Data\" quick\r\n"));
+        let s = diskpart_steps(3, &FormatRequest { fs: FsChoice::Fat32, table: TableChoice::Mbr, label: String::new() }, false);
+        assert!(s.partition.contains("convert mbr noerr"));
+        assert!(s.format.is_none());
         assert!(uses_own_fat32(&req(FsChoice::Fat32, ""), 64 * GIB));
         assert!(!uses_own_fat32(&req(FsChoice::Fat32, ""), 16 * GIB));
         assert!(!uses_own_fat32(&req(FsChoice::Exfat, ""), 64 * GIB));

@@ -24,6 +24,9 @@ pub struct RawDisk {
     physical: u32,
     writable: bool,
     bounce: Option<AlignedBuf>,
+    /// Volume locks held as long as the disk is open (clone destination): a locked,
+    /// dismounted volume cannot be mounted again by Windows underneath the writes.
+    held_locks: Vec<VolumeLock>,
 }
 
 /// Reads the sector sizes (logical, physical) through the alignment property.
@@ -64,7 +67,7 @@ impl RawDisk {
         if !sector.is_power_of_two() || sector < 512 {
             return Err(io::Error::other(tf!("taille de secteur inattendue ({sector})", "unexpected sector size ({sector})")));
         }
-        Ok(Self { handle, path: path.to_string(), size: size - size % sector as u64, sector, physical, writable, bounce: None })
+        Ok(Self { handle, path: path.to_string(), size: size - size % sector as u64, sector, physical, writable, bounce: None, held_locks: Vec::new() })
     }
 
     /// Opens a disk read-only (clone source, analysis).
@@ -308,6 +311,10 @@ pub fn check_write_allowed(disk: &DiskInfo, allow_unvalidated: bool) -> Result<(
 /// partition table (Windows then stops seeing volumes on it and allows writing
 /// to the whole disk), then opens it read/write.
 ///
+/// The locks stay held by the returned disk until it is closed: on a USB key,
+/// Windows may otherwise mount an old volume again before removing it, and every
+/// write inside a mounted volume is refused ("partial write, 0 bytes").
+///
 /// DESTRUCTIVE OPERATION: call only after the user's confirmation.
 pub fn prepare_destination(disk: &DiskInfo, volumes: &[(String, String)], allow_unvalidated: bool) -> io::Result<RawDisk> {
     check_write_allowed(disk, allow_unvalidated).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
@@ -320,7 +327,8 @@ pub fn prepare_destination(disk: &DiskInfo, volumes: &[(String, String)], allow_
         ))
     })?;
     let _ = ioctl(dev.handle(), IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
-    drop(locks);
+    let mut dev = dev;
+    dev.held_locks = locks;
     Ok(dev)
 }
 

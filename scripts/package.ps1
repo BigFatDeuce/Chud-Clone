@@ -43,7 +43,10 @@ foreach ($exe in 'chud-clone.exe', 'chud-clone-cli.exe') {
   if (-not (Test-Path "target\release\$exe")) { throw "target\release\$exe not found" }
   # Refuse to ship a binary that still names the build account or its folders.
   $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes((Join-Path $root "target\release\$exe")))
-  foreach ($needle in @($env:USERNAME, $env:USERPROFILE, $root) | Where-Object { $_ -and $_.Length -ge 3 }) {
+  # A generic account name (e.g. "User") is an ordinary word found in any binary and
+  # reveals nothing: skip it, the profile path check still catches leaked folders.
+  $account = if ($env:USERNAME -in @('User', 'Users', 'Admin', 'Administrator', 'Owner', 'PC')) { $null } else { $env:USERNAME }
+  foreach ($needle in @($account, $env:USERPROFILE, $root) | Where-Object { $_ -and $_.Length -ge 3 }) {
     if ($text.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
       throw "$exe contains a build-machine path or account name; rebuild without -NoBuild"
     }

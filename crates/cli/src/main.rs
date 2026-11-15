@@ -51,6 +51,9 @@ UTILISATION
       Formate le disque entier : nouvelle table (défaut GPT), une partition,
       un système de fichiers. TOUT LE CONTENU DU DISQUE EST EFFACÉ.
 
+  chud-clone-cli eject <disk:N>
+      Éjecte un disque USB (comme « Éjecter » dans l'Explorateur).
+
 CIBLES
   disk:N          disque Windows numéro N (voir « list »)
   <chemin>        fichier image disque
@@ -109,6 +112,9 @@ USAGE
                  [--label <name>] --confirm-erase
       Formats the whole disk: new table (default GPT), one partition, one
       file system. ALL CONTENT OF THE DISK IS ERASED.
+
+  chud-clone-cli eject <disk:N>
+      Ejects a USB disk (like \"Eject\" in File Explorer).
 
 TARGETS
   disk:N          Windows disk number N (see \"list\")
@@ -669,6 +675,23 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             }
             #[cfg(not(windows))]
             Err("Windows only".into())
+        }
+        "eject" => {
+            a.check_known(&[])?;
+            let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
+            let info = job::describe(&target, false, &[], None)?;
+            let number = info.number.ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?;
+            #[cfg(windows)]
+            {
+                chud_clone_core::win::eject::eject_disk(number)?;
+                println!("{}", chud_clone_core::tf!("{} éjecté : il peut être débranché.", "{} ejected: it can be unplugged.", info.title()));
+                Ok(0)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = number;
+                Err("Windows only".into())
+            }
         }
         "report" => {
             a.check_known(&["--txt", "--html", "--out"])?;

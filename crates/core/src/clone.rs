@@ -3,7 +3,7 @@
 //!
 //! Order of the writes to the destination:
 //! 1. erasing the old tables (start and end of the disk);
-//! 2. partition data;
+//! 2. partition data, then its verification and the growth of the main partition;
 //! 3. partition table, at the very end.
 //!
 //! An interrupted operation thus leaves a destination without a partition table,
@@ -469,8 +469,31 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
     outcome.recovered = stats.recovered.clone();
     outcome.stop = stop.clone();
 
-    // --- 3. Table de partitions ------------------------------------------------
-    if stop == StopReason::Completed {
+    // --- 3. Verifications and growth, before the table --------------------------
+    // The partition table is the very last write: as soon as it exists, Windows
+    // creates the partitions and may mount their volumes (USB keys especially), and
+    // every later raw write inside a mounted volume is refused.
+    if stop == StopReason::Completed
+        && let Err(e) = req.dst.flush()
+    {
+        let msg = tf!("Échec du vidage des écritures vers la destination : {e}", "Failed to flush writes to the destination: {e}");
+        req.obs.log(LogLevel::Error, &msg);
+        outcome.stop = StopReason::DestinationFailed(msg);
+    }
+    if outcome.stop == StopReason::Completed {
+        if req.opts.verify != VerifyMode::None {
+            phase(req.obs, Phase::Verifying);
+            outcome.data_check = verify_data(req.src, req.dst, &stats.hashes, req.opts.verify, req.ctl, req.obs);
+        }
+        // Growth: only on a destination that has just returned the data faithfully
+        // (it modifies areas already verified).
+        if let Some(g) = req.plan.grow {
+            outcome.grow = Some(grow_main(&mut req, g, &outcome.data_check));
+        }
+    }
+
+    // --- 4. Partition table -------------------------------------------------------
+    if outcome.stop == StopReason::Completed {
         phase(req.obs, Phase::WritingTable);
         match write_table(&mut req) {
             Ok(written) => outcome.table_written = written,
@@ -489,17 +512,8 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         }
     }
 
-    // --- 4. Verifications ---------------------------------------------------------
+    // --- 5. Final check -----------------------------------------------------------
     if outcome.stop == StopReason::Completed {
-        if req.opts.verify != VerifyMode::None {
-            phase(req.obs, Phase::Verifying);
-            outcome.data_check = verify_data(req.src, req.dst, &stats.hashes, req.opts.verify, req.ctl, req.obs);
-        }
-        // Growth: only on a destination that has just returned the data faithfully
-        // (it modifies areas already verified).
-        if let Some(g) = req.plan.grow {
-            outcome.grow = Some(grow_main(&mut req, g, &outcome.data_check));
-        }
         phase(req.obs, Phase::Checking);
         match analyze_disk(req.dst) {
             Ok(dst_analysis) => {
