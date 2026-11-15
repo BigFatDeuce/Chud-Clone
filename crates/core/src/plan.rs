@@ -432,6 +432,27 @@ pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &Pla
     }
 }
 
+/// Smallest destination (multiple of 1 MiB) that receives the whole source with these
+/// options: the default size of a new image, so that it holds the partitions rather
+/// than the size of the whole source disk. Partitions keep their size (nothing is
+/// shrunk); only the empty space after them is left out. Falls back to the source
+/// size when the plan is blocked for another reason.
+pub fn minimal_destination_size(src: &DiskAnalysis, dst_sector: u32, opts: &PlanOptions) -> u64 {
+    let too_small = |size: u64| build_plan(src, size, dst_sector, opts).findings.iter().any(|f| f.code == "DEST_TOO_SMALL");
+    let full = align_up(src.size, MIB);
+    if too_small(full) {
+        return full;
+    }
+    // Binary search over whole mebibytes: planning reads nothing, it is instantaneous.
+    let (mut lo, mut hi) = (1u64, full / MIB);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if too_small(mid * MIB) { lo = mid + 1 } else { hi = mid }
+    }
+    let size = hi * MIB;
+    if build_plan(src, size, dst_sector, opts).findings.iter().any(|f| f.blocking) { full } else { size }
+}
+
 fn plan_raw_disk(src: &DiskAnalysis, dst_size: u64, opts: &PlanOptions, mut findings: Vec<Finding>) -> ClonePlan {
     let ss = src.sector_size as u64;
     if dst_size < src.size {

@@ -27,6 +27,11 @@ pub struct RawDisk {
     /// Volume locks held as long as the disk is open (clone destination): a locked,
     /// dismounted volume cannot be mounted again by Windows underneath the writes.
     held_locks: Vec<VolumeLock>,
+    /// Clone destination: disk number whose volumes are locked again when Windows
+    /// refuses a write because a volume appeared on it meanwhile.
+    relock_disk: Option<u32>,
+    /// Volume paths already locked (see `held_locks`).
+    locked_paths: Vec<String>,
 }
 
 /// Reads the sector sizes (logical, physical) through the alignment property.
@@ -67,7 +72,7 @@ impl RawDisk {
         if !sector.is_power_of_two() || sector < 512 {
             return Err(io::Error::other(tf!("taille de secteur inattendue ({sector})", "unexpected sector size ({sector})")));
         }
-        Ok(Self { handle, path: path.to_string(), size: size - size % sector as u64, sector, physical, writable, bounce: None, held_locks: Vec::new() })
+        Ok(Self { handle, path: path.to_string(), size: size - size % sector as u64, sector, physical, writable, bounce: None, held_locks: Vec::new(), relock_disk: None, locked_paths: Vec::new() })
     }
 
     /// Opens a disk read-only (clone source, analysis).
@@ -137,6 +142,35 @@ impl RawDisk {
         Ok(())
     }
 
+    /// Locks and dismounts every volume found on the disk now that is not locked yet,
+    /// and keeps it locked while the disk is open. On a removable disk without a
+    /// partition table, for instance, Windows exposes a volume covering the whole
+    /// disk ("superfloppy") as soon as the old table is gone.
+    fn relock_volumes(&mut self) {
+        let Some(n) = self.relock_disk else { return };
+        for (guid_path, display) in super::enumerate::volumes_of_disk(n) {
+            let key = guid_path.trim_end_matches('\\').to_ascii_lowercase();
+            if self.locked_paths.contains(&key) {
+                continue;
+            }
+            if let Ok(lock) = lock_volume_tries(&guid_path, &display, 3) {
+                self.held_locks.push(lock);
+                self.locked_paths.push(key);
+            }
+        }
+    }
+
+    fn write_once(&mut self, offset: u64, buf: &[u8]) -> io::Result<()> {
+        if self.aligned(buf.as_ptr()) {
+            return self.write_raw(offset, buf);
+        }
+        let mut b = self.bounce(buf.len());
+        b[..buf.len()].copy_from_slice(buf);
+        let r = self.write_raw(offset, &b[..buf.len()]);
+        self.bounce = Some(b);
+        r
+    }
+
     fn aligned(&self, ptr: *const u8) -> bool {
         (ptr as usize).is_multiple_of(self.sector as usize)
     }
@@ -184,14 +218,16 @@ impl BlockDevice for RawDisk {
         if buf.is_empty() {
             return Ok(());
         }
-        if self.aligned(buf.as_ptr()) {
-            return self.write_raw(offset, buf);
+        match self.write_once(offset, buf) {
+            // Windows refuses writes inside a mounted volume: nothing written ("partial
+            // write, 0 bytes") or access denied. A volume that appeared during the
+            // operation is locked, then the write is made again, once.
+            Err(e) if self.relock_disk.is_some() && blocked_by_volume(&e) => {
+                self.relock_volumes();
+                self.write_once(offset, buf)
+            }
+            r => r,
         }
-        let mut b = self.bounce(buf.len());
-        b[..buf.len()].copy_from_slice(buf);
-        let r = self.write_raw(offset, &b[..buf.len()]);
-        self.bounce = Some(b);
-        r
     }
     fn flush(&mut self) -> io::Result<()> {
         if !self.writable {
@@ -234,7 +270,7 @@ pub fn lock_volume(guid_path: &str, display: &str) -> io::Result<VolumeLock> {
     lock_volume_tries(guid_path, display, 6)
 }
 
-fn lock_volume_tries(guid_path: &str, display: &str, tries: u64) -> io::Result<VolumeLock> {
+pub(crate) fn lock_volume_tries(guid_path: &str, display: &str, tries: u64) -> io::Result<VolumeLock> {
     let path = guid_path.trim_end_matches('\\');
     let handle = open_device(path, Access::Read, 0)?;
     let mut last = None;
@@ -328,8 +364,18 @@ pub fn prepare_destination(disk: &DiskInfo, volumes: &[(String, String)], allow_
     })?;
     let _ = ioctl(dev.handle(), IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
     let mut dev = dev;
+    dev.locked_paths = volumes.iter().map(|(g, _)| g.trim_end_matches('\\').to_ascii_lowercase()).collect();
     dev.held_locks = locks;
+    dev.relock_disk = disk.number;
+    // Without a table, a removable disk shows a whole-disk volume a moment later.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    dev.relock_volumes();
     Ok(dev)
+}
+
+/// Error of a write refused because the sectors belong to a mounted volume.
+fn blocked_by_volume(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::WriteZero || e.raw_os_error() == Some(5)
 }
 
 /// Asks Windows to re-read the disk's partition table.

@@ -67,7 +67,8 @@ OPTIONS DE CLONAGE
                                  remplacer par des zéros (données perdues)
   --retries N                    tentatives supplémentaires par secteur (défaut 3)
   --image-size <taille>          taille de l'image de destination à créer
-                                 (octets, ou suffixe M / G ; défaut : source)
+                                 (octets, ou suffixe M / G ; défaut : la taille
+                                 des partitions de la source)
   --reports <dossier>            dossier des rapports (défaut : ./rapports)
   --only-virtual                 refuser toute destination qui n'est pas une image
                                  ou un disque virtuel (VHD/VHDX)
@@ -129,7 +130,8 @@ CLONE OPTIONS
                                  replace with zeros (data lost)
   --retries N                    extra attempts per sector (default 3)
   --image-size <size>            size of the destination image to create
-                                 (bytes, or M / G suffix; default: source)
+                                 (bytes, or M / G suffix; default: the size
+                                 of the source's partitions)
   --reports <folder>             reports folder (default: ./reports)
   --only-virtual                 refuse any destination that is not an image
                                  or a virtual disk (VHD/VHDX)

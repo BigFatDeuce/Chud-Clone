@@ -80,11 +80,12 @@ echo     7. !T_7!
 echo     8. !T_8!
 echo     9. !T_9!
 echo     F. !T_F!
+echo     E. !T_E!
 echo.
 rem WinPE has no choice.exe: the answer is read with set /p.
 set "C="
 set /p "C=   !T_CHOICE! "
-for %%k in (0 1 2 3 4 5 6 7 8 9 F) do if /i "!C!"=="%%k" goto choice%%k
+for %%k in (0 1 2 3 4 5 6 7 8 9 F E) do if /i "!C!"=="%%k" goto choice%%k
 goto menu
 
 :choice0
@@ -194,6 +195,15 @@ if /i not "!OK!"=="!T_WORD!" (
   goto pause
 )
 "%CLI%" format disk:!N! --fs !FS! --label "!LBL!" --confirm-erase
+goto pause
+
+:choiceE
+rem Safe removal of a USB disk (the destination of a clone, for instance).
+"%CLI%" list
+echo.
+call :disk N "!T_ASK_EJECT!"
+if errorlevel 1 goto menu
+"%CLI%" eject disk:!N!
 goto pause
 
 :pause

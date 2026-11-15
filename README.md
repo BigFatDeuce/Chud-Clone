@@ -38,6 +38,9 @@ repository's GitHub releases.
 - **Clone a Windows disk connected externally** (USB enclosure, dock, second internal disk) to
   another disk or to an image file. Since it is not the running system, its volumes are locked and
   dismounted during the copy so nothing changes underneath.
+- **Compact image files**: a new image gets the size the source's partitions need, not the size
+  of the whole source disk, and empty areas are stored as holes of a sparse file (NTFS), so the
+  file only takes the space of the data it holds. The report shows both sizes.
 - **Automatic growth**: on a larger disk the Windows partition (NTFS) is extended over the added
   space, after the copy has been verified.
 - **Verification** after every copy (read-back with BLAKE3 checksums, or a full source/destination
@@ -86,10 +89,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.6.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.6.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.6.1.txt` | Checksums of the files above. |
-| `ChudClone-0.6.1-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.7.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.7.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.7.0.txt` | Checksums of the files above. |
+| `ChudClone-0.7.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -202,7 +205,8 @@ The key opens a **full-screen interface** driven with the keyboard (arrows, Ente
 the source, then the destination, check the options and the review, type `ERASE` (`EFFACER`),
 and follow the progress. The options include ejecting the destination and shutting the computer
 down when the clone is finished (60-second countdown, Esc cancels). It also reads SMART health,
-analyses a disk, runs the surface scan and formats a disk (`M`; `F` in the text menu).
+analyses a disk, runs the surface scan and formats a disk (`M`; `F` in the text menu). The text
+menu also ejects a USB disk (`E`).
 `L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
 or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
 
@@ -217,7 +221,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 116 tests
+cargo test --workspace                                         # 118 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -256,7 +260,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 70 unit tests and 38 integration tests on **real disk images**
+- `crates/core`: 71 unit tests and 39 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),

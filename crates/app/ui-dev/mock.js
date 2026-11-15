@@ -275,7 +275,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.6.1", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.7.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },
@@ -307,7 +307,10 @@
       images.splice(0, images.length, ...images.filter((d) => d.id !== img.id), img); setDisks();
       return img;
     },
-    add_new_image: async ({ path, size }) => {
+    add_new_image: async ({ path, size, sourceId }) => {
+      // As in the engine: without a size, the partitions of the source plus 1 MiB.
+      const s = [...(disks || []), ...images].find((d) => d.id === sourceId);
+      if (size == null) size = s && s.partitions.length ? Math.min(s.size, Math.ceil((Math.max(...s.partitions.map((p) => p.offset + p.size)) + MiB) / MiB) * MiB) : s ? s.size : 0;
       const name = String(path).split(/[\\/]/).pop();
       const img = mk({ id: "image:" + String(path).toLowerCase(), kind: "image", path, number: null, model: name + T(" (à créer)", " (to be created)"), serial: "", bus: "Fichier", media: "image", size, physical_sector_size: 512, table: "none" });
       images.splice(0, images.length, ...images.filter((d) => d.id !== img.id), img); setDisks();

@@ -796,8 +796,8 @@ impl App {
             InputPurpose::DestImage => (
                 t!("Cloner vers un fichier image", "Clone to an image file"),
                 t!(
-                    "Chemin du fichier image. S'il n'existe pas, il est créé à la taille de la source :",
-                    "Image file path. If it does not exist, it is created with the size of the source:"
+                    "Chemin du fichier image. S'il n'existe pas, il est créé à la taille des partitions de la source :",
+                    "Image file path. If it does not exist, it is created with the size the source's partitions need:"
                 ),
             ),
         };
@@ -810,14 +810,21 @@ impl App {
             return;
         }
         let paths = self.app_paths.clone();
-        let size = match purpose {
-            InputPurpose::DestImage => self.source.and_then(|i| self.entries.get(i)).map(|e| e.info.size),
+        let opts = PlanOptions { mode: self.settings.mode, optimize_layout: self.settings.optimize, grow_main: self.settings.grow };
+        let source = match purpose {
+            InputPurpose::DestImage => self.source.and_then(|i| self.entries.get(i)).map(|e| (e.target.clone(), e.info.size)),
             InputPurpose::SourceImage => None,
         };
         self.spawn(t!("Lecture du fichier image...", "Reading the image file...").into(), move || {
             if purpose == InputPurpose::SourceImage && !path.is_file() {
                 return Msg::NewImage(purpose, Err(tf!("fichier introuvable : {}", "file not found: {}", path.display())));
             }
+            // A new image is created with the size the source's partitions need (the
+            // engine computes the same size when the clone starts).
+            let size = source.map(|(src, full)| match job::inspect(&src) {
+                Ok((analysis, _)) => chud_clone_core::plan::minimal_destination_size(&analysis, 512, &opts),
+                Err(_) => full,
+            });
             let target = Target::Image(path);
             Msg::NewImage(purpose, job::describe(&target, true, &paths, size).map(|info| Entry { target, info }))
         });

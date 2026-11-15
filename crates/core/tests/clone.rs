@@ -867,3 +867,29 @@ fn progress_is_reported_and_reaches_total() {
     assert_eq!(r.outcome.data_check.checked_bytes, r.plan.total_copy_bytes);
     let _ = &r.analysis;
 }
+
+/// A new image gets the smallest size that holds the source's partitions: planning at
+/// that size works, one mebibyte less is "too small", and the clone into an image of
+/// exactly that size succeeds with every file identical.
+#[test]
+fn minimal_image_size_holds_the_partitions() {
+    use chud_clone_core::plan::minimal_destination_size;
+    let _g = heavy();
+    for (src, opts) in [
+        (gpt_image(), PlanOptions { mode: CloneMode::Smart, optimize_layout: true, grow_main: true }),
+        (mbr_image(), PlanOptions { mode: CloneMode::Smart, optimize_layout: true, grow_main: true }),
+    ] {
+        let analysis = analyze_disk(&mut SliceDev::new(src)).unwrap();
+        let size = minimal_destination_size(&analysis, 512, &opts);
+        assert!(size <= analysis.size && size.is_multiple_of(MIB), "{size} vs source {}", analysis.size);
+        assert!(!build_plan(&analysis, size, 512, &opts).findings.iter().any(|f| f.blocking));
+        assert!(build_plan(&analysis, size - MIB, 512, &opts).findings.iter().any(|f| f.code == "DEST_TOO_SMALL"));
+        let r = run(src, size, opts);
+        assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{:?}", r.outcome.reasons);
+        assert_same_files(&r, src);
+    }
+    // A whole-disk copy needs the whole source.
+    let analysis = analyze_disk(&mut SliceDev::new(gpt_image())).unwrap();
+    let raw = PlanOptions { mode: CloneMode::RawDisk, optimize_layout: false, grow_main: false };
+    assert_eq!(minimal_destination_size(&analysis, 512, &raw), analysis.size.div_ceil(MIB) * MIB);
+}

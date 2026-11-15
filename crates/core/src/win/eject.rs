@@ -55,7 +55,37 @@ fn disk_devinst(number: u32) -> Option<u32> {
 
 /// Asks Windows to remove the disk safely (like "Eject" in File Explorer). Works for
 /// USB disks, keys and docks; an internal disk is refused by Windows.
+///
+/// Right after a clone, Windows mounts the new volumes and File Explorer, the
+/// antivirus or the indexer open them at once, which vetoes the removal ("in use").
+/// The volumes are therefore flushed and dismounted just before each attempt, and
+/// the request is repeated for a few seconds.
 pub fn eject_disk(number: u32) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..6u64 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1000 + 500 * attempt));
+        }
+        dismount_volumes(number);
+        match request_eject(number) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Locks and dismounts every volume of the disk, then lets go of them: the volumes
+/// stay dismounted (nothing is cached or open on them any more) until something
+/// accesses them again. Failures are ignored: the removal request then reports why.
+fn dismount_volumes(number: u32) {
+    for (guid_path, display) in super::enumerate::volumes_of_disk(number) {
+        drop(super::rawdisk::lock_volume_tries(&guid_path, &display, 2));
+    }
+}
+
+/// One removal request: the disk itself, then its parents (USB bridge, dock port).
+fn request_eject(number: u32) -> Result<(), String> {
     let mut inst = disk_devinst(number).ok_or_else(|| tf!("disque {number} introuvable pour l'éjection", "disk {number} not found for ejection"))?;
     let mut last = String::new();
     // The disk itself, then its parents (USB bridge, dock port), as File Explorer does.

@@ -202,11 +202,12 @@ function strip(parts, total, big) {
 
 function diskChips(d, extra) {
   const c = [];
-  c.push(`<span class="chip">${esc(d.bus)}</span>`);
+  const busCls = d.kind === "image" ? "file" : { nvme: "nvme", sata: "sata", ata: "sata", usb: "usb" }[String(d.bus).toLowerCase()] || "";
+  c.push(`<span class="chip ${busCls}">${esc(d.bus)}</span>`);
   if (d.media !== "unknown" && !(d.kind === "image" && d.media === "image")) c.push(`<span class="chip">${MEDIA[d.media] || esc(d.media)}</span>`);
   c.push(`<span class="chip">${TABLE[d.table]}</span>`);
   if (d.is_system) c.push(`<span class="chip sys">${L("Windows en cours", "Running Windows")}</span>`);
-  if (d.removable) c.push(`<span class="chip">${L("Amovible", "Removable")}</span>`);
+  if (d.removable) c.push(`<span class="chip rem">${L("Amovible", "Removable")}</span>`);
   if (d.read_only) c.push(`<span class="chip warn">${L("Lecture seule", "Read-only")}</span>`);
   if (d.offline) c.push(`<span class="chip warn">${L("Hors ligne", "Offline")}</span>`);
   const sm = S.smart[d.id];
@@ -217,13 +218,13 @@ function diskChips(d, extra) {
 function diskCard(d, o) {
   o = o || {};
   const used = d.used_bytes;
-  const mounts = d.partitions.flatMap((p) => p.mounts).map((m) => m.replace(/\\$/, "")).join(" ");
+  const mounts = d.partitions.flatMap((p) => p.mounts).map((m) => `<span class="drv">${esc(m.replace(/\\$/, ""))}</span>`).join(" ");
   const sub = [d.number != null ? `${L("Disque", "Disk")} ${d.number}` : L("Fichier image", "Image file"), mounts].filter(Boolean).join(" · ");
   const cls = ["disk", o.mini ? "mini" : "", o.selected ? "selected" : "", o.dest ? "dest" : "", o.locked ? "locked" : ""].join(" ");
   const tag = o.tag ? `<span class="role-tag${o.dest ? " dest" : ""}">${o.tag}</span>` : "";
   const inner = `${tag}<div class="planet">${Cosmos.planet(d)}</div><div style="min-width:0">
       <h3 title="${esc(d.model)}">${esc(d.model || L("Disque sans nom", "Unnamed disk"))}</h3>
-      <div class="sub">${esc(sub)}${o.mini && S.smart[d.id]?.available ? ` <span class="hdot ${S.smart[d.id].level}" title="${HEALTH[S.smart[d.id].level]}"></span>${S.health[d.id]?.trends.some((t) => t.severity === "error" || t.code === "TREND_REALLOCATED" || t.code === "TREND_SPARE") ?` <b style="color:var(--warn)">${L("en dégradation", "degrading")}</b>` : ""}` : ""}</div>
+      <div class="sub">${sub}${o.mini && S.smart[d.id]?.available ? ` <span class="hdot ${S.smart[d.id].level}" title="${HEALTH[S.smart[d.id].level]}"></span>${S.health[d.id]?.trends.some((t) => t.severity === "error" || t.code === "TREND_REALLOCATED" || t.code === "TREND_SPARE") ?` <b style="color:var(--warn)">${L("en dégradation", "degrading")}</b>` : ""}` : ""}</div>
       ${o.mini ? "" : `<div class="cap"><b>${size(d.size)}</b><span>${used != null ? `${size(used)} ${L("utilisés", "used")}` : d.partitions.length ? L("occupation inconnue", "usage unknown") : L("aucune partition", "no partition")}</span></div>
       ${strip(d.partitions, d.size)}
       <div class="chips">${diskChips(d, o.chips)}</div>${o.note ? `<div class="sub" style="margin-top:7px;color:var(--warn)">${esc(o.note)}</div>` : ""}`}
@@ -377,7 +378,7 @@ function viewReview() {
           <div><div class="dim">${L("Type de disque", "Disk type")}</div><b>${esc(BOOT[p.boot.style] || "—")}</b></div>
         </div>
         <table class="t" style="margin-top:12px"><tr><th>${L("N°", "No.")}</th><th>Partition</th><th>${L("Système", "File system")}</th><th>${L("Taille", "Size")}</th><th>${L("Utilisé", "Used")}</th><th>${L("Copie", "Copy")}</th><th>${L("Emplacement", "Position")}</th></tr>
-        ${plan.partitions.map((x) => `<tr><td>${x.number}</td><td>${esc(x.type_label)}${x.fs_label ? ` <span class="dim">${L(`« ${esc(x.fs_label)} »`, `“${esc(x.fs_label)}”`)}</span>` : ""}</td><td>${esc(FS[x.fs] || x.fs)}</td><td class="num">${size(x.src_len)}</td><td class="num">${x.used_bytes != null ? size(x.used_bytes) : "—"}</td><td>${METHOD[x.method]}${x.method === "raw" && x.method_reason ? `<div class="dim">${esc(x.method_reason)}</div>` : ""}</td><td>${x.moved ? L("déplacée", "moved") : L("inchangée", "unchanged")}${x.dst_len > x.src_len ? `<div class="grow-tag">${L("agrandie à", "grown to")} ${size(x.dst_len)}</div>` : ""}</td></tr>`).join("")}
+        ${plan.partitions.map((x) => `<tr><td>${x.number}</td><td>${esc(x.type_label)}${x.fs_label ? ` <span class="dim">${L(`« ${esc(x.fs_label)} »`, `“${esc(x.fs_label)}”`)}</span>` : ""}</td><td>${esc(FS[x.fs] || x.fs)}</td><td class="num">${size(x.src_len)}</td><td class="num">${x.used_bytes != null ? size(x.used_bytes) : "—"}</td><td class="${{ smart: "okc", raw: "warnc", skip: "dim" }[x.method] || ""}">${METHOD[x.method]}${x.method === "raw" && x.method_reason ? `<div class="dim">${esc(x.method_reason)}</div>` : ""}</td><td>${x.moved ? L("déplacée", "moved") : L("inchangée", "unchanged")}${x.dst_len > x.src_len ? `<div class="grow-tag">${L("agrandie à", "grown to")} ${size(x.dst_len)}</div>` : ""}</td></tr>`).join("")}
         </table>
       </div>
       <div class="cols" style="margin-top:14px">
@@ -1243,7 +1244,8 @@ const actions = {
     try {
       const path = await api.save({ title: L("Enregistrer l'image de destination", "Save the destination image"), defaultPath: "clone.img", filters: [{ name: L("Image disque", "Disk image"), extensions: ["img"] }] });
       if (!path) return;
-      const info = await api.invoke("add_new_image", { path, size: s.size });
+      // No size: the image gets the size the source's partitions need.
+      const info = await api.invoke("add_new_image", { path, size: null, sourceId: s.id });
       await loadDisks(true);
       if (!S.dstIds.includes(info.id)) S.dstIds.push(info.id);
       S.dstId = S.dstIds[0];

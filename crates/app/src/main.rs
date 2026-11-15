@@ -28,8 +28,11 @@ const CONFIRM_WORD_EN: &str = "ERASE";
 #[derive(Clone)]
 struct ImageEntry {
     path: PathBuf,
-    /// Requested size for an image to be created.
+    /// Size of an image to be created (shown in the lists).
     new_size: Option<u64>,
+    /// No size chosen: the engine creates the image with the size the source's
+    /// partitions need for the chosen options (`new_size` is then an estimate).
+    auto_size: bool,
 }
 
 struct RunningJob {
@@ -141,7 +144,7 @@ impl Inner {
         let images = self.images.lock().unwrap_or_else(|e| e.into_inner());
         for e in images.iter() {
             if job::image_id(&e.path) == id {
-                return Ok((Target::Image(e.path.clone()), e.new_size));
+                return Ok((Target::Image(e.path.clone()), if e.auto_size { None } else { e.new_size }));
             }
         }
         Err(chud_clone_core::t!("cette image n'est plus dans la liste", "this image is no longer in the list").into())
@@ -231,7 +234,7 @@ async fn add_image(state: State<'_, Shared>, path: String) -> Result<DiskInfo, S
         }
         let mut images = s.images.lock().unwrap_or_else(|e| e.into_inner());
         if !images.iter().any(|e| e.path == p) {
-            images.push(ImageEntry { path: p, new_size: None });
+            images.push(ImageEntry { path: p, new_size: None, auto_size: false });
         }
         Ok(info)
     })
@@ -239,9 +242,21 @@ async fn add_image(state: State<'_, Shared>, path: String) -> Result<DiskInfo, S
 }
 
 #[tauri::command]
-async fn add_new_image(state: State<'_, Shared>, path: String, size: u64) -> Result<DiskInfo, String> {
+async fn add_new_image(state: State<'_, Shared>, path: String, size: Option<u64>, source_id: Option<String>) -> Result<DiskInfo, String> {
     let s = state.inner().clone();
     blocking(move || {
+        // Without an explicit size, the image gets the size the source's partitions
+        // need, not the size of the whole source disk (estimate shown until the
+        // engine computes it for the chosen options).
+        let auto_size = size.is_none();
+        let size = match size {
+            Some(size) => size,
+            None => {
+                let (source, _) = s.target(source_id.as_deref().unwrap_or_default())?;
+                let (analysis, _) = job::inspect(&source)?;
+                chud_clone_core::plan::minimal_destination_size(&analysis, 512, &PlanOptions::default())
+            }
+        };
         let p = PathBuf::from(&path);
         if p.exists() {
             return Err(chud_clone_core::t!(
@@ -256,7 +271,7 @@ async fn add_new_image(state: State<'_, Shared>, path: String, size: u64) -> Res
         let info = job::describe(&Target::Image(p.clone()), true, &[], Some(size))?;
         let mut images = s.images.lock().unwrap_or_else(|e| e.into_inner());
         images.retain(|e| e.path != p);
-        images.push(ImageEntry { path: p, new_size: Some(size) });
+        images.push(ImageEntry { path: p, new_size: Some(size), auto_size });
         Ok(info)
     })
     .await?

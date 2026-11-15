@@ -56,7 +56,8 @@ pub struct JobConfig {
     pub plan: PlanOptions,
     pub engine: EngineOptions,
     /// Size of the destination image to create if the file does not exist
-    /// (`None`: same size as the source).
+    /// (`None`: the smallest size that holds the source's partitions, see
+    /// [`crate::plan::minimal_destination_size`]).
     pub new_image_size: Option<u64>,
     /// Explicit consent to write to a real physical disk while that path is not
     /// validated yet (see `win::PHYSICAL_WRITE_VALIDATED`).
@@ -297,7 +298,7 @@ pub fn prepare(cfg: &JobConfig, with_smart: bool) -> Result<Preparation, String>
     let (analysis, boot) = inspect(&cfg.source)?;
     #[cfg(windows)]
     drop(locks);
-    let wanted_size = cfg.new_image_size.unwrap_or(analysis.size);
+    let wanted_size = cfg.new_image_size.unwrap_or_else(|| crate::plan::minimal_destination_size(&analysis, 512, &cfg.plan));
     let destination = describe(&cfg.destination, true, &cfg.app_paths, Some(wanted_size))?;
     let plan = build_plan(&analysis, destination.size, destination.sector_size, &cfg.plan);
     let mut findings = precheck(&source, &destination, Some(&analysis), Some(&plan));
@@ -430,7 +431,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     let boot_src = assess_boot(&mut src, &analysis);
 
     // 3. Destination: description, plan and pre-checks.
-    let wanted_size = cfg.new_image_size.unwrap_or(analysis.size);
+    let wanted_size = cfg.new_image_size.unwrap_or_else(|| crate::plan::minimal_destination_size(&analysis, 512, &cfg.plan));
     let destination = describe(&cfg.destination, true, &cfg.app_paths, Some(wanted_size)).map_err(fail)?;
     if let Some(fp) = &cfg.expected_destination_fingerprint
         && *fp != destination.fingerprint
@@ -556,6 +557,21 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         }
     }
     drop(opened);
+
+    // An image only takes the space of its data (zeros are stored as holes).
+    if let Target::Image(p) = &cfg.destination
+        && let Some(used) = crate::device::allocated_bytes(p)
+    {
+        journal.note(
+            LogLevel::Info,
+            &tf!(
+                "Fichier image : {} ({} occupés sur le disque)",
+                "Image file: {} ({} taken on disk)",
+                crate::diag::human_size(destination.size),
+                crate::diag::human_size(used)
+            ),
+        );
+    }
 
     // The image file now exists: the report simply names it.
     let mut destination = destination;

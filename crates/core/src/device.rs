@@ -190,6 +190,61 @@ fn is_sparse(_: &File) -> bool {
     true
 }
 
+/// Turns a range of a sparse file into a hole: it reads back as zeros and takes no
+/// space on disk, whatever it held before (NTFS `FSCTL_SET_ZERO_DATA`).
+#[cfg(windows)]
+fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_ZERO_DATA;
+    // FILE_ZERO_DATA_INFORMATION { FileOffset, BeyondFinalZero }
+    let mut info = [0u8; 16];
+    info[..8].copy_from_slice(&(offset as i64).to_le_bytes());
+    info[8..].copy_from_slice(&((offset + len) as i64).to_le_bytes());
+    let mut returned = 0u32;
+    // SAFETY: valid file handle owned by `file`; 16-byte input buffer, no output.
+    let ok = unsafe {
+        DeviceIoControl(file.as_raw_handle(), FSCTL_SET_ZERO_DATA, info.as_ptr().cast(), 16, std::ptr::null_mut(), 0, &mut returned, std::ptr::null_mut())
+    };
+    if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+#[cfg(not(windows))]
+fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Space a file actually takes on disk (less than its size for a sparse image).
+#[cfg(windows)]
+pub fn allocated_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut high = 0u32;
+    // SAFETY: NUL-terminated path, valid out pointer.
+    let low = unsafe { windows_sys::Win32::Storage::FileSystem::GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+    if low == u32::MAX && io::Error::last_os_error().raw_os_error().unwrap_or(0) != 0 {
+        return None;
+    }
+    Some(((high as u64) << 32) | low as u64)
+}
+
+#[cfg(not(windows))]
+pub fn allocated_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| m.blocks() * 512)
+}
+
+/// Smallest write turned into a hole rather than written (smaller writes of zeros
+/// are cheaper to write than to deallocate).
+const HOLE_MIN: usize = 64 * 1024;
+
+/// True if every byte of the buffer is zero.
+pub fn is_all_zero(buf: &[u8]) -> bool {
+    // SAFETY: u64 has no invalid bit patterns; align_to only reinterprets the middle.
+    let (head, mid, tail) = unsafe { buf.align_to::<u64>() };
+    head.iter().all(|&b| b == 0) && mid.iter().all(|&w| w == 0) && tail.iter().all(|&b| b == 0)
+}
+
 /// Image file used as a block device.
 pub struct FileDevice {
     file: File,
@@ -197,6 +252,9 @@ pub struct FileDevice {
     size: u64,
     sector: u32,
     read_only: bool,
+    /// Sparse file: runs of zeros are stored as holes instead of being written, so
+    /// an image only takes the space of the data it holds.
+    sparse: bool,
 }
 
 impl FileDevice {
@@ -247,7 +305,8 @@ impl FileDevice {
         // An image whose size is not a multiple of the sector is truncated to the
         // last complete sector (the remainder is not LBA-addressable).
         let size = len - (len % sector as u64);
-        Ok(Self { file, path: path.to_path_buf(), size, sector, read_only })
+        let sparse = !read_only && is_sparse(&file);
+        Ok(Self { file, path: path.to_path_buf(), size, sector, read_only, sparse })
     }
 
     pub fn path(&self) -> &Path {
@@ -272,6 +331,9 @@ impl BlockDevice for FileDevice {
             return Err(fault(IoErrorClass::WriteProtected));
         }
         check_io_args(self.size, self.sector, offset, buf.len())?;
+        if self.sparse && buf.len() >= HOLE_MIN && is_all_zero(buf) && punch_hole(&self.file, offset, buf.len() as u64).is_ok() {
+            return Ok(());
+        }
         self.file.seek(SeekFrom::Start(offset))?;
         self.file.write_all(buf)
     }
@@ -579,6 +641,34 @@ mod tests {
         assert!(d.is_sparse());
         d.read_at(size - 4096, &mut back).unwrap();
         assert!(back.iter().all(|b| *b == 0));
+    }
+
+    /// Zeros written to a sparse image become holes: they read back as zeros, also
+    /// over data written before, and take no space.
+    #[test]
+    fn zeros_become_holes_in_a_sparse_image() {
+        assert!(is_all_zero(&[0u8; 37]) && !is_all_zero(&[0, 0, 0, 1]) && is_all_zero(&[]));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("holes.img");
+        let mib = 1024 * 1024;
+        let mut d = FileDevice::create(&path, 8 * mib as u64, 512).unwrap();
+        d.write_at(0, &vec![0x5A; 4 * mib]).unwrap();
+        // Overwritten with zeros: the data must be gone, not kept under a skipped write.
+        d.write_at(mib as u64, &vec![0; 2 * mib]).unwrap();
+        d.write_at(4 * mib as u64, &vec![0; 4 * mib]).unwrap();
+        d.flush().unwrap();
+        let mut back = vec![0xFFu8; 4 * mib];
+        d.read_at(0, &mut back).unwrap();
+        assert!(back[..mib].iter().all(|b| *b == 0x5A));
+        assert!(back[mib..3 * mib].iter().all(|b| *b == 0), "zeros over data read back as zeros");
+        assert!(back[3 * mib..].iter().all(|b| *b == 0x5A));
+        d.read_at(4 * mib as u64, &mut back).unwrap();
+        assert!(back.iter().all(|b| *b == 0));
+        #[cfg(windows)]
+        {
+            let used = allocated_bytes(&path).unwrap();
+            assert!(used <= 3 * mib as u64, "only the data takes space: {used} bytes");
+        }
     }
 
     #[test]
