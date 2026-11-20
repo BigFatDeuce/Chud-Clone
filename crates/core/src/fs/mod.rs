@@ -9,6 +9,7 @@
 pub mod fat;
 pub mod ntfs;
 pub mod ntfs_grow;
+pub mod ntfs_shrink;
 
 use crate::device::{BlockDevice, read_vec};
 use crate::diag::Finding;

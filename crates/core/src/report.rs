@@ -313,7 +313,11 @@ pub fn render_txt(r: &Report) -> String {
             let _ = writeln!(
                 s,
                 "{}",
-                tf!("      (partition agrandie à {} sur la destination)", "      (partition grown to {} on the destination)", human_size(p.dst_len))
+                if p.dst_len > p.src_len {
+                    tf!("      (partition agrandie à {} sur la destination)", "      (partition grown to {} on the destination)", human_size(p.dst_len))
+                } else {
+                    tf!("      (partition réduite à {} sur la destination)", "      (partition shrunk to {} on the destination)", human_size(p.dst_len))
+                }
             );
         }
     }
@@ -410,6 +414,9 @@ pub fn render_txt(r: &Report) -> String {
     }
     if let Some(g) = &o.grow {
         let _ = writeln!(s, "{}", tf!("Agrandissement      : {}", "Growth              : {}", grow_text(g)));
+    }
+    if let Some(x) = &o.shrink {
+        let _ = writeln!(s, "{}", tf!("Réduction           : {}", "Shrink              : {}", shrink_text(x)));
     }
     for (title, list) in [
         (t!("Systèmes de fichiers du clone", "Clone file systems"), &o.structure_findings),
@@ -662,8 +669,10 @@ pre{{background:#03040b;border:1px solid var(--line);border-radius:10px;padding:
                 _ => String::new(),
             },
             if p.moved { tf!("déplacée → {}", "moved → {}", human_size(p.dst_start)) } else { t!("inchangée", "unchanged").to_string() },
-            if p.dst_len != p.src_len {
+            if p.dst_len > p.src_len {
                 tf!("<div class=\"muted\">agrandie à {}</div>", "<div class=\"muted\">grown to {}</div>", human_size(p.dst_len))
+            } else if p.dst_len < p.src_len {
+                tf!("<div class=\"muted\">réduite à {}</div>", "<div class=\"muted\">shrunk to {}</div>", human_size(p.dst_len))
             } else {
                 String::new()
             }
@@ -754,6 +763,7 @@ pre{{background:#03040b;border:1px solid var(--line);border-radius:10px;padding:
             },
             esc(&data_text),
             o.grow.as_ref().map(|g| tf!("<dt>Agrandissement</dt><dd>{}</dd>", "<dt>Growth</dt><dd>{}</dd>", esc(&grow_text(g)))).unwrap_or_default()
+                + &o.shrink.as_ref().map(|x| tf!("<dt>Réduction</dt><dd>{}</dd>", "<dt>Shrink</dt><dd>{}</dd>", esc(&shrink_text(x)))).unwrap_or_default()
         )
     );
     if !dc.mismatches.is_empty() {
@@ -871,6 +881,22 @@ pre{{background:#03040b;border:1px solid var(--line);border-radius:10px;padding:
         )
     );
     h
+}
+
+/// Summary of a shrink for the reports.
+fn shrink_text(x: &crate::clone::ShrinkOutcome) -> String {
+    match (&x.summary, x.done, &x.error) {
+        (Some(s), true, _) => tf!(
+            "partition {} : {} → {}, {} déplacés, structures relues et contrôlées ; volume marqué « à vérifier » (chkdsk au premier démarrage)",
+            "partition {}: {} → {}, {} moved, structures read back and checked; volume flagged \"needs checking\" (chkdsk on first boot)",
+            x.number,
+            human_size(s.old_size),
+            human_size(s.new_size),
+            human_size(s.relocated_clusters * s.cluster_size)
+        ),
+        (_, _, Some(e)) => tf!("partition {} : ÉCHEC — {e}", "partition {}: FAILED — {e}", x.number),
+        _ => tf!("partition {} : non effectuée", "partition {}: not done", x.number),
+    }
 }
 
 /// Summary of a growth for the reports.

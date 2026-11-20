@@ -111,6 +111,8 @@ pub enum Phase {
     Verifying,
     /// Growth of the main partition's file system.
     Growing,
+    /// Shrink of the main partition's file system (moved data and structures).
+    Shrinking,
     Checking,
     Done,
 }
@@ -124,6 +126,7 @@ impl Phase {
             Phase::WritingTable => t!("Écriture de la table de partitions", "Writing the partition table"),
             Phase::Verifying => t!("Vérification des données copiées", "Verifying copied data"),
             Phase::Growing => t!("Agrandissement de la partition Windows", "Growing the Windows partition"),
+            Phase::Shrinking => t!("Réduction de la partition Windows", "Shrinking the Windows partition"),
             Phase::Checking => t!("Contrôle des structures du clone", "Checking the clone's structures"),
             Phase::Done => t!("Terminé", "Done"),
         }

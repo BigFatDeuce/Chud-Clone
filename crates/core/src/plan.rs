@@ -41,8 +41,9 @@ pub struct PlanOptions {
     /// the end of the disk, so that the free space is contiguous with the main
     /// partition and it can be extended afterwards.
     pub optimize_layout: bool,
-    /// Automatically grow the main NTFS partition so that it fills the free space
-    /// following it on the destination.
+    /// Automatically resize the main NTFS partition: grow it over the free space
+    /// following it on a larger destination, or shrink it (moving the data beyond
+    /// the new end) when the destination is too small for the partitions as they are.
     #[serde(default = "yes")]
     pub grow_main: bool,
 }
@@ -160,6 +161,20 @@ pub struct GrowPlan {
     pub new_len: u64,
 }
 
+/// Planned shrink of an NTFS partition (absolute bytes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShrinkPlan {
+    pub number: u32,
+    pub src_start: u64,
+    pub dst_start: u64,
+    /// Size of the partition on the source.
+    pub old_len: u64,
+    /// Size of the partition on the destination.
+    pub new_len: u64,
+    /// Estimated bytes moved below the new end of the volume.
+    pub relocated_bytes: u64,
+}
+
 /// Range to copy, in absolute bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyTask {
@@ -210,6 +225,9 @@ pub struct ClonePlan {
     /// NTFS partition grown after the copy, if any.
     #[serde(default)]
     pub grow: Option<GrowPlan>,
+    /// NTFS partition shrunk while it is copied, if any.
+    #[serde(default)]
+    pub shrink: Option<ShrinkPlan>,
     pub findings: Vec<Finding>,
     #[serde(skip)]
     pub tasks: Vec<CopyTask>,
@@ -307,6 +325,61 @@ fn no_grow_finding(number: u32, free: u64, reason: &str) -> Finding {
     )
 }
 
+/// Checks that the main partition can be shrunk to `new_sectors` while copied.
+/// Returns the estimated bytes moved, or why it cannot.
+fn shrink_check(sp: &SourcePartition, new_sectors: u64, ss: u64, opts: &PlanOptions, mode: CloneMode) -> Result<u64, String> {
+    if !opts.grow_main {
+        return Err(t!("l'ajustement automatique de la partition Windows est désactivé dans les options", "automatic resizing of the Windows partition is disabled in the options").into());
+    }
+    if mode != CloneMode::Smart {
+        return Err(t!("elle exige le mode intelligent (blocs utilisés)", "it requires the smart mode (used blocks)").into());
+    }
+    if sp.fs.kind != FsKind::Ntfs {
+        return Err(tf!(
+            "le volume est de type {}, seul NTFS non chiffré peut être réduit",
+            "the volume is {}; only unencrypted NTFS can be shrunk",
+            sp.fs.kind.label()
+        ));
+    }
+    let Some(ext) = &sp.fs.used_extents else {
+        return Err(sp.fs.raw_reason.clone().unwrap_or_else(|| t!("carte d'allocation non lue", "allocation map not read").into()));
+    };
+    if !sp.fs.grow_ready {
+        return Err(sp.fs.grow_issue.clone().unwrap_or_else(|| t!("structures NTFS non contrôlées", "NTFS structures not checked").into()));
+    }
+    let (Some(cluster), Some(fs_size)) = (sp.fs.cluster_size, sp.fs.fs_size) else {
+        return Err(t!("géométrie NTFS inconnue", "unknown NTFS geometry").into());
+    };
+    if new_sectors == 0 || new_sectors >= sp.part.sectors {
+        return Err(t!("la partition est plus petite que l'espace manquant", "the partition is smaller than the missing space").into());
+    }
+    fs::ntfs_shrink::estimate(ext, cluster as u64, fs_size, ss, new_sectors * ss).map(|e| e.relocated_bytes)
+}
+
+/// End of the shrunk volume's clusters, relative to the partition start.
+fn shrunk_volume_end(sp: &SourcePartition, new_len: u64, ss: u64) -> u64 {
+    let cl = sp.fs.cluster_size.map(u64::from).unwrap_or(ss).max(ss);
+    (new_len / ss).saturating_sub(1) * ss / cl * cl
+}
+
+fn shrink_finding(s: &ShrinkPlan) -> Finding {
+    Finding::info(
+        "NTFS_SHRINK_PLANNED",
+        tf!("Partition {} réduite pour tenir sur la destination", "Partition {} shrunk to fit the destination", s.number),
+        tf!(
+            "La partition {} passera de {} à {}. Pendant la copie, les données situées au-delà de la nouvelle fin ({}) \
+             sont recopiées plus bas dans l'espace libre et le système de fichiers NTFS est mis à jour sur la destination ; \
+             la source n'est pas modifiée. Le volume est ensuite marqué « à vérifier » : au premier démarrage du clone, \
+             Windows le contrôle une fois (chkdsk) avant l'ouverture de session. C'est normal et peut prendre quelques minutes.",
+            "Partition {} will go from {} to {}. During the copy, the data located beyond the new end ({}) is copied lower down into the free space and the NTFS file system is updated on the destination; the source is not modified. The volume is then flagged \"needs checking\": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.",
+            s.number,
+            human_size(s.old_len),
+            human_size(s.new_len),
+            human_size(s.relocated_bytes)
+        ),
+    )
+}
+
 /// "Main" partition: the largest NTFS or BitLocker data partition.
 fn main_partition(src: &DiskAnalysis) -> Option<&SourcePartition> {
     src.parts
@@ -328,6 +401,7 @@ fn blocked_plan(src: &DiskAnalysis, dst_size: u64, opts: &PlanOptions, mode: Clo
         free_after_main: 0,
         main_partition: main_partition(src).map(|p| p.part.number),
         grow: None,
+        shrink: None,
         findings,
         tasks: vec![],
         late_tasks: vec![],
@@ -438,6 +512,8 @@ pub fn build_plan(src: &DiskAnalysis, dst_size: u64, dst_sector: u32, opts: &Pla
 /// shrunk); only the empty space after them is left out. Falls back to the source
 /// size when the plan is blocked for another reason.
 pub fn minimal_destination_size(src: &DiskAnalysis, dst_sector: u32, opts: &PlanOptions) -> u64 {
+    // Partitions keep their size here: no automatic shrink.
+    let opts = &PlanOptions { grow_main: false, ..opts.clone() };
     let too_small = |size: u64| build_plan(src, size, dst_sector, opts).findings.iter().any(|f| f.code == "DEST_TOO_SMALL");
     let full = align_up(src.size, MIB);
     if too_small(full) {
@@ -544,6 +620,7 @@ fn plan_raw_disk(src: &DiskAnalysis, dst_size: u64, opts: &PlanOptions, mut find
         free_after_main: 0,
         main_partition: main_partition(src).map(|p| p.part.number),
         grow: None,
+        shrink: None,
         findings,
         tasks,
         late_tasks,
@@ -567,16 +644,21 @@ fn gpt_entry_same(p: &Partition) -> Option<GptEntrySpec> {
 }
 
 /// "Destination too small" finding with a concrete suggestion.
-fn too_small_finding(src: &DiskAnalysis, needed: u64, available: u64, movable: bool) -> Finding {
+fn too_small_finding(src: &DiskAnalysis, needed: u64, available: u64, movable: bool, shrink_issue: Option<&str>) -> Finding {
     let deficit = needed.saturating_sub(available);
     let mut detail = tf!(
-        "Les partitions de la source ont besoin de {} sur la destination, qui n'offre que {} (il manque {}). \
-         Cette version ne réduit pas elle-même les systèmes de fichiers : elle ne modifie jamais la source.",
-        "The source partitions need {} on the destination, which only offers {} ({} short). This version does not shrink file systems itself: it never modifies the source.",
+        "Les partitions de la source ont besoin de {} sur la destination, qui n'offre que {} (il manque {}).",
+        "The source partitions need {} on the destination, which only offers {} ({} short).",
         human_size(needed),
         human_size(available),
         human_size(deficit)
     );
+    if let Some(r) = shrink_issue {
+        detail.push_str(&tf!(
+            " Réduction automatique de la partition Windows impossible : {r}.",
+            " The Windows partition cannot be shrunk automatically: {r}."
+        ));
+    }
     if let Some(main) = main_partition(src) {
         let ss = src.sector_size as u64;
         let size = main.part.sectors * ss;
@@ -669,6 +751,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     let mut free_after_main = 0u64;
 
     let mut grow_end: Option<u64> = None;
+    let mut shrink: Option<ShrinkPlan> = None;
     if fits_as_is && let Some(m) = main {
         let mi = parts.iter().position(|p| p.part.number == m.part.number).expect("partition principale");
         let trailing = &parts[mi + 1..];
@@ -712,16 +795,49 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     } else if !fits_as_is {
         // Pack the partitions, in order, aligned on 1 MiB.
         strategy = LayoutStrategy::Compacted;
-        let mut cursor = align_up(first_usable, align);
-        for (i, p) in parts.iter().enumerate() {
-            let s = align_up(cursor, align);
-            starts[i] = s;
-            cursor = s + p.part.sectors;
-        }
+        let pack = |sizes: &[u64], starts: &mut [u64]| {
+            let mut cursor = align_up(first_usable, align);
+            for (i, n) in sizes.iter().enumerate() {
+                let s = align_up(cursor, align);
+                starts[i] = s;
+                cursor = s + n;
+            }
+            cursor
+        };
+        let mut sizes: Vec<u64> = parts.iter().map(|p| p.part.sectors).collect();
+        let cursor = pack(&sizes, &mut starts);
         if cursor > last_usable + 1 {
-            let overhead = dst_sectors - (last_usable + 1);
-            findings.push(too_small_finding(src, (cursor + overhead) * ss, dst_size, true));
-            return blocked_plan(src, dst_size, opts, mode, findings);
+            // Shrink the main partition by just what is missing (whole MiB, so the
+            // following partitions move by the same amount).
+            let deficit = align_up(cursor - (last_usable + 1), align);
+            let checked = match main {
+                Some(m) => {
+                    let mi = parts.iter().position(|p| p.part.number == m.part.number).expect("partition principale");
+                    let new_sectors = m.part.sectors.saturating_sub(deficit);
+                    shrink_check(m, new_sectors, ss, opts, mode).map(|r| (mi, new_sectors, r))
+                }
+                None => Err(t!("aucune partition Windows (NTFS) sur la source", "no Windows (NTFS) partition on the source").into()),
+            };
+            match checked {
+                Ok((mi, new_sectors, relocated)) => {
+                    sizes[mi] = new_sectors;
+                    let end = pack(&sizes, &mut starts);
+                    debug_assert!(end <= last_usable + 1);
+                    shrink = Some(ShrinkPlan {
+                        number: parts[mi].part.number,
+                        src_start: parts[mi].part.start_lba * ss,
+                        dst_start: starts[mi] * ss,
+                        old_len: parts[mi].part.sectors * ss,
+                        new_len: new_sectors * ss,
+                        relocated_bytes: relocated,
+                    });
+                }
+                Err(r) => {
+                    let overhead = dst_sectors - (last_usable + 1);
+                    findings.push(too_small_finding(src, (cursor + overhead) * ss, dst_size, true, Some(&r)));
+                    return blocked_plan(src, dst_size, opts, mode, findings);
+                }
+            }
         }
     }
 
@@ -749,12 +865,17 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     for (i, sp) in parts.iter().enumerate() {
         let p = &sp.part;
         let (src_start, len, dst_start) = (p.start_lba * ss, p.sectors * ss, starts[i] * ss);
-        let (method, t, reason) = partition_tasks(sp, src_start, dst_start, len, ss, mode);
-        let copy_bytes: u64 = t.iter().map(|x| x.len).sum();
+        let shrunk = shrink.filter(|s| s.number == p.number);
+        // Shrunk partition: the plan lists the used blocks kept in place (estimate);
+        // the exact list, with the moved blocks, is computed when the clone starts.
+        let copy_len = shrunk.map(|s| shrunk_volume_end(sp, s.new_len, ss)).unwrap_or(len);
+        let (method, t, reason) = partition_tasks(sp, src_start, dst_start, copy_len, ss, mode);
+        let copy_bytes: u64 = t.iter().map(|x| x.len).sum::<u64>() + shrunk.map(|s| s.relocated_bytes).unwrap_or(0);
         total += copy_bytes;
         tasks.extend(t);
-        let dst_len = match grow {
-            Some(g) if g.number == p.number => g.new_len,
+        let dst_len = match (grow, shrunk) {
+            (Some(g), _) if g.number == p.number => g.new_len,
+            (_, Some(s)) => s.new_len,
             _ => len,
         };
         if let PartInfo::Gpt { type_guid, unique_guid, attributes, name, slot } = &p.info {
@@ -808,6 +929,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     }
 
     match strategy {
+        LayoutStrategy::Compacted if shrink.is_some() => findings.push(shrink_finding(shrink.as_ref().expect("shrink"))),
         LayoutStrategy::Compacted => findings.push(Finding::info(
             "LAYOUT_COMPACTED",
             t!("Partitions resserrées", "Partitions packed together"),
@@ -862,6 +984,7 @@ fn plan_gpt(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
         free_after_main,
         main_partition: main.map(|m| m.part.number),
         grow,
+        shrink,
         findings,
         tasks,
         late_tasks: vec![],
@@ -878,17 +1001,50 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     if let Some((start, sectors)) = meta.extended {
         needed_end = needed_end.max(start + sectors);
     }
+    let align = (MIB / ss).max(1);
+    let mut sector0 = meta.sector0.clone();
+    let mut shrink: Option<ShrinkPlan> = None;
     if needed_end > dst_sectors {
-        findings.push(too_small_finding(src, needed_end * ss, dst_size, false));
-        return blocked_plan(src, dst_size, opts, mode, findings);
+        // Only the last partition can be shrunk (the others keep their position).
+        let checked = match main_partition(src) {
+            Some(m) if m.part.end_lba() == needed_end && !m.part.is_logical() => {
+                let new_end = align_down(dst_sectors, align);
+                let new_sectors = new_end.saturating_sub(m.part.start_lba);
+                shrink_check(m, new_sectors, ss, opts, mode).map(|r| (m, new_sectors, r))
+            }
+            Some(_) => Err(t!("sur un disque MBR, seule la dernière partition peut être réduite", "on an MBR disk, only the last partition can be shrunk").into()),
+            None => Err(t!("aucune partition Windows (NTFS) sur la source", "no Windows (NTFS) partition on the source").into()),
+        };
+        match checked {
+            Ok((m, new_sectors, relocated)) => {
+                let PartInfo::Mbr { slot, .. } = m.part.info else { unreachable!("MBR partition") };
+                let e = 0x1BE + 16 * slot as usize;
+                if sector0.len() < 512 || e + 16 > 510 {
+                    findings.push(too_small_finding(src, needed_end * ss, dst_size, false, Some(t!("table MBR illisible", "unreadable MBR table"))));
+                    return blocked_plan(src, dst_size, opts, mode, findings);
+                }
+                sector0[e + 12..e + 16].copy_from_slice(&(new_sectors as u32).to_le_bytes());
+                shrink = Some(ShrinkPlan {
+                    number: m.part.number,
+                    src_start: m.part.start_lba * ss,
+                    dst_start: m.part.start_lba * ss,
+                    old_len: m.part.sectors * ss,
+                    new_len: new_sectors * ss,
+                    relocated_bytes: relocated,
+                });
+                needed_end = m.part.start_lba + new_sectors;
+            }
+            Err(r) => {
+                findings.push(too_small_finding(src, needed_end * ss, dst_size, false, Some(&r)));
+                return blocked_plan(src, dst_size, opts, mode, findings);
+            }
+        }
     }
 
     // Growth: only if the main partition is the last one on the disk
     // (primary, with no extended partition after it).
-    let align = (MIB / ss).max(1);
     let mut grow: Option<GrowPlan> = None;
     let mut grow_reason: Option<String> = None;
-    let mut sector0 = meta.sector0.clone();
     let mut mbr_free = 0u64;
     if let Some(m) = main_partition(src)
         && m.part.end_lba() == needed_end
@@ -940,12 +1096,15 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     for sp in &src.parts {
         let p = &sp.part;
         let (start, len) = (p.start_lba * ss, p.sectors * ss);
-        let dst_len = match grow {
-            Some(g) if g.number == p.number => g.new_len,
+        let shrunk = shrink.filter(|s| s.number == p.number);
+        let dst_len = match (grow, shrunk) {
+            (Some(g), _) if g.number == p.number => g.new_len,
+            (_, Some(s)) => s.new_len,
             _ => len,
         };
-        let (method, t, reason) = partition_tasks(sp, start, start, len, ss, mode);
-        let copy_bytes: u64 = t.iter().map(|x| x.len).sum();
+        let copy_len = shrunk.map(|s| shrunk_volume_end(sp, s.new_len, ss)).unwrap_or(len);
+        let (method, t, reason) = partition_tasks(sp, start, start, copy_len, ss, mode);
+        let copy_bytes: u64 = t.iter().map(|x| x.len).sum::<u64>() + shrunk.map(|s| s.relocated_bytes).unwrap_or(0);
         total += copy_bytes;
         tasks.extend(t);
         planned.push(PlannedPartition {
@@ -969,6 +1128,9 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
     tasks.sort_by_key(|t| t.dst);
 
     let free_end = dst_size.saturating_sub(needed_end * ss);
+    if let Some(s) = &shrink {
+        findings.push(shrink_finding(s));
+    }
     match (&grow, &grow_reason, main_partition(src)) {
         (Some(g), _, _) => findings.push(grow_finding(g)),
         (None, Some(r), Some(m)) => findings.push(no_grow_finding(m.part.number, mbr_free, r)),
@@ -1005,6 +1167,7 @@ fn plan_mbr(src: &DiskAnalysis, dst_size: u64, dst_sectors: u64, opts: &PlanOpti
         free_after_main: 0,
         main_partition: main_partition(src).map(|p| p.part.number),
         grow,
+        shrink,
         findings,
         tasks,
         late_tasks: vec![],

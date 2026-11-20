@@ -41,8 +41,10 @@ repository's GitHub releases.
 - **Compact image files**: a new image gets the size the source's partitions need, not the size
   of the whole source disk, and empty areas are stored as holes of a sparse file (NTFS), so the
   file only takes the space of the data it holds. The report shows both sizes.
-- **Automatic growth**: on a larger disk the Windows partition (NTFS) is extended over the added
-  space, after the copy has been verified.
+- **Automatic resizing**: on a larger disk the Windows partition (NTFS) is extended over the added
+  space, after the copy has been verified. On a disk smaller than the source's partitions, it is
+  **shrunk** to fit: a 120 GB partition holding 50 GB of data goes onto a 64 GB disk (see
+  [Resizing the Windows partition](#resizing-the-windows-partition)).
 - **Clones that boot on another PC**: at the end of a Windows clone, a session saved by
   hibernation or "fast startup" is cancelled and the standard NVMe and AHCI drivers are set to
   start at boot, directly on the clone (see [Booting on another PC](#booting-on-another-pc)).
@@ -93,10 +95,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.8.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.8.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.8.0.txt` | Checksums of the files above. |
-| `ChudClone-0.8.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.9.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.9.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.9.0.txt` | Checksums of the files above. |
+| `ChudClone-0.9.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -154,7 +156,9 @@ match its checksum is deleted without being opened.
 - **The running Windows disk** is refused as a source (inconsistent copy without a VSS snapshot,
   not supported) and as a destination. The WinPE rescue key covers that case.
 
-## Growing the Windows partition
+## Resizing the Windows partition
+
+### Growing
 
 On a larger disk, the partitions after the main one (recovery) are moved to the end of the disk and
 the main NTFS partition receives all the freed space. Its file system is extended **offline, after
@@ -168,7 +172,30 @@ and its backup at the end of the partition. No file data is moved.
   main boot sector is written last, then everything is read back and checked.
 - On the clone's first boot, Windows checks the volume once ("Scanning and repairing drive"):
   this is expected.
-- Can be turned off: "Grow the Windows partition" option, or `--no-grow` on the command line.
+- Can be turned off: "Resize the Windows partition" option, or `--no-grow` on the command line.
+
+### Shrinking
+
+When the destination is too small for the source's partitions even once they are packed together,
+the main NTFS partition is shrunk by exactly what is missing. Nothing is done to the source: the
+shrink happens while the data is copied.
+
+- Before the first write, the source's MFT is read: every run of every file lying beyond the new
+  end of the volume is given free clusters below it (as few pieces as possible), and the run
+  lists are rewritten. If a record cannot hold its new run list, or if the volume has recorded bad
+  clusters, the clone is refused before anything is written.
+- The copy then writes the kept data in place and the moved data at its new position. After the
+  verification, the updated MFT records, the truncated `$Bitmap`, `$BadClus`, an emptied
+  `$LogFile` and the boot sector (with its backup) are written; the volume is marked "to be
+  checked".
+- Everything is then read back, including a complete allocation check (every run of every record
+  inside the volume, marked used, claimed once). If the shrink does not succeed, the partition
+  table is not written.
+- Conditions: smart mode, unencrypted and clean NTFS (not hibernated, journal flushed), and on MBR
+  only the last partition. The volume must keep at least 2 % free (256 MB on large volumes).
+- Validated with Windows: a 1 GB volume made by Windows (3,234 files, fragmented, compressed,
+  sparse, alternate streams, hard link) shrunk to 583 MB with 304 MB moved; `chkdsk` finds no
+  problem and every file has the same SHA-256.
 
 ## Booting on another PC
 
@@ -250,7 +277,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 124 tests
+cargo test --workspace                                         # 132 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -261,7 +288,7 @@ crates/core   the engine (library), independent of any interface
   device.rs     BlockDevice: file, memory, read-only; I/O error classification
   partition/    GPT (CRC, backup copy, relocation) and MBR (EBR chain, protective MBR)
   fs/           NTFS ($Bitmap, journal, hibernation) and FAT: map of used blocks;
-                ntfs_grow.rs: offline growth of an NTFS volume
+                ntfs_grow.rs / ntfs_shrink.rs: offline growth / shrink of an NTFS volume
   plan.rs       clone plan: method per partition, placement, destination table
   engine.rs     ddrescue-style copy: large blocks, isolation of bad areas, deferred
                 sector-by-sector re-reads, BLAKE3 checksums, verification
@@ -289,13 +316,14 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 75 unit tests and 41 integration tests on **real disk images**
+- `crates/core`: 78 unit tests and 46 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
   unstable reads recovered, source disappearing, access denied, destination errors and removal,
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
-  growth, write failure during growth), boot preparation written in place (a real registry hive
+  growth, write failure during growth), NTFS shrink (GPT, MBR, data moved, grown back and shrunk
+  again, too small even shrunk, write failure during the shrink), boot preparation written in place (a real registry hive
   placed in the Windows volume of a test image), surface scan, and a complete job in English.
 - `crates/cli`: 2 tests that drive the full-screen interface with keys on image files, checking
   after every key that the states that must go together still do: a complete
@@ -316,15 +344,14 @@ application.
   clone with Windows' own tools (partitions, read-only chkdsk, SHA-256 of every file; on the grown
   partition `chkdsk /f` must find nothing to fix). Administrator required.
 - UI bench: `node scripts/ui-dev-server.js`, then
-  `http://127.0.0.1:5178/ui-dev/index.html?s=ok|bad|fail|blocked&admin=0&lang=en` (simulated engine
+  `http://127.0.0.1:5178/ui-dev/index.html?s=ok|bad|fail|blocked|shrink&admin=0&lang=en` (simulated engine
   built from real engine output; it never touches a disk).
 
 ## Known limitations
 
 - No hot cloning of the running Windows (no VSS): use another Windows or the rescue key.
-- Growth: NTFS only (not FAT, exFAT, BitLocker…), main partition only, and on MBR only when it is
-  the last partition. Never shrinking: on a smaller disk partitions are packed together but keep
-  their size.
+- Growth and shrink: NTFS only (not FAT, exFAT, BitLocker…), main partition only, and on MBR only
+  when it is the last partition. Other partitions keep their size.
 - Growth is checked by the Linux reference tools (ntfsresize, ntfs-3g) and by Windows:
   `scripts/validate-vhd.ps1` passes (VHDX 256 MB → 512 MB, partition grown from 96 to 422 MB) with
   `chkdsk /f` finding nothing to fix.

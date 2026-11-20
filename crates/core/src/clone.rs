@@ -17,10 +17,11 @@ use crate::engine::{
     StopReason, VerifyMode, verify_data,
 };
 use crate::fs::ntfs_grow::{self, GrowSummary};
+use crate::fs::ntfs_shrink::{self, ShrinkPrep, ShrinkSummary};
 use crate::partition::gpt;
 use crate::partition::mbr;
 use crate::partition::{MIB, PartInfo, TableKind};
-use crate::plan::{CloneMode, ClonePlan, CopyMethod, DiskAnalysis, GrowPlan, TablePlan, analyze_disk};
+use crate::plan::{CloneMode, ClonePlan, CopyMethod, CopyTask, DiskAnalysis, GrowPlan, ShrinkPlan, TablePlan, analyze_disk};
 use crate::readahead::{self, ReadAhead};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -80,6 +81,16 @@ pub struct GrowOutcome {
     pub modified: bool,
 }
 
+/// Result of shrinking the main partition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShrinkOutcome {
+    pub number: u32,
+    pub attempted: bool,
+    pub done: bool,
+    pub summary: Option<ShrinkSummary>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloneOutcome {
     pub status: FinalStatus,
@@ -99,6 +110,8 @@ pub struct CloneOutcome {
     pub boot_findings: Vec<Finding>,
     #[serde(default)]
     pub grow: Option<GrowOutcome>,
+    #[serde(default)]
+    pub shrink: Option<ShrinkOutcome>,
     pub duration_ms: u64,
 }
 
@@ -173,6 +186,11 @@ fn sanity(req: &CloneRequest) -> Result<(), String> {
         }
         ranges.push((t.dst, t.dst + t.len));
     }
+    no_overlap(ranges)?;
+    req.opts.validate()
+}
+
+fn no_overlap(mut ranges: Vec<(u64, u64)>) -> Result<(), String> {
     ranges.sort();
     if ranges.windows(2).any(|w| w[0].1 > w[1].0) {
         return Err(t!(
@@ -181,7 +199,24 @@ fn sanity(req: &CloneRequest) -> Result<(), String> {
         )
         .into());
     }
-    req.opts.validate()
+    Ok(())
+}
+
+/// Computes the shrink from the source (reads only) and returns the copy list in
+/// which the shrunk partition's ranges are replaced by the exact ones.
+fn prepare_shrink(req: &mut CloneRequest, s: &ShrinkPlan) -> Result<(ShrinkPrep, Vec<CopyTask>), String> {
+    let p = ntfs_shrink::prepare(req.src, s.src_start, s.old_len, s.new_len)?;
+    let (lo, hi) = (s.dst_start, s.dst_start + s.new_len);
+    let mut tasks: Vec<CopyTask> = req.plan.tasks.iter().filter(|t| t.dst + t.len <= lo || t.dst >= hi).copied().collect();
+    tasks.extend(p.copies.iter().map(|&(a, b, l)| CopyTask { src: s.src_start + a, dst: s.dst_start + b, len: l }));
+    tasks.sort_by_key(|t| t.src);
+    for t in &tasks {
+        if t.src + t.len > req.src.size() || t.dst + t.len > req.dst.size() {
+            return Err(tf!("tâche hors des limites ({t:?})", "task out of bounds ({t:?})"));
+        }
+    }
+    no_overlap(tasks.iter().chain(req.plan.late_tasks.iter()).map(|t| (t.dst, t.dst + t.len)).collect())?;
+    Ok((p, tasks))
 }
 
 fn zero_range(dst: &mut dyn BlockDevice, offset: u64, len: u64) -> std::io::Result<()> {
@@ -318,7 +353,13 @@ fn check_table(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis) -> Tabl
 
 /// Compares the clone's file systems with the source's (taking a successful
 /// growth into account).
-fn check_structures(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis, grow: Option<&GrowOutcome>) -> Vec<Finding> {
+fn check_structures(
+    plan: &ClonePlan,
+    src: &DiskAnalysis,
+    dst: &DiskAnalysis,
+    grow: Option<&GrowOutcome>,
+    shrink: Option<&ShrinkOutcome>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     for pp in &plan.partitions {
         if pp.method == CopyMethod::Skip {
@@ -341,10 +382,16 @@ fn check_structures(plan: &ClonePlan, src: &DiskAnalysis, dst: &DiskAnalysis, gr
             continue;
         }
         let grown = grow.filter(|g| g.number == pp.number && g.done).and_then(|g| g.summary.as_ref());
-        let expected_size = grown.map(|g| Some(g.new_size)).unwrap_or(s.fs.fs_size);
-        let expected_used = match grown {
-            Some(g) => s.fs.used_bytes.map(|u| u + g.bitmap_extra_clusters * g.cluster_size),
-            None => s.fs.used_bytes,
+        let shrunk = shrink.filter(|x| x.number == pp.number && x.done).and_then(|x| x.summary.as_ref());
+        let expected_size = match (grown, shrunk) {
+            (Some(g), _) => Some(g.new_size),
+            (_, Some(x)) => Some(x.new_size),
+            _ => s.fs.fs_size,
+        };
+        let expected_used = match (grown, shrunk) {
+            (Some(g), _) => s.fs.used_bytes.map(|u| u + g.bitmap_extra_clusters * g.cluster_size),
+            (_, Some(x)) => Some(x.used_clusters * x.cluster_size),
+            _ => s.fs.used_bytes,
         };
         if expected_size != d.fs.fs_size || s.fs.cluster_size != d.fs.cluster_size || s.fs.label != d.fs.label {
             out.push(
@@ -405,6 +452,7 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         boot_destination: None,
         boot_findings: vec![],
         grow: None,
+        shrink: None,
         duration_ms: 0,
     };
 
@@ -415,19 +463,62 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         outcome.duration_ms = started.elapsed().as_millis() as u64;
         return outcome;
     }
+    // --- 0. Shrink: everything is computed from the source before any write -------
+    phase(req.obs, Phase::Preparing);
+    let mut tasks = req.plan.tasks.clone();
+    let mut shrink: Option<(ShrinkPlan, ShrinkPrep)> = None;
+    if let Some(s) = req.plan.shrink {
+        req.obs.log(
+            LogLevel::Info,
+            &tf!(
+                "Calcul de la réduction de la partition {} (lecture de la MFT de la source)",
+                "Computing the shrink of partition {} (reading the source MFT)",
+                s.number
+            ),
+        );
+        match prepare_shrink(&mut req, &s) {
+            Ok((p, t)) => {
+                req.obs.log(
+                    LogLevel::Info,
+                    &tf!(
+                        "Réduction prête : {} à déplacer, {} enregistrement(s) MFT à mettre à jour",
+                        "Shrink ready: {} to move, {} MFT record(s) to update",
+                        crate::diag::human_size(p.summary.relocated_clusters * p.summary.cluster_size),
+                        p.summary.records_updated
+                    ),
+                );
+                tasks = t;
+                shrink = Some((s, p));
+            }
+            Err(e) => {
+                let msg = tf!(
+                    "Clonage refusé avant toute écriture : la partition {} ne peut pas être réduite ({e})",
+                    "Clone refused before any write: partition {} cannot be shrunk ({e})",
+                    s.number
+                );
+                req.obs.log(LogLevel::Error, &msg);
+                outcome.stop = StopReason::Internal(msg.clone());
+                outcome.reasons.push(format!("{msg}."));
+                outcome.shrink = Some(ShrinkOutcome { number: s.number, attempted: false, done: false, summary: None, error: Some(e) });
+                outcome.duration_ms = started.elapsed().as_millis() as u64;
+                return outcome;
+            }
+        }
+    }
+    let total_bytes: u64 = tasks.iter().chain(req.plan.late_tasks.iter()).map(|t| t.len).sum();
+    outcome.copy.bytes_planned = total_bytes;
     req.obs.log(
         LogLevel::Info,
         &tf!(
             "Début du clonage — mode : {} ; {} à copier ; vérification : {}",
             "Clone started — mode: {}; {} to copy; verification: {}",
             req.plan.mode.label(),
-            crate::diag::human_size(req.plan.total_copy_bytes),
+            crate::diag::human_size(total_bytes),
             req.opts.verify.label()
         ),
     );
 
     // --- 1. Preparation: invalidating the old tables -----------------------------
-    phase(req.obs, Phase::Preparing);
     let dst_size = req.plan.dst_size;
     let head = MIB.min(dst_size);
     let prep = zero_range(req.dst, 0, head).and_then(|_| if dst_size > 2 * MIB { zero_range(req.dst, dst_size - MIB, MIB) } else { Ok(()) });
@@ -445,18 +536,18 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
     // The source is read one block ahead on a worker thread, so reading block N+1
     // overlaps writing block N (see `readahead`).
     let (stop, stats) = std::thread::scope(|sc| {
-        let mut sched = readahead::schedule(&req.plan.tasks, req.opts.chunk_size);
+        let mut sched = readahead::schedule(&tasks, req.opts.chunk_size);
         sched.extend(readahead::schedule(&req.plan.late_tasks, req.opts.chunk_size));
         let mut src = ReadAhead::new(sc, &mut *req.src, sched);
-        let mut copier = Copier::new(&mut src, &mut *req.dst, req.opts, req.ctl, req.obs, req.plan.total_copy_bytes);
-        let mut stop = copier.run(&req.plan.tasks);
+        let mut copier = Copier::new(&mut src, &mut *req.dst, req.opts, req.ctl, req.obs, total_bytes);
+        let mut stop = copier.run(&tasks);
         if stop == StopReason::Completed && !req.plan.late_tasks.is_empty() {
             stop = copier.run(&req.plan.late_tasks);
         }
         (stop, copier.stats)
     });
     outcome.copy = CopySummary {
-        bytes_planned: req.plan.total_copy_bytes,
+        bytes_planned: total_bytes,
         bytes_copied: stats.bytes_copied,
         bytes_zero_filled: stats.bytes_zero_filled,
         read_error_events: stats.read_error_events,
@@ -490,6 +581,21 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         if let Some(g) = req.plan.grow {
             outcome.grow = Some(grow_main(&mut req, g, &outcome.data_check));
         }
+        // Shrink: without it the copied volume is truncated, so the table is not
+        // written if it does not succeed.
+        if let Some((s, p)) = &shrink {
+            let so = shrink_main(&mut req, s, p, &outcome.data_check);
+            if !so.done {
+                let msg = tf!(
+                    "La réduction de la partition {} n'a pas abouti ({}) : la table de partitions n'a pas été écrite",
+                    "Shrinking partition {} did not succeed ({}): the partition table was not written",
+                    s.number,
+                    so.error.clone().unwrap_or_default()
+                );
+                outcome.stop = StopReason::DestinationFailed(msg);
+            }
+            outcome.shrink = Some(so);
+        }
     }
 
     // --- 4. Partition table -------------------------------------------------------
@@ -521,7 +627,7 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
                 for p in &outcome.table_check.problems {
                     req.obs.log(LogLevel::Error, &tf!("Table de partitions du clone : {p}", "Clone partition table: {p}"));
                 }
-                outcome.structure_findings = check_structures(req.plan, req.src_analysis, &dst_analysis, outcome.grow.as_ref());
+                outcome.structure_findings = check_structures(req.plan, req.src_analysis, &dst_analysis, outcome.grow.as_ref(), outcome.shrink.as_ref());
                 let bs = boot::assess_boot(req.src, req.src_analysis);
                 let bd = boot::assess_boot(req.dst, &dst_analysis);
                 outcome.boot_findings = boot::compare_boot(&bs, &bd);
@@ -591,6 +697,53 @@ fn grow_main(req: &mut CloneRequest, g: GrowPlan, check: &DataVerification) -> G
         go.error = Some(tf!("vidage des écritures : {e}", "flushing writes: {e}"));
     }
     go
+}
+
+fn shrink_main(req: &mut CloneRequest, s: &ShrinkPlan, p: &ShrinkPrep, check: &DataVerification) -> ShrinkOutcome {
+    let mut so = ShrinkOutcome { number: s.number, attempted: false, done: false, summary: None, error: None };
+    if check.mismatches.iter().any(|m| matches!(m.kind, MismatchKind::DestinationDiffers | MismatchKind::DestinationUnreadable)) {
+        so.error = Some(
+            t!(
+                "non tentée : la destination n'a pas restitué fidèlement les données copiées",
+                "not attempted: the destination did not faithfully return the copied data"
+            )
+            .into(),
+        );
+        return so;
+    }
+    if req.ctl.is_cancelled() {
+        so.error = Some(t!("non tentée : opération annulée", "not attempted: operation cancelled").into());
+        return so;
+    }
+    phase(req.obs, Phase::Shrinking);
+    so.attempted = true;
+    let r = ntfs_shrink::apply(req.dst, s.dst_start, s.new_len, p)
+        .and_then(|_| req.dst.flush().map_err(|e| tf!("vidage des écritures : {e}", "flushing writes: {e}")))
+        .and_then(|_| ntfs_shrink::verify(req.dst, s.dst_start, s.new_len, p));
+    match r {
+        Ok(()) => {
+            let sm = &p.summary;
+            req.obs.log(
+                LogLevel::Info,
+                &tf!(
+                    "Partition {} réduite : {} → {} ({} déplacés, {} enregistrement(s) MFT mis à jour)",
+                    "Partition {} shrunk: {} → {} ({} moved, {} MFT record(s) updated)",
+                    s.number,
+                    crate::diag::human_size(sm.old_size),
+                    crate::diag::human_size(sm.new_size),
+                    crate::diag::human_size(sm.relocated_clusters * sm.cluster_size),
+                    sm.records_updated
+                ),
+            );
+            so.done = true;
+            so.summary = Some(p.summary.clone());
+        }
+        Err(e) => {
+            req.obs.log(LogLevel::Error, &tf!("Réduction de la partition {} impossible : {e}", "Cannot shrink partition {}: {e}", s.number));
+            so.error = Some(e);
+        }
+    }
+    so
 }
 
 fn phase_done(obs: &dyn Observer, outcome: &CloneOutcome) {
@@ -794,10 +947,20 @@ fn decide_status(o: &mut CloneOutcome, plan: &ClonePlan, src: &DiskAnalysis, opt
                 reasons.push(tf!("Toutes les données prévues ont été copiées sans erreur, puis vérifiées ({}) sans aucune différence. \
                      La table de partitions et les systèmes de fichiers du clone correspondent à la source{}.", "All planned data was copied without errors, then verified ({}) with no differences at all. The clone's partition table and file systems match the source{}.",
                     opts.verify.label(),
-                    if o.grow.as_ref().is_some_and(|g| g.done) { t!(" (hors agrandissement indiqué ci-dessous)", " (apart from the growth noted below)") } else { "" }
+                    if o.grow.as_ref().is_some_and(|g| g.done) { t!(" (hors agrandissement indiqué ci-dessous)", " (apart from the growth noted below)") } else if o.shrink.as_ref().is_some_and(|x| x.done) { t!(" (hors réduction indiquée ci-dessous)", " (apart from the shrink noted below)") } else { "" }
                 ));
                 FinalStatus::SuccessVerified
             };
+            if let Some(ShrinkOutcome { done: true, summary: Some(s), number, .. }) = &o.shrink {
+                reasons.push(tf!(
+                    "La partition {number} a été réduite de {} à {} pour tenir sur la destination ({} de données déplacées) ; \
+                     Windows vérifiera ce volume (chkdsk) une fois, au premier démarrage du clone.",
+                    "Partition {number} was shrunk from {} to {} to fit the destination ({} of data moved); Windows will check this volume (chkdsk) once, on the clone's first boot.",
+                    crate::diag::human_size(s.old_size),
+                    crate::diag::human_size(s.new_size),
+                    crate::diag::human_size(s.relocated_clusters * s.cluster_size)
+                ));
+            }
             if let Some(GrowOutcome { done: true, summary: Some(s), number, .. }) = &o.grow {
                 reasons.push(tf!(
                     "La partition {number} a été agrandie de {} à {} ; Windows vérifiera ce volume (chkdsk) une fois, au premier \

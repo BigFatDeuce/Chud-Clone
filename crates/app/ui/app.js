@@ -65,6 +65,7 @@ function buildTables() {
     ["copying", L("Copie", "Copying")],
     ["verifying", L("Vérification", "Verifying")],
     ["growing", L("Agrandissement", "Growing")],
+    ["shrinking", L("Réduction", "Shrinking")],
     ["writing_table", L("Table de partitions", "Partition table")],
     ["checking", L("Contrôle final", "Final check")],
   ];
@@ -75,6 +76,7 @@ function buildTables() {
     writing_table: L("Écriture de la table de partitions", "Writing the partition table"),
     verifying: L("Vérification des données copiées", "Verifying copied data"),
     growing: L("Agrandissement de la partition Windows", "Growing the Windows partition"),
+    shrinking: L("Réduction de la partition Windows", "Shrinking the Windows partition"),
     checking: L("Contrôle des structures du clone", "Checking the clone's structures"),
     done: L("Terminé", "Done"),
   };
@@ -342,7 +344,7 @@ function optionsHtml() {
     <div class="opt"><div><label>${L("Secteurs illisibles sur la source", "Unreadable sectors on the source")}</label><small>${L("Par défaut, rien n'est ignoré en silence : vous décidez au moment où le cas se présente.", "By default nothing is silently skipped: you decide when it happens.")}</small></div>${sel("unreadable", [["ask", L("Me demander — recommandé", "Ask me — recommended")], ["stop", L("Toujours arrêter le clonage", "Always stop cloning")], ["zero_fill", L("Poursuivre en remplaçant par des zéros (données perdues)", "Continue, replacing with zeros (data lost)")]])}</div>
     <div class="opt"><div><label>${L("Nouvelles tentatives par secteur", "Retries per sector")}</label><small>${L("Insister davantage peut aggraver un disque mourant.", "Insisting more can make a dying disk worse.")}</small></div>${sel("read_retries", [[0, "0"], [1, "1"], [3, L("3 — recommandé", "3 — recommended")], [8, "8"], [20, "20"]])}</div>
     <div class="opt"><div><label>${L("Préparer l'extension (disque plus grand)", "Prepare for extension (larger disk)")}</label><small>${L("Place la partition de récupération en fin de disque pour que l'espace libre soit contigu à la partition principale.", "Places the recovery partition at the end of the disk so that the free space is contiguous with the main partition.")}</small></div><label class="toggle"><input type="checkbox" data-opt="optimize_layout" ${o.optimize_layout ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
-    <div class="opt"><div><label>${L("Agrandir la partition Windows", "Grow the Windows partition")}</label><small>${L("Sur un disque plus grand, étend le volume NTFS principal sur l'espace ajouté, après la copie et sa vérification. Windows le contrôlera une fois (chkdsk) au premier démarrage.", "On a larger disk, extends the main NTFS volume over the added space, after the copy and its verification. Windows will check it once (chkdsk) on first boot.")}</small></div><label class="toggle"><input type="checkbox" data-opt="grow_main" ${o.grow_main !== false ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
+    <div class="opt"><div><label>${L("Ajuster la partition Windows", "Resize the Windows partition")}</label><small>${L("Sur un disque plus grand, étend le volume NTFS principal sur l'espace ajouté. Sur un disque plus petit que les partitions de la source, le réduit pour qu'il tienne (les données situées au-delà de la nouvelle fin sont recopiées plus bas ; la source n'est pas modifiée). Windows contrôlera le volume une fois (chkdsk) au premier démarrage.", "On a larger disk, extends the main NTFS volume over the added space. On a disk smaller than the source's partitions, shrinks it so that it fits (the data beyond the new end is copied lower down; the source is not modified). Windows will check the volume once (chkdsk) on first boot.")}</small></div><label class="toggle"><input type="checkbox" data-opt="grow_main" ${o.grow_main !== false ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
     <div class="opt"><div><label>${L("Préparer le démarrage pour un autre PC", "Prepare boot for another PC")}</label><small>${L("Clone de Windows : la configuration de démarrage désigne les partitions du clone, les pilotes NVMe et AHCI démarrent avec Windows et une session en veille prolongée est annulée. Évite « Votre PC doit être réparé » sur le nouveau PC. La source n'est pas modifiée.", "Windows clone: the boot configuration designates the clone's partitions, the NVMe and AHCI drivers start with Windows and a hibernated session is cancelled. Avoids \"Your PC needs to be repaired\" on the new PC. The source is not modified.")}</small></div><label class="toggle"><input type="checkbox" data-opt="boot_prep" ${o.boot_prep !== false ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
   </div></details>`;
 }
@@ -382,7 +384,7 @@ function viewReview() {
           <div><div class="dim">${L("Type de disque", "Disk type")}</div><b>${esc(BOOT[p.boot.style] || "—")}</b></div>
         </div>
         <table class="t" style="margin-top:12px"><tr><th>${L("N°", "No.")}</th><th>Partition</th><th>${L("Système", "File system")}</th><th>${L("Taille", "Size")}</th><th>${L("Utilisé", "Used")}</th><th>${L("Copie", "Copy")}</th><th>${L("Emplacement", "Position")}</th></tr>
-        ${plan.partitions.map((x) => `<tr><td>${x.number}</td><td>${esc(x.type_label)}${x.fs_label ? ` <span class="dim">${L(`« ${esc(x.fs_label)} »`, `“${esc(x.fs_label)}”`)}</span>` : ""}</td><td>${esc(FS[x.fs] || x.fs)}</td><td class="num">${size(x.src_len)}</td><td class="num">${x.used_bytes != null ? size(x.used_bytes) : "—"}</td><td class="${{ smart: "okc", raw: "warnc", skip: "dim" }[x.method] || ""}">${METHOD[x.method]}${x.method === "raw" && x.method_reason ? `<div class="dim">${esc(x.method_reason)}</div>` : ""}</td><td>${x.moved ? L("déplacée", "moved") : L("inchangée", "unchanged")}${x.dst_len > x.src_len ? `<div class="grow-tag">${L("agrandie à", "grown to")} ${size(x.dst_len)}</div>` : ""}</td></tr>`).join("")}
+        ${plan.partitions.map((x) => `<tr><td>${x.number}</td><td>${esc(x.type_label)}${x.fs_label ? ` <span class="dim">${L(`« ${esc(x.fs_label)} »`, `“${esc(x.fs_label)}”`)}</span>` : ""}</td><td>${esc(FS[x.fs] || x.fs)}</td><td class="num">${size(x.src_len)}</td><td class="num">${x.used_bytes != null ? size(x.used_bytes) : "—"}</td><td class="${{ smart: "okc", raw: "warnc", skip: "dim" }[x.method] || ""}">${METHOD[x.method]}${x.method === "raw" && x.method_reason ? `<div class="dim">${esc(x.method_reason)}</div>` : ""}</td><td>${x.moved ? L("déplacée", "moved") : L("inchangée", "unchanged")}${x.dst_len > x.src_len ? `<div class="grow-tag">${L("agrandie à", "grown to")} ${size(x.dst_len)}</div>` : ""}${x.dst_len < x.src_len ? `<div class="grow-tag">${L("réduite à", "shrunk to")} ${size(x.dst_len)}</div>` : ""}</td></tr>`).join("")}
         </table>
       </div>
       <div class="cols" style="margin-top:14px">
@@ -480,11 +482,11 @@ function updateRun() {
     if (r.ended) star.set(r.ended === "ok" || r.ended === "warn" ? "dwarf" : "dead", 1, r.ended === "warn");
     else if (phase === "preparing") star.set("proto", 0, false);
     else if (phase === "copying" || phase === "recovering") star.set("grow", r.copied || 0, phase === "recovering" || r.err.read > 0);
-    else star.set("remnant", { verifying: 0.02 + 0.8 * frac, growing: 0.88, writing_table: 0.93, checking: 0.96, done: 1 }[phase] ?? 0.5, false);
+    else star.set("remnant", { verifying: 0.02 + 0.8 * frac, growing: 0.88, shrinking: 0.88, writing_table: 0.93, checking: 0.96, done: 1 }[phase] ?? 0.5, false);
   }
   if (beam) {
     const k = p?.speed_bps ? Math.min(1, Math.max(0.12, Math.log10(p.speed_bps / 1e6) / 3)) : 0.25;
-    beam.set({ preparing: "prepare", copying: "copy", recovering: "recover", writing_table: "table", verifying: "verify", growing: "table", checking: "check", done: "check" }[phase], k, r.err.read > 0);
+    beam.set({ preparing: "prepare", copying: "copy", recovering: "recover", writing_table: "table", verifying: "verify", growing: "table", shrinking: "table", checking: "check", done: "check" }[phase], k, r.err.read > 0);
   }
 }
 
@@ -533,6 +535,7 @@ function outcomeHtml(rep, error, opts) {
   if ((good || zeroed) && physical) {
     next.push(L("Éteignez l'ordinateur, puis débranchez le disque source (ou mettez-le de côté). Tant que les deux disques sont branchés ensemble, Windows en garde un hors ligne car ils portent les mêmes identifiants.", "Shut the computer down, then unplug the source disk (or set it aside). While both disks are connected together, Windows keeps one of them offline because they carry the same identifiers."));
     next.push(L("Branchez le clone à la place de l'ancien disque et démarrez. Si l'ordinateur ne trouve pas le système, choisissez le nouveau disque dans le menu de démarrage du BIOS/UEFI.", "Connect the clone in place of the old disk and start the computer. If it does not find the system, pick the new disk in the BIOS/UEFI boot menu."));
+    if (o.shrink && o.shrink.done) next.push(L(`Au premier démarrage, Windows affiche « Analyse et réparation du lecteur » pendant quelques minutes : il contrôle la partition réduite (${size(o.shrink.summary.old_size)} → ${size(o.shrink.summary.new_size)}). C'est prévu ; laissez-le aller au bout.`, `On first boot, Windows shows "Scanning and repairing drive" for a few minutes: it checks the shrunk partition (${size(o.shrink.summary.old_size)} → ${size(o.shrink.summary.new_size)}). This is expected; let it finish.`));
     if (o.grow && o.grow.done) next.push(L(`Au premier démarrage, Windows affiche « Analyse et réparation du lecteur » pendant quelques minutes : il contrôle la partition agrandie (${size(o.grow.summary.old_size)} → ${size(o.grow.summary.new_size)}). C'est prévu ; laissez-le aller au bout.`, `On first boot, Windows shows "Scanning and repairing drive" for a few minutes: it checks the grown partition (${size(o.grow.summary.old_size)} → ${size(o.grow.summary.new_size)}). This is expected; let it finish.`));
     if (rep.plan.free_after_main > 16 * 1048576) next.push(L(`Dans Windows, ouvrez « Gestion des disques », cliquez avec le bouton droit sur la partition principale puis « Étendre le volume » pour récupérer les ${size(rep.plan.free_after_main)} d'espace supplémentaire.`, `In Windows, open "Disk Management", right-click the main partition and choose "Extend Volume" to reclaim the ${size(rep.plan.free_after_main)} of extra space.`));
     next.push(L("Conservez l'ancien disque intact tant que vous n'avez pas vérifié que tout fonctionne sur le clone.", "Keep the old disk intact until you have checked that everything works on the clone."));
@@ -555,6 +558,7 @@ function outcomeHtml(rep, error, opts) {
         <div class="check ${o.table_check.performed ? (o.table_check.ok ? "y" : "n") : "u"}"><span class="s">${o.table_check.performed ? (o.table_check.ok ? "✓" : "×") : "?"}</span><span>${L("Table de partitions", "Partition table")} ${o.table_check.performed ? (o.table_check.ok ? L("conforme", "conforming") : L("non conforme : ", "not conforming: ") + esc(o.table_check.problems.join(" ; "))) : L("non contrôlée", "not checked")}</span></div>
         <div class="check ${dc.mode !== "none" && dc.completed && !dc.mismatches.length ? "y" : dc.mismatches.length ? "n" : "u"}"><span class="s">${dc.mode !== "none" && dc.completed && !dc.mismatches.length ? "✓" : dc.mismatches.length ? "×" : "?"}</span><span>${L("Données : ", "Data: ")}${esc(dataTxt)}</span></div>
         <div class="check ${!o.table_check.performed ? "u" : o.structure_findings.length ? "n" : "y"}"><span class="s">${!o.table_check.performed ? "?" : o.structure_findings.length ? "×" : "✓"}</span><span>${L("Systèmes de fichiers du clone", "Clone file systems")} ${!o.table_check.performed ? L("non contrôlés", "not checked") : o.structure_findings.length ? L("différents de la source", "differ from the source") : L("identiques à la source", "identical to the source")}</span></div>
+        ${o.shrink ? `<div class="check ${o.shrink.done ? "y" : "n"}"><span class="s">${o.shrink.done ? "✓" : "×"}</span><span>${o.shrink.done ? L(`Partition ${o.shrink.number} réduite (${size(o.shrink.summary.old_size)} → ${size(o.shrink.summary.new_size)}, ${size(o.shrink.summary.relocated_clusters * o.shrink.summary.cluster_size)} déplacés), structures relues et contrôlées`, `Partition ${o.shrink.number} shrunk (${size(o.shrink.summary.old_size)} → ${size(o.shrink.summary.new_size)}, ${size(o.shrink.summary.relocated_clusters * o.shrink.summary.cluster_size)} moved), structures read back and checked`) : L(`Réduction de la partition ${o.shrink.number} non effectuée`, `Partition ${o.shrink.number} not shrunk`) + (o.shrink.error ? " : " + esc(o.shrink.error) : "")}</span></div>` : ""}
         ${o.grow ? `<div class="check ${o.grow.done ? "y" : o.grow.modified ? "n" : "u"}"><span class="s">${o.grow.done ? "✓" : o.grow.modified ? "×" : "?"}</span><span>${o.grow.done ? L(`Partition ${o.grow.number} agrandie (${size(o.grow.summary.old_size)} → ${size(o.grow.summary.new_size)}), structures relues et contrôlées`, `Partition ${o.grow.number} grown (${size(o.grow.summary.old_size)} → ${size(o.grow.summary.new_size)}), structures read back and checked`) : L(`Agrandissement de la partition ${o.grow.number} non effectué`, `Partition ${o.grow.number} not grown`) + (o.grow.error ? " : " + esc(o.grow.error) : "")}</span></div>` : ""}
         <div class="check ${!o.boot_destination ? "u" : o.boot_findings.length ? "n" : "y"}"><span class="s">${!o.boot_destination ? "?" : o.boot_findings.length ? "×" : "✓"}</span><span>${L("Éléments de démarrage", "Boot elements")} ${!o.boot_destination ? L("non contrôlés", "not checked") : o.boot_findings.length ? L("différents de la source", "differ from the source") : L("retrouvés sur le clone", "found on the clone")}</span></div>
       </div>${o.structure_findings.length || o.boot_findings.length ? `<div style="margin-top:10px">${findingsHtml([...o.structure_findings, ...o.boot_findings])}</div>` : ""}</div>
@@ -596,8 +600,15 @@ function badge(kind) {
 
 // ------------------------------------------------------- View: disks & health
 // Boot repair of a Windows disk for another PC (BCD, storage drivers, hibernation).
+// Always shown as its own panel, so the feature can be found before any analysis.
 function fixBootHtml(d, ins) {
-  if (d.kind !== "physical" || d.is_system || !["windows_uefi", "windows_bios"].includes(ins.boot.style)) return "";
+  const intro = `<p class="muted">${L("Pour un disque cloné qui affiche « Votre PC doit être réparé » (0xc000000e) ou un écran bleu au démarrage sur son nouveau PC.", "For a cloned disk that shows \"Your PC needs to be repaired\" (0xc000000e) or a blue screen at boot on its new PC.")}</p>`;
+  const note = (t) => `${intro}<p class="dim" style="margin-top:8px">${t}</p>`;
+  if (d.kind !== "physical") return note(L("Disponible uniquement pour un disque physique.", "Only available for a physical disk."));
+  if (d.is_system) return note(L("C'est le disque sur lequel ce Windows tourne : il ne peut pas être réparé d'ici. Branche le disque à réparer sur ce PC, ou démarre sur la clé Chud Clone (menu R).", "This is the disk this Windows runs from: it cannot be repaired from here. Connect the disk to repair to this PC, or boot the Chud Clone key (menu R)."));
+  if (S.busy["inspect:" + d.id]) return `${intro}<div class="loader"></div>`;
+  if (!ins || ins.error) return `${note(L("Le disque doit d'abord être analysé pour vérifier qu'il contient Windows (lecture seule).", "The disk must first be analysed to check that it contains Windows (read-only)."))}<button class="btn small" style="margin-top:10px" data-act="inspect" data-id="${esc(d.id)}">${L("Analyser ce disque", "Analyse this disk")}</button>`;
+  if (!["windows_uefi", "windows_bios"].includes(ins.boot.style)) return note(L("Aucun Windows trouvé sur ce disque : rien à réparer.", "No Windows found on this disk: nothing to repair."));
   const f = S.fix[d.id] || {};
   const steps = f.steps?.length ? `<ol class="fmt-steps">${f.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   let body;
@@ -609,7 +620,7 @@ function fixBootHtml(d, ins) {
       <ul>${r.bcd_fixed ? `<li class="okc">${L("Configuration de démarrage (BCD) : désigne les partitions de ce disque", "Boot configuration (BCD): designates this disk's partitions")}</li>` : ""}${r.drivers.length ? `<li class="okc">${L("Pilotes activés au démarrage : ", "Drivers enabled at boot: ")}<span class="val">${esc(r.drivers.join(", "))}</span></li>` : ""}${r.hibernation_cleared ? `<li class="okc">${L("Session en veille prolongée annulée", "Hibernated session cancelled")}</li>` : ""}${r.fallback_added ? `<li class="okc">${L("Chargeur UEFI de secours ajouté", "Fallback UEFI loader added")}</li>` : ""}${r.warnings.map((w) => `<li class="warnc">${esc(w)}</li>`).join("")}</ul></div></div>`;
   } else body = "";
   const needAdmin = S.env && !S.env.elevated;
-  return `<div class="fixboot"><h3>${L("Réparer le démarrage pour un autre PC", "Repair boot for another PC")}</h3>
+  return `<div>
     <p class="muted">${L("Pour un disque qui affiche « Votre PC doit être réparé » (0xc000000e) ou un écran bleu au démarrage sur son nouveau PC : la configuration de démarrage est réécrite pour désigner les partitions de ce disque, les pilotes NVMe et AHCI démarrent avec Windows, une session en veille prolongée est annulée et le chargeur UEFI de secours est ajouté s'il manque. Aucune donnée n'est effacée.", "For a disk that shows \"Your PC needs to be repaired\" (0xc000000e) or a blue screen at boot on its new PC: the boot configuration is rewritten to designate this disk's partitions, the NVMe and AHCI drivers start with Windows, a hibernated session is cancelled and the fallback UEFI loader is added if missing. No data is erased.")}</p>
     ${body}
     <div class="row" style="margin-top:10px">${needAdmin ? `<button class="btn small primary" data-act="elevate">${L("Passer en administrateur", "Switch to administrator")}</button>` : `<button class="btn small" data-act="fixboot" data-id="${esc(d.id)}" ${f.busy || activity() !== "idle" ? "disabled" : ""}>${f.result ? L("Réparer à nouveau", "Repair again") : L("Réparer le démarrage", "Repair boot")}</button>`}</div></div>`;
@@ -645,7 +656,7 @@ function viewDisks() {
   else if (!ins) insHtml = `<p class="muted">${L("Lit la table de partitions et les systèmes de fichiers pour y chercher des incohérences. Lecture seule.", "Reads the partition table and file systems to look for inconsistencies. Read-only.")}</p><button class="btn small" style="margin-top:10px" data-act="inspect" data-id="${esc(sel.id)}">${L("Analyser ce disque", "Analyse this disk")}</button>`;
   else if (ins.error) insHtml = `<div class="finding error"><div class="ico">×</div><div><b>${L("Analyse impossible", "Analysis failed")}</b><p class="selectable">${esc(ins.error)}</p></div></div>`;
   else insHtml = `<div class="row wrap" style="gap:22px;margin-bottom:12px"><div><div class="dim">${L("Type de disque", "Disk type")}</div><b>${BOOT[ins.boot.style]}</b></div></div>
-      ${ins.boot.checks.length ? `<div class="checks" style="margin-bottom:12px">${ins.boot.checks.map(checkRow).join("")}</div>` : ""}${findingsHtml(ins.findings)}${fixBootHtml(sel, ins)}`;
+      ${ins.boot.checks.length ? `<div class="checks" style="margin-bottom:12px">${ins.boot.checks.map(checkRow).join("")}</div>` : ""}${findingsHtml(ins.findings)}`;
   return `<div class="page"><div class="page-head"><div><h1>${L("Disques et santé", "Disks & health")}</h1><p>${L("Identité, partitions et indicateurs de santé. Tout ici est en lecture seule, sauf la réparation du démarrage.", "Identity, partitions and health indicators. Everything here is read-only, except the boot repair.")}</p></div><button class="btn small ghost" data-act="refresh">↻ ${L("Actualiser", "Refresh")}</button></div>
     <div class="split"><div class="disk-list">${S.disks.map((d) => diskCard(d, { mini: true, act: "disk-sel", selected: d.id === sel.id })).join("")}</div>
     <div>
@@ -654,6 +665,7 @@ function viewDisks() {
       <div class="panel"><h2>Partitions</h2>${strip(sel.partitions, sel.size, false)}<div style="margin-top:12px">${parts}</div></div>
       <div class="panel"><h2>${L("État de santé", "Health")}</h2>${smartHtml}</div>
       <div class="panel"><h2>${L("Diagnostic des partitions et du démarrage", "Partition and boot diagnostics")}</h2>${insHtml}</div>
+      <div class="panel fixboot" id="fixboot-panel"><h2>${L("Réparer le démarrage pour un autre PC", "Repair boot for another PC")}</h2>${fixBootHtml(sel, ins)}</div>
       <div class="panel" id="scan-panel" data-id="${esc(sel.id)}"><h2>${L("Scan de surface", "Surface scan")}</h2>${scanHtml(sel)}</div>
     </div></div></div>`;
 }

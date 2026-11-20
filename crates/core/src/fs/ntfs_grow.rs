@@ -18,33 +18,33 @@
 use crate::device::{AlignedBuf, BlockDevice};
 
 /// Stride of the fixup arrays ("update sequence"): always 512 bytes.
-const USA_BLOCK: usize = 512;
-const ATTR_ATTRIBUTE_LIST: u32 = 0x20;
-const ATTR_VOLUME_INFORMATION: u32 = 0x70;
-const ATTR_DATA: u32 = 0x80;
-const ATTR_END: u32 = 0xFFFF_FFFF;
-const VOLUME_IS_DIRTY: u16 = 0x0001;
-const CHUNK: u64 = 1024 * 1024;
+pub(super) const USA_BLOCK: usize = 512;
+pub(super) const ATTR_ATTRIBUTE_LIST: u32 = 0x20;
+pub(super) const ATTR_VOLUME_INFORMATION: u32 = 0x70;
+pub(super) const ATTR_DATA: u32 = 0x80;
+pub(super) const ATTR_END: u32 = 0xFFFF_FFFF;
+pub(super) const VOLUME_IS_DIRTY: u16 = 0x0001;
+pub(super) const CHUNK: u64 = 1024 * 1024;
 
-fn le16(b: &[u8], o: usize) -> u16 {
+pub(super) fn le16(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
 }
-fn le32(b: &[u8], o: usize) -> u32 {
+pub(super) fn le32(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
 }
-fn le64(b: &[u8], o: usize) -> u64 {
+pub(super) fn le64(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
 }
-fn put16(b: &mut [u8], o: usize, v: u16) {
+pub(super) fn put16(b: &mut [u8], o: usize, v: u16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
-fn put32(b: &mut [u8], o: usize, v: u32) {
+pub(super) fn put32(b: &mut [u8], o: usize, v: u32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
 }
-fn put64(b: &mut [u8], o: usize, v: u64) {
+pub(super) fn put64(b: &mut [u8], o: usize, v: u64) {
     b[o..o + 8].copy_from_slice(&v.to_le_bytes());
 }
-fn align_up(v: u64, a: u64) -> u64 {
+pub(super) fn align_up(v: u64, a: u64) -> u64 {
     v.div_ceil(a) * a
 }
 
@@ -118,7 +118,7 @@ pub fn parse_boot(b: &[u8]) -> Result<Geometry, String> {
 
 // --- Tableaux de correction -------------------------------------------------
 
-fn unfixup(rec: &mut [u8]) -> Result<(), String> {
+pub(super) fn unfixup(rec: &mut [u8]) -> Result<(), String> {
     let ofs = le16(rec, 4) as usize;
     let cnt = le16(rec, 6) as usize;
     if cnt < 2 || (cnt - 1) * USA_BLOCK != rec.len() || ofs + cnt * 2 > rec.len() {
@@ -140,7 +140,7 @@ fn unfixup(rec: &mut [u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn fixup(rec: &mut [u8]) {
+pub(super) fn fixup(rec: &mut [u8]) {
     let ofs = le16(rec, 4) as usize;
     let cnt = le16(rec, 6) as usize;
     let mut usn = le16(rec, ofs).wrapping_add(1);
@@ -184,7 +184,8 @@ pub fn decode_runs(b: &[u8]) -> Result<Vec<Run>, String> {
         for k in 0..ls {
             len |= (b[i + 1 + k] as u64) << (8 * k);
         }
-        if len == 0 {
+        // The length is signed, as Windows reads it: a high bit set means negative.
+        if len == 0 || (ls < 8 && b[i + ls] & 0x80 != 0) {
             return Err(bad());
         }
         let run_lcn = if os == 0 {
@@ -209,14 +210,9 @@ pub fn decode_runs(b: &[u8]) -> Result<Vec<Run>, String> {
     Ok(out)
 }
 
-fn unsigned_bytes(v: u64) -> Vec<u8> {
-    let mut n = 1;
-    while n < 8 && v >> (8 * n) != 0 {
-        n += 1;
-    }
-    v.to_le_bytes()[..n].to_vec()
-}
-
+/// Minimal two's-complement encoding. Run lengths are encoded the same way as LCN
+/// offsets: Windows reads a length whose top byte has its high bit set as negative
+/// and rejects the record (0xC9 alone is -55, it must be written C9 00).
 fn signed_bytes(v: i64) -> Vec<u8> {
     for n in 1..8 {
         let lim = 1i64 << (8 * n - 1);
@@ -231,7 +227,7 @@ pub fn encode_runs(runs: &[Run]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut prev: i64 = 0;
     for r in runs {
-        let l = unsigned_bytes(r.len);
+        let l = signed_bytes(r.len as i64);
         match r.lcn {
             None => {
                 out.push(l.len() as u8);
@@ -250,7 +246,7 @@ pub fn encode_runs(runs: &[Run]) -> Vec<u8> {
     out
 }
 
-fn push_run(runs: &mut Vec<Run>, r: Run) {
+pub(super) fn push_run(runs: &mut Vec<Run>, r: Run) {
     if let Some(last) = runs.last_mut() {
         let contiguous = match (last.lcn, r.lcn) {
             (None, None) => true,
@@ -266,7 +262,7 @@ fn push_run(runs: &mut Vec<Run>, r: Run) {
 }
 
 /// Converts the byte range `[off, off+len)` of a stream into volume ranges.
-fn map_range(runs: &[Run], cluster: u64, off: u64, len: u64) -> Result<Vec<(u64, u64)>, String> {
+pub(super) fn map_range(runs: &[Run], cluster: u64, off: u64, len: u64) -> Result<Vec<(u64, u64)>, String> {
     let mut out: Vec<(u64, u64)> = Vec::new();
     let (mut pos, end) = (off, off + len);
     let mut vcn_start = 0u64;
@@ -297,16 +293,16 @@ fn map_range(runs: &[Run], cluster: u64, off: u64, len: u64) -> Result<Vec<(u64,
 // --- Attributs ----------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct Attr {
-    off: usize,
-    len: usize,
-    kind: u32,
-    nonres: bool,
-    flags: u16,
-    name: String,
+pub(super) struct Attr {
+    pub(super) off: usize,
+    pub(super) len: usize,
+    pub(super) kind: u32,
+    pub(super) nonres: bool,
+    pub(super) flags: u16,
+    pub(super) name: String,
 }
 
-fn attrs(rec: &[u8]) -> Result<Vec<Attr>, String> {
+pub(super) fn attrs(rec: &[u8]) -> Result<Vec<Attr>, String> {
     let bad = |w: &str| tf!("enregistrement MFT invalide ({w})", "invalid MFT record ({w})");
     let in_use = le32(rec, 0x18) as usize;
     if in_use > rec.len() {
@@ -339,16 +335,16 @@ fn attrs(rec: &[u8]) -> Result<Vec<Attr>, String> {
 }
 
 #[derive(Debug, Clone)]
-struct NonRes {
-    start_vcn: u64,
-    last_vcn: u64,
-    alloc: u64,
-    data: u64,
-    init: u64,
-    runs: Vec<Run>,
+pub(super) struct NonRes {
+    pub(super) start_vcn: u64,
+    pub(super) last_vcn: u64,
+    pub(super) alloc: u64,
+    pub(super) data: u64,
+    pub(super) init: u64,
+    pub(super) runs: Vec<Run>,
 }
 
-fn nonres(rec: &[u8], a: &Attr) -> Result<NonRes, String> {
+pub(super) fn nonres(rec: &[u8], a: &Attr) -> Result<NonRes, String> {
     if !a.nonres || a.len < 0x40 {
         return Err(t!("attribut non résident attendu", "non-resident attribute expected").into());
     }
@@ -369,7 +365,7 @@ fn nonres(rec: &[u8], a: &Attr) -> Result<NonRes, String> {
 
 /// Replaces a non-resident attribute with a version whose sizes and extents are
 /// updated, shifting the following attributes.
-fn rewrite_nonres(rec: &mut Vec<u8>, a: &Attr, nr: &NonRes) -> Result<(), String> {
+pub(super) fn rewrite_nonres(rec: &mut Vec<u8>, a: &Attr, nr: &NonRes) -> Result<(), String> {
     let old = &rec[a.off..a.off + a.len];
     let ro = le16(old, 0x20) as usize;
     let mut new = old[..ro].to_vec();
@@ -402,31 +398,31 @@ fn rewrite_nonres(rec: &mut Vec<u8>, a: &Attr, nr: &NonRes) -> Result<(), String
     Ok(())
 }
 
-fn total_len(runs: &[Run]) -> u64 {
+pub(super) fn total_len(runs: &[Run]) -> u64 {
     runs.iter().map(|r| r.len).sum()
 }
 
 // --- Volume access ---------------------------------------------------------------
 
-struct Record {
-    number: u64,
-    data: Vec<u8>,
+pub(super) struct Record {
+    pub(super) number: u64,
+    pub(super) data: Vec<u8>,
 }
 
-struct Volume<'a> {
-    dev: &'a mut dyn BlockDevice,
-    base: u64,
+pub(super) struct Volume<'a> {
+    pub(super) dev: &'a mut dyn BlockDevice,
+    pub(super) base: u64,
     /// Bytes accessible from `base` (size of the partition).
-    len: u64,
-    geo: Geometry,
-    boot: Vec<u8>,
-    mft_runs: Vec<Run>,
-    mirror_runs: Vec<Run>,
-    mirror_records: u64,
+    pub(super) len: u64,
+    pub(super) geo: Geometry,
+    pub(super) boot: Vec<u8>,
+    pub(super) mft_runs: Vec<Run>,
+    pub(super) mirror_runs: Vec<Run>,
+    pub(super) mirror_records: u64,
 }
 
 impl<'a> Volume<'a> {
-    fn open(dev: &'a mut dyn BlockDevice, base: u64, len: u64) -> Result<Self, String> {
+    pub(super) fn open(dev: &'a mut dyn BlockDevice, base: u64, len: u64) -> Result<Self, String> {
         let ss = dev.sector_size() as u64;
         if !base.is_multiple_of(ss) || base.checked_add(len).is_none_or(|e| e > dev.size()) {
             return Err(t!("partition hors des limites du disque", "partition outside the disk bounds").into());
@@ -469,7 +465,7 @@ impl<'a> Volume<'a> {
         Ok(v)
     }
 
-    fn read_bytes(&mut self, off: u64, len: usize) -> Result<Vec<u8>, String> {
+    pub(super) fn read_bytes(&mut self, off: u64, len: usize) -> Result<Vec<u8>, String> {
         let ss = self.dev.sector_size() as u64;
         if off + len as u64 > self.len {
             return Err(t!("lecture hors de la partition", "read outside the partition").into());
@@ -484,7 +480,7 @@ impl<'a> Volume<'a> {
         Ok(buf[s..s + len].to_vec())
     }
 
-    fn write_bytes(&mut self, off: u64, data: &[u8]) -> Result<(), String> {
+    pub(super) fn write_bytes(&mut self, off: u64, data: &[u8]) -> Result<(), String> {
         let ss = self.dev.sector_size() as u64;
         if off + data.len() as u64 > self.len {
             return Err(t!("écriture hors de la partition", "write outside the partition").into());
@@ -504,7 +500,7 @@ impl<'a> Volume<'a> {
             .map_err(|e| tf!("écriture à l'octet {start} du volume : {e}", "write at byte {start} of the volume: {e}"))
     }
 
-    fn read_stream(&mut self, runs: &[Run], off: u64, len: u64) -> Result<Vec<u8>, String> {
+    pub(super) fn read_stream(&mut self, runs: &[Run], off: u64, len: u64) -> Result<Vec<u8>, String> {
         let mut out = Vec::with_capacity(len as usize);
         for (vo, n) in map_range(runs, self.geo.cluster, off, len)? {
             out.extend(self.read_bytes(vo, n as usize)?);
@@ -512,7 +508,7 @@ impl<'a> Volume<'a> {
         Ok(out)
     }
 
-    fn write_stream(&mut self, runs: &[Run], off: u64, data: &[u8]) -> Result<(), String> {
+    pub(super) fn write_stream(&mut self, runs: &[Run], off: u64, data: &[u8]) -> Result<(), String> {
         let mut p = 0usize;
         for (vo, n) in map_range(runs, self.geo.cluster, off, data.len() as u64)? {
             self.write_bytes(vo, &data[p..p + n as usize])?;
@@ -521,7 +517,7 @@ impl<'a> Volume<'a> {
         Ok(())
     }
 
-    fn read_record(&mut self, n: u64) -> Result<Record, String> {
+    pub(super) fn read_record(&mut self, n: u64) -> Result<Record, String> {
         let rs = self.geo.record_size;
         let runs = self.mft_runs.clone();
         let mut data = self.read_stream(&runs, n * rs, rs)?;
@@ -529,7 +525,7 @@ impl<'a> Volume<'a> {
         Ok(Record { number: n, data })
     }
 
-    fn write_record(&mut self, rec: &Record) -> Result<(), String> {
+    pub(super) fn write_record(&mut self, rec: &Record) -> Result<(), String> {
         let rs = self.geo.record_size;
         let mut d = rec.data.clone();
         fixup(&mut d);
@@ -544,7 +540,7 @@ impl<'a> Volume<'a> {
 }
 
 /// Checks and decodes (fixups applied) a base MFT record.
-fn check_record(rec: &mut [u8], n: u64) -> Result<(), String> {
+pub(super) fn check_record(rec: &mut [u8], n: u64) -> Result<(), String> {
     if &rec[0..4] != b"FILE" {
         return Err(tf!("enregistrement MFT {n} invalide (signature)", "MFT record {n} invalid (signature)"));
     }
@@ -561,7 +557,7 @@ fn check_record(rec: &mut [u8], n: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn find_data<'r>(list: &'r [Attr], name: &str) -> Result<&'r Attr, String> {
+pub(super) fn find_data<'r>(list: &'r [Attr], name: &str) -> Result<&'r Attr, String> {
     if list.iter().any(|a| a.kind == ATTR_ATTRIBUTE_LIST) {
         return Err(t!(
             "liste d'attributs présente (fichier système fragmenté), non prise en charge",
@@ -577,7 +573,7 @@ fn find_data<'r>(list: &'r [Attr], name: &str) -> Result<&'r Attr, String> {
     Ok(a)
 }
 
-fn data_runs(rec: &[u8], name: &str) -> Result<NonRes, String> {
+pub(super) fn data_runs(rec: &[u8], name: &str) -> Result<NonRes, String> {
     let list = attrs(rec)?;
     let a = find_data(&list, name)?;
     let nr = nonres(rec, a)?;
@@ -894,6 +890,12 @@ mod tests {
         let r = decode_runs(&[0x11, 0x01, 0x40, 0x11, 0x01, 0xF0, 0x00]).unwrap();
         assert_eq!(r[1].lcn, Some(0x30));
         assert!(decode_runs(&[0x11, 0x01]).is_err());
+        // Lengths are signed: 201 clusters take two bytes (C9 00), as Windows writes
+        // them; a lone C9 is a negative length, rejected.
+        assert_eq!(encode_runs(&[Run { len: 201, lcn: Some(0x10) }]), vec![0x12, 0xC9, 0x00, 0x10, 0x00]);
+        assert_eq!(encode_runs(&[Run { len: 0x80, lcn: None }]), vec![0x02, 0x80, 0x00, 0x00]);
+        assert!(decode_runs(&[0x11, 0xC9, 0x10, 0x00]).is_err());
+        assert_eq!(decode_runs(&[0x12, 0xC9, 0x00, 0x10, 0x00]).unwrap(), vec![Run { len: 201, lcn: Some(0x10) }]);
     }
 
     #[test]

@@ -475,7 +475,7 @@ fn option_rows(app: &App) -> Vec<(&'static str, String, &'static str)> {
             ),
         ),
         (
-            t!("Agrandir la partition Windows", "Grow the Windows partition"),
+            t!("Ajuster la partition Windows", "Resize the Windows partition"),
             yes_no(s.grow),
             t!(
                 "Étend la partition NTFS principale sur l'espace ajouté, après la copie et sa vérification.",
@@ -601,8 +601,10 @@ fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(tf!("  copie {}", "  {} copy", method_text(p.method)), Style::new().fg(ACCENT)),
             Span::raw(tf!(" : {}", ": {}", human_size(p.copy_bytes))),
         ];
-        if p.dst_len != p.src_len {
+        if p.dst_len > p.src_len {
             spans.push(Span::styled(tf!("  -> agrandie à {}", "  -> grown to {}", human_size(p.dst_len)), Style::new().fg(Color::LightGreen)));
+        } else if p.dst_len < p.src_len {
+            spans.push(Span::styled(tf!("  -> réduite à {}", "  -> shrunk to {}", human_size(p.dst_len)), Style::new().fg(Color::LightYellow)));
         }
         if p.moved {
             spans.push(Span::styled(t!("  (déplacée)", "  (moved)").to_string(), Style::new().fg(DIM)));
@@ -777,6 +779,18 @@ fn draw_result(f: &mut Frame, app: &mut App, area: Rect) {
         {
             lines.push(Line::from(Span::styled(
                 tf!("Partition {} agrandie.", "Partition {} grown.", g.number),
+                Style::new().fg(Color::LightGreen),
+            )));
+        }
+        if let Some(x) = &o.shrink
+            && x.done
+        {
+            lines.push(Line::from(Span::styled(
+                tf!(
+                    "Partition {} réduite pour tenir sur la destination ; Windows la vérifiera au premier démarrage.",
+                    "Partition {} shrunk to fit the destination; Windows will check it on first boot.",
+                    x.number
+                ),
                 Style::new().fg(Color::LightGreen),
             )));
         }

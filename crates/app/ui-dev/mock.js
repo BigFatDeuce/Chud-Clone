@@ -55,6 +55,8 @@
   function setDisks() {
     disks = buildDisks().concat(images);
     if (SCEN === "blocked") disks[1].is_system = true;
+    // Destination smaller than the source's partitions: the Windows partition is shrunk.
+    if (SCEN === "shrink") disks[3].size = 256060514304;
   }
   setDisks();
 
@@ -104,7 +106,19 @@
       grow = { number: mainP.number, dst_start: mainP.dst_start, old_len: mainP.src_len, new_len: mainP.src_len + free };
       mainP.dst_len = grow.new_len;
     }
-    Object.assign(prep.plan, { partitions: parts, src_size: s.size, dst_size: d.size, total_copy_bytes: parts.reduce((a, p) => a + p.copy_bytes, 0), free_after_main: grow ? 0 : free, grow, mode: params.mode });
+    // Destination smaller than the partitions: the Windows partition is shrunk (packed layout).
+    let shrink = null;
+    const need = parts.reduce((a, p) => a + p.src_len, 0) + 2 * MiB;
+    if (d.size < need && mainP && params.grow_main !== false && params.mode === "smart") {
+      const cut = Math.ceil((need - d.size) / MiB) * MiB;
+      if (mainP.src_len - cut > mainP.used_bytes * 1.1) {
+        shrink = { number: mainP.number, src_start: mainP.src_start, dst_start: mainP.dst_start, old_len: mainP.src_len, new_len: mainP.src_len - cut, relocated_bytes: Math.round(mainP.used_bytes * 0.18) };
+        mainP.dst_len = shrink.new_len;
+        let cur = MiB;
+        for (const p of parts) { p.dst_start = cur; p.moved = p.dst_start !== p.src_start; cur += Math.ceil(p.dst_len / MiB) * MiB; }
+      }
+    }
+    Object.assign(prep.plan, { partitions: parts, src_size: s.size, dst_size: d.size, total_copy_bytes: parts.reduce((a, p) => a + p.copy_bytes, 0), free_after_main: grow ? 0 : free, grow, shrink, mode: params.mode });
     const fsize = GB;
     prep.findings = clone(D().prep.findings).map((f) =>
       f.code === "LAYOUT_TRAILING_MOVED"
@@ -112,9 +126,11 @@
         : f);
     prep.findings = prep.findings.filter((f) => !["NTFS_GROW_PLANNED", "GROW_NOT_AUTOMATIC"].includes(f.code));
     if (!parts.some((p) => p.moved)) prep.findings = prep.findings.filter((f) => !["LAYOUT_TRAILING_MOVED", "RECOVERY_MOVED"].includes(f.code));
+    if (shrink) prep.findings = prep.findings.filter((f) => f.code !== "LAYOUT_TRAILING_MOVED");
     prep.smart_source = smartOf(s); prep.smart_destination = smartOf(d);
     const F = (severity, code, title, detail, blocking) => ({ severity, code, title, detail, blocking: !!blocking, scope: null, lba: null });
-    if (d.size < s.size) prep.findings.push(F("warning", "DEST_SMALLER", T("Destination plus petite que la source", "Destination smaller than the source"), T("Les partitions seront rapprochées ; la partition principale garde sa taille. Vérifiez qu'elle tient sur la destination.", "The partitions will be packed together; the main partition keeps its size. Check that it fits on the destination.")));
+    if (shrink) prep.findings.push(F("info", "NTFS_SHRINK_PLANNED", T(`Partition ${shrink.number} réduite pour tenir sur la destination`, `Partition ${shrink.number} shrunk to fit the destination`), T(`La partition ${shrink.number} passera de ${fsize(shrink.old_len)} à ${fsize(shrink.new_len)}. Pendant la copie, les données situées au-delà de la nouvelle fin (${fsize(shrink.relocated_bytes)}) sont recopiées plus bas dans l'espace libre et le système de fichiers NTFS est mis à jour sur la destination ; la source n'est pas modifiée. Le volume est ensuite marqué « à vérifier » : au premier démarrage du clone, Windows le contrôle une fois (chkdsk) avant l'ouverture de session. C'est normal et peut prendre quelques minutes.`, `Partition ${shrink.number} will go from ${fsize(shrink.old_len)} to ${fsize(shrink.new_len)}. During the copy, the data located beyond the new end (${fsize(shrink.relocated_bytes)}) is copied lower down into the free space and the NTFS file system is updated on the destination; the source is not modified. The volume is then flagged "needs checking": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.`)));
+    else if (d.size < s.size) prep.findings.push(F("warning", "DEST_SMALLER", T("Destination plus petite que la source", "Destination smaller than the source"), T("Les partitions seront rapprochées ; la partition principale garde sa taille. Vérifiez qu'elle tient sur la destination.", "The partitions will be packed together; the main partition keeps its size. Check that it fits on the destination.")));
     if (grow) prep.findings.push(F("info", "NTFS_GROW_PLANNED", T(`Partition ${grow.number} agrandie automatiquement`, `Partition ${grow.number} grown automatically`), T(`La partition ${grow.number} passera de ${fsize(grow.old_len)} à ${fsize(grow.new_len)} (+${fsize(free)}). Après la copie et sa vérification, son système de fichiers NTFS est étendu sur place, sans déplacer aucune donnée (mêmes modifications que l'outil de référence ntfsresize). Le volume est ensuite marqué « à vérifier » : au premier démarrage du clone, Windows le contrôle une fois (chkdsk) avant l'ouverture de session. C'est normal et peut prendre quelques minutes.`, `Partition ${grow.number} will go from ${fsize(grow.old_len)} to ${fsize(grow.new_len)} (+${fsize(free)}). After the copy and its verification, its NTFS file system is extended in place, without moving any data (same changes as the reference tool ntfsresize). The volume is then marked "to be checked": on the clone's first boot, Windows checks it once (chkdsk) before sign-in. This is normal and can take a few minutes.`)));
     else if (free > 16 * MiB && mainP) prep.findings.push(F("info", "GROW_NOT_AUTOMATIC", T("Espace supplémentaire à récupérer", "Extra space to reclaim"), T(`${fsize(free)} non alloués se trouveront juste après la partition ${mainP.number}. Agrandissement automatique impossible : l'agrandissement automatique est désactivé dans les options. Une fois le clone en service, « Gestion des disques » → clic droit sur la partition → « Étendre le volume » permet de récupérer cet espace.`, `${fsize(free)} of unallocated space will sit right after partition ${mainP.number}. Automatic growth not possible: automatic growth is disabled in the options. Once the clone is in use, "Disk Management" → right-click the partition → "Extend Volume" reclaims this space.`)));
     if (d.partitions.length) prep.findings.push(F("warning", "DEST_HAS_DATA", T(`La destination contient ${d.partitions.length} partition(s)`, `The destination holds ${d.partitions.length} partition(s)`), T("Elles seront effacées définitivement.", "They will be permanently erased.")));
@@ -199,6 +215,13 @@
     if (ok) {
       if (job.params.verify !== "none") { log("info", T("Vérification des données copiées", "Verifying copied data")); ok = await phase("verifying", total, 7); }
       const g = job.prep.plan.grow;
+      const sh = job.prep.plan.shrink;
+      if (ok && sh) {
+        log("info", T("Réduction de la partition Windows", "Shrinking the Windows partition"));
+        emit("clone-progress", { phase: "shrinking", done: 0, total: 0, elapsed_ms: 0, speed_bps: 0, avg_bps: 0, eta_secs: null, read_errors: job.err.read, bad_bytes: job.err.bad, recovered_bytes: job.err.rec, write_errors: 0, current_lba: 0 });
+        await wait(1300);
+        log("info", T(`Partition ${sh.number} réduite : ${GB(sh.old_len)} → ${GB(sh.new_len)}`, `Partition ${sh.number} shrunk: ${GB(sh.old_len)} → ${GB(sh.new_len)}`));
+      }
       if (ok && g) {
         log("info", T("Agrandissement de la partition Windows", "Growing the Windows partition"));
         emit("clone-progress", { phase: "growing", done: 0, total: 0, elapsed_ms: 0, speed_bps: 0, avg_bps: 0, eta_secs: null, read_errors: job.err.read, bad_bytes: job.err.bad, recovered_bytes: job.err.rec, write_errors: 0, current_lba: 0 });
@@ -230,6 +253,8 @@
     o.table_written = tableOk;
     const g = plan.grow;
     o.grow = g ? (ok ? { number: g.number, attempted: true, done: true, modified: false, error: null, summary: { old_size: g.old_len - 512, new_size: g.new_len - 512, cluster_size: 4096, old_clusters: 0, new_clusters: 0, bitmap_extra_clusters: 1 } } : { number: g.number, attempted: false, done: false, modified: false, error: T("non tenté", "not attempted"), summary: null }) : null;
+    const sh = plan.shrink;
+    o.shrink = sh && ok ? { number: sh.number, attempted: true, done: true, error: null, summary: { old_size: sh.old_len - 512, new_size: sh.new_len - 512, cluster_size: 4096, old_clusters: 0, new_clusters: 0, relocated_clusters: Math.round(sh.relocated_bytes / 4096), records_updated: 1840, used_clusters: 0 } } : null;
     if (!ok) {
       o.table_check = { performed: false, ok: false, problems: [] };
       o.data_check = { mode: "none", total_bytes: total, checked_bytes: 0, completed: false, mismatches: [], duration_ms: 0 };
@@ -275,7 +300,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.8.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.9.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },

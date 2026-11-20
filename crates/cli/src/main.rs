@@ -68,7 +68,8 @@ CIBLES
 OPTIONS DE CLONAGE
   --mode smart|partitions|disk   méthode (défaut : smart)
   --no-optimize                  ne pas déplacer les partitions de fin (GPT)
-  --no-grow                      ne pas agrandir la partition Windows (NTFS)
+  --no-grow                      ne pas ajuster la partition Windows (NTFS) :
+                                 ni agrandissement, ni réduction
   --verify hash|full|none        vérification après copie (défaut : hash)
   --on-unreadable stop|zero      secteurs illisibles : arrêter (défaut) ou
                                  remplacer par des zéros (données perdues)
@@ -140,7 +141,8 @@ TARGETS
 CLONE OPTIONS
   --mode smart|partitions|disk   method (default: smart)
   --no-optimize                  do not move trailing partitions (GPT)
-  --no-grow                      do not grow the Windows partition (NTFS)
+  --no-grow                      do not resize the Windows partition (NTFS):
+                                 neither grow nor shrink it
   --verify hash|full|none        verification after the copy (default: hash)
   --on-unreadable stop|zero      unreadable sectors: stop (default) or
                                  replace with zeros (data lost)

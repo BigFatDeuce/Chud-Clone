@@ -363,7 +363,8 @@ fn gpt_smaller_destination_compacts_partitions() {
 fn destination_too_small_is_refused_before_any_write() {
     let _g = heavy();
     for (src, size) in [(gpt_image(), 150 * MIB), (mbr_image(), 100 * MIB)] {
-        let r = run(src, size, PlanOptions::default());
+        // Automatic resizing disabled: nothing may shrink the Windows partition.
+        let r = run(src, size, PlanOptions { grow_main: false, ..Default::default() });
         assert!(r.plan.is_blocked());
         let f = r.plan.findings.iter().find(|f| f.code == "DEST_TOO_SMALL").expect("finding expected");
         assert!(f.blocking);
@@ -885,7 +886,8 @@ fn minimal_image_size_holds_the_partitions() {
         let size = minimal_destination_size(&analysis, 512, &opts);
         assert!(size <= analysis.size && size.is_multiple_of(MIB), "{size} vs source {}", analysis.size);
         assert!(!build_plan(&analysis, size, 512, &opts).findings.iter().any(|f| f.blocking));
-        assert!(build_plan(&analysis, size - MIB, 512, &opts).findings.iter().any(|f| f.code == "DEST_TOO_SMALL"));
+        let fixed = PlanOptions { grow_main: false, ..opts.clone() };
+        assert!(build_plan(&analysis, size - MIB, 512, &fixed).findings.iter().any(|f| f.code == "DEST_TOO_SMALL"));
         let r = run(src, size, opts);
         assert_eq!(r.outcome.status, FinalStatus::SuccessVerified, "{:?}", r.outcome.reasons);
         assert_same_files(&r, src);
