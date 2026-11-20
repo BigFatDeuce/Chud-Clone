@@ -54,6 +54,13 @@ UTILISATION
   chud-clone-cli eject <disk:N>
       Éjecte un disque USB (comme « Éjecter » dans l'Explorateur).
 
+  chud-clone-cli fix-boot <disk:N>
+      Répare le démarrage du Windows de ce disque pour un autre PC : la
+      configuration de démarrage (BCD) désigne ses propres partitions, les
+      pilotes NVMe et AHCI démarrent avec Windows, une session en veille
+      prolongée est annulée. Corrige « Votre PC doit être réparé »
+      (0xc000000e) après un changement d'identifiants. Aucune donnée effacée.
+
 CIBLES
   disk:N          disque Windows numéro N (voir « list »)
   <chemin>        fichier image disque
@@ -72,6 +79,8 @@ OPTIONS DE CLONAGE
   --reports <dossier>            dossier des rapports (défaut : ./rapports)
   --only-virtual                 refuser toute destination qui n'est pas une image
                                  ou un disque virtuel (VHD/VHDX)
+  --no-boot-prep                 ne pas préparer le démarrage du clone pour un
+                                 autre PC (voir fix-boot ; fait par défaut)
   --json                         sortie JSON
 
 OPTION GÉNÉRALE
@@ -117,6 +126,13 @@ USAGE
   chud-clone-cli eject <disk:N>
       Ejects a USB disk (like \"Eject\" in File Explorer).
 
+  chud-clone-cli fix-boot <disk:N>
+      Repairs the boot of this disk's Windows for another PC: the boot
+      configuration (BCD) designates its own partitions, the NVMe and AHCI
+      drivers start with Windows, a hibernated session is cancelled. Fixes
+      \"Your PC needs to be repaired\" (0xc000000e) after an identifier
+      change. No data is erased.
+
 TARGETS
   disk:N          Windows disk number N (see \"list\")
   <path>          disk image file
@@ -135,6 +151,8 @@ CLONE OPTIONS
   --reports <folder>             reports folder (default: ./reports)
   --only-virtual                 refuse any destination that is not an image
                                  or a virtual disk (VHD/VHDX)
+  --no-boot-prep                 do not prepare the clone's boot for another
+                                 PC (see fix-boot; done by default)
   --json                         JSON output
 
 GENERAL OPTION
@@ -364,10 +382,11 @@ fn job_config(a: &Args) -> Result<JobConfig, String> {
         expected_source_fingerprint: None,
         expected_destination_fingerprint: None,
         app_paths: vec![std::fs::canonicalize(&reports).unwrap_or(reports).to_string_lossy().to_string()],
+        prepare_boot: !a.has("--no-boot-prep"),
     })
 }
 
-const CLONE_FLAGS: [&str; 13] = [
+const CLONE_FLAGS: [&str; 14] = [
     "--mode",
     "--no-optimize",
     "--no-grow",
@@ -381,6 +400,7 @@ const CLONE_FLAGS: [&str; 13] = [
     "--json",
     "--confirm-erase",
     "--chunk",
+    "--no-boot-prep",
 ];
 
 fn only_virtual_ok(d: &DiskInfo) -> bool {
@@ -694,6 +714,30 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
                 let _ = number;
                 Err("Windows only".into())
             }
+        }
+        "fix-boot" => {
+            a.check_known(&["--json"])?;
+            let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
+            let info = job::describe(&target, false, &[], None)?;
+            let number = info.number.ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?;
+            if info.is_system {
+                return Err(chud_clone_core::t!(
+                    "c'est le disque du Windows en cours d'exécution : sa configuration de démarrage ne se répare pas depuis lui-même",
+                    "this is the disk of the running Windows: its boot configuration is not repaired from itself"
+                )
+                .into());
+            }
+            println!("{}", chud_clone_core::tf!("{} — réparation du démarrage", "{} — repairing boot", info.title()));
+            let out = chud_clone_core::bootprep::prepare_disk(number, &|s| eprintln!("  {s}"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
+            } else {
+                println!("{}", chud_clone_core::tf!("Résultat : {}", "Result: {}", out.summary()));
+                for w in &out.warnings {
+                    println!("  ! {w}");
+                }
+            }
+            Ok(if out.warnings.is_empty() { 0 } else { 1 })
         }
         "report" => {
             a.check_known(&["--txt", "--html", "--out"])?;

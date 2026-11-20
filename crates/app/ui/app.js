@@ -117,6 +117,7 @@ const S = {
   reportOpen: null,
   diskSel: null,
   inspect: {},
+  fix: {},
   smart: {},
   health: {},
   busy: {},
@@ -135,6 +136,7 @@ function activity() {
   if (M.format.is("running")) return "formatting";
   if (M.scan.is("running", "cancelling")) return "scanning";
   if (M.update.is("installing")) return "updating";
+  if (Object.values(S.fix).some((f) => f.busy)) return "repairing_boot";
   return "idle";
 }
 const BUSY = () => ({
@@ -142,6 +144,7 @@ const BUSY = () => ({
   formatting: L("Un formatage est en cours.", "A format is running."),
   scanning: L("Un test de surface est en cours : arrêtez-le d'abord.", "A surface scan is running: stop it first."),
   updating: L("Une mise à jour est en cours d'installation.", "An update is being installed."),
+  repairing_boot: L("Une réparation du démarrage est en cours.", "A boot repair is running."),
 });
 /** True (with a message) when something else is running. */
 function busy() {
@@ -340,6 +343,7 @@ function optionsHtml() {
     <div class="opt"><div><label>${L("Nouvelles tentatives par secteur", "Retries per sector")}</label><small>${L("Insister davantage peut aggraver un disque mourant.", "Insisting more can make a dying disk worse.")}</small></div>${sel("read_retries", [[0, "0"], [1, "1"], [3, L("3 — recommandé", "3 — recommended")], [8, "8"], [20, "20"]])}</div>
     <div class="opt"><div><label>${L("Préparer l'extension (disque plus grand)", "Prepare for extension (larger disk)")}</label><small>${L("Place la partition de récupération en fin de disque pour que l'espace libre soit contigu à la partition principale.", "Places the recovery partition at the end of the disk so that the free space is contiguous with the main partition.")}</small></div><label class="toggle"><input type="checkbox" data-opt="optimize_layout" ${o.optimize_layout ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
     <div class="opt"><div><label>${L("Agrandir la partition Windows", "Grow the Windows partition")}</label><small>${L("Sur un disque plus grand, étend le volume NTFS principal sur l'espace ajouté, après la copie et sa vérification. Windows le contrôlera une fois (chkdsk) au premier démarrage.", "On a larger disk, extends the main NTFS volume over the added space, after the copy and its verification. Windows will check it once (chkdsk) on first boot.")}</small></div><label class="toggle"><input type="checkbox" data-opt="grow_main" ${o.grow_main !== false ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
+    <div class="opt"><div><label>${L("Préparer le démarrage pour un autre PC", "Prepare boot for another PC")}</label><small>${L("Clone de Windows : la configuration de démarrage désigne les partitions du clone, les pilotes NVMe et AHCI démarrent avec Windows et une session en veille prolongée est annulée. Évite « Votre PC doit être réparé » sur le nouveau PC. La source n'est pas modifiée.", "Windows clone: the boot configuration designates the clone's partitions, the NVMe and AHCI drivers start with Windows and a hibernated session is cancelled. Avoids \"Your PC needs to be repaired\" on the new PC. The source is not modified.")}</small></div><label class="toggle"><input type="checkbox" data-opt="boot_prep" ${o.boot_prep !== false ? "checked" : ""}><span>${L("Activé", "Enabled")}</span></label></div>
   </div></details>`;
 }
 
@@ -591,6 +595,26 @@ function badge(kind) {
 }
 
 // ------------------------------------------------------- View: disks & health
+// Boot repair of a Windows disk for another PC (BCD, storage drivers, hibernation).
+function fixBootHtml(d, ins) {
+  if (d.kind !== "physical" || d.is_system || !["windows_uefi", "windows_bios"].includes(ins.boot.style)) return "";
+  const f = S.fix[d.id] || {};
+  const steps = f.steps?.length ? `<ol class="fmt-steps">${f.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  let body;
+  if (f.busy) body = `<div class="loader"></div>${steps}`;
+  else if (f.error) body = `<div class="finding error"><div class="ico">×</div><div><b>${L("Réparation impossible", "Repair failed")}</b><p class="selectable">${esc(f.error)}</p></div></div>${steps}`;
+  else if (f.result) {
+    const r = f.result, ok = !r.warnings.length;
+    body = `<div class="finding ${ok ? "info" : "warning"}"><div class="ico">${ok ? "✓" : "!"}</div><div><b>${ok ? L("Démarrage réparé", "Boot repaired") : L("Réparation partielle", "Partial repair")}</b>
+      <ul>${r.bcd_fixed ? `<li class="okc">${L("Configuration de démarrage (BCD) : désigne les partitions de ce disque", "Boot configuration (BCD): designates this disk's partitions")}</li>` : ""}${r.drivers.length ? `<li class="okc">${L("Pilotes activés au démarrage : ", "Drivers enabled at boot: ")}<span class="val">${esc(r.drivers.join(", "))}</span></li>` : ""}${r.hibernation_cleared ? `<li class="okc">${L("Session en veille prolongée annulée", "Hibernated session cancelled")}</li>` : ""}${r.fallback_added ? `<li class="okc">${L("Chargeur UEFI de secours ajouté", "Fallback UEFI loader added")}</li>` : ""}${r.warnings.map((w) => `<li class="warnc">${esc(w)}</li>`).join("")}</ul></div></div>`;
+  } else body = "";
+  const needAdmin = S.env && !S.env.elevated;
+  return `<div class="fixboot"><h3>${L("Réparer le démarrage pour un autre PC", "Repair boot for another PC")}</h3>
+    <p class="muted">${L("Pour un disque qui affiche « Votre PC doit être réparé » (0xc000000e) ou un écran bleu au démarrage sur son nouveau PC : la configuration de démarrage est réécrite pour désigner les partitions de ce disque, les pilotes NVMe et AHCI démarrent avec Windows, une session en veille prolongée est annulée et le chargeur UEFI de secours est ajouté s'il manque. Aucune donnée n'est effacée.", "For a disk that shows \"Your PC needs to be repaired\" (0xc000000e) or a blue screen at boot on its new PC: the boot configuration is rewritten to designate this disk's partitions, the NVMe and AHCI drivers start with Windows, a hibernated session is cancelled and the fallback UEFI loader is added if missing. No data is erased.")}</p>
+    ${body}
+    <div class="row" style="margin-top:10px">${needAdmin ? `<button class="btn small primary" data-act="elevate">${L("Passer en administrateur", "Switch to administrator")}</button>` : `<button class="btn small" data-act="fixboot" data-id="${esc(d.id)}" ${f.busy || activity() !== "idle" ? "disabled" : ""}>${f.result ? L("Réparer à nouveau", "Repair again") : L("Réparer le démarrage", "Repair boot")}</button>`}</div></div>`;
+}
+
 function viewDisks() {
   if (S.loadingDisks) return `<div class="page"><div class="empty"><div class="orbit-loader"></div>${L("Recherche des disques…", "Looking for disks…")}</div></div>`;
   const sel = disk(S.diskSel) || S.disks[0];
@@ -621,8 +645,8 @@ function viewDisks() {
   else if (!ins) insHtml = `<p class="muted">${L("Lit la table de partitions et les systèmes de fichiers pour y chercher des incohérences. Lecture seule.", "Reads the partition table and file systems to look for inconsistencies. Read-only.")}</p><button class="btn small" style="margin-top:10px" data-act="inspect" data-id="${esc(sel.id)}">${L("Analyser ce disque", "Analyse this disk")}</button>`;
   else if (ins.error) insHtml = `<div class="finding error"><div class="ico">×</div><div><b>${L("Analyse impossible", "Analysis failed")}</b><p class="selectable">${esc(ins.error)}</p></div></div>`;
   else insHtml = `<div class="row wrap" style="gap:22px;margin-bottom:12px"><div><div class="dim">${L("Type de disque", "Disk type")}</div><b>${BOOT[ins.boot.style]}</b></div></div>
-      ${ins.boot.checks.length ? `<div class="checks" style="margin-bottom:12px">${ins.boot.checks.map(checkRow).join("")}</div>` : ""}${findingsHtml(ins.findings)}`;
-  return `<div class="page"><div class="page-head"><div><h1>${L("Disques et santé", "Disks & health")}</h1><p>${L("Identité, partitions et indicateurs de santé. Tout ici est en lecture seule.", "Identity, partitions and health indicators. Everything here is read-only.")}</p></div><button class="btn small ghost" data-act="refresh">↻ ${L("Actualiser", "Refresh")}</button></div>
+      ${ins.boot.checks.length ? `<div class="checks" style="margin-bottom:12px">${ins.boot.checks.map(checkRow).join("")}</div>` : ""}${findingsHtml(ins.findings)}${fixBootHtml(sel, ins)}`;
+  return `<div class="page"><div class="page-head"><div><h1>${L("Disques et santé", "Disks & health")}</h1><p>${L("Identité, partitions et indicateurs de santé. Tout ici est en lecture seule, sauf la réparation du démarrage.", "Identity, partitions and health indicators. Everything here is read-only, except the boot repair.")}</p></div><button class="btn small ghost" data-act="refresh">↻ ${L("Actualiser", "Refresh")}</button></div>
     <div class="split"><div class="disk-list">${S.disks.map((d) => diskCard(d, { mini: true, act: "disk-sel", selected: d.id === sel.id })).join("")}</div>
     <div>
       <div class="panel"><div class="row" style="gap:16px;margin-bottom:14px"><div style="width:74px;height:74px;flex:none">${Cosmos.planet(sel)}</div><div style="min-width:0"><h3 style="font-size:18px;font-weight:650">${esc(sel.model || L("Disque sans nom", "Unnamed disk"))}</h3><div class="chips">${diskChips(sel)}</div></div></div>${identity(sel)}
@@ -1087,7 +1111,7 @@ function params(dstId, prep) {
     source_id: S.srcId, destination_id: dstId, mode: o.mode, optimize_layout: !!o.optimize_layout, grow_main: o.grow_main !== false, verify: o.verify, unreadable: o.unreadable,
     read_retries: Number(o.read_retries), allow_unvalidated_physical_write: false,
     source_fingerprint: prep?.source.fingerprint ?? null, destination_fingerprint: prep?.destination.fingerprint ?? null,
-    eject: !!o.eject,
+    eject: !!o.eject, boot_prep: o.boot_prep !== false,
   };
 }
 
@@ -1312,6 +1336,17 @@ const actions = {
   async smart(el) {
     await readHealth(el.dataset.id);
   },
+  async fixboot(el) {
+    const id = el.dataset.id;
+    if (busy()) return;
+    S.fix[id] = { busy: true, steps: [] }; S.fixing = id; render();
+    try {
+      S.fix[id].result = await api.invoke("fix_boot", { id });
+      // The BCD and the volumes changed: read the boot elements again.
+      try { S.inspect[id] = await api.invoke("inspect_disk", { id }); } catch { /* the previous analysis stays */ }
+    } catch (e) { S.fix[id].error = typeof e === "string" ? e : String(e); }
+    S.fix[id].busy = false; S.fixing = null; render();
+  },
   async inspect(el) {
     const id = el.dataset.id;
     S.busy["inspect:" + id] = true; render();
@@ -1453,6 +1488,7 @@ async function boot() {
     setTimeout(() => queueDone(e.payload), document.documentElement.classList.contains("no-motion") ? 0 : 2600);
   });
   await api.listen("format-step", (e) => { S.fmt.steps.push(e.payload); if (S.view === "format") render(); });
+  await api.listen("fixboot-step", (e) => { const f = S.fix[S.fixing]; if (f) { f.steps.push(e.payload); if (S.view === "disks") render(); } });
   await api.listen("scan-progress", (e) => {
     const sc = S.scan, p = e.payload;
     if (!sc || !sc.running) return;

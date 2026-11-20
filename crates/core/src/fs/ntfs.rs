@@ -121,6 +121,37 @@ pub fn read_file(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str], 
     }
 }
 
+/// File size, and for each requested offset its position from the start of the volume.
+pub type FileLocation = (u64, Vec<Option<u64>>);
+
+/// Where bytes of a file are stored: for each offset in the file, the position of that
+/// byte from the start of the volume (`None`: sparse area or beyond the end of the
+/// file). Returns the file size too, or `None` if the file does not exist.
+pub fn locate_file(dev: &mut dyn BlockDevice, base: u64, len: u64, path: &[&str], offsets: &[u64]) -> Result<Option<FileLocation>, String> {
+    let mut fs = DeviceReader::new(dev, base, len);
+    let mut ntfs = Ntfs::new(&mut fs).map_err(err_text)?;
+    ntfs.read_upcase_table(&mut fs).map_err(err_text)?;
+    let Some(file) = lookup(&ntfs, &mut fs, path)? else { return Ok(None) };
+    let item = file.data(&mut fs, "").ok_or(t!("attribut $DATA absent", "missing $DATA attribute"))?.map_err(err_text)?;
+    let attr = item.to_attribute().map_err(err_text)?;
+    use ::ntfs::NtfsAttributeFlags as F;
+    if attr.flags().intersects(F::COMPRESSED | F::ENCRYPTED | F::SPARSE) {
+        return Err(t!("fichier compressé, chiffré ou fragmenté en zones creuses", "compressed, encrypted or sparse file").into());
+    }
+    let mut value = attr.value(&mut fs).map_err(err_text)?;
+    let size = value.len();
+    let mut out = Vec::with_capacity(offsets.len());
+    for &o in offsets {
+        if o >= size {
+            out.push(None);
+            continue;
+        }
+        value.seek(&mut fs, std::io::SeekFrom::Start(o)).map_err(err_text)?;
+        out.push(value.data_position().value().map(|p| p.get()));
+    }
+    Ok(Some((size, out)))
+}
+
 /// Recursive list (path, size) of all regular files. Reserved for tests
 /// and comparisons of small volumes.
 pub fn list_files(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Result<Vec<(String, u64)>, String> {
@@ -290,7 +321,9 @@ fn analyze_inner(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut FsAna
             t!("Windows en veille prolongée ou démarrage rapide", "Windows hibernated or Fast Startup"),
             t!("Ce volume contient une session Windows mise en veille prolongée (ou le « démarrage rapide » est actif). \
                      L'état sur disque dépend de la mémoire enregistrée : la partition sera copiée intégralement, secteur par secteur. \
-                     Pour un clone plus sûr, arrêtez complètement Windows (« shutdown /s /t 0 ») avant de cloner.", "This volume holds a hibernated Windows session (or Fast Startup is enabled). The on-disk state depends on the saved memory: the partition will be copied in full, sector by sector. For a safer clone, shut Windows down completely (\"shutdown /s /t 0\") before cloning."),
+                     Sur un autre PC, Windows tenterait de reprendre cette session et pourrait s'arrêter sur un écran bleu de réparation : \
+                     l'option « Préparer le démarrage pour un autre PC » l'annule sur le clone (la source n'est pas modifiée). \
+                     Pour un clone plus sûr, arrêtez complètement Windows (« shutdown /s /t 0 ») avant de cloner.", "This volume holds a hibernated Windows session (or Fast Startup is enabled). The on-disk state depends on the saved memory: the partition will be copied in full, sector by sector. On another PC, Windows would try to resume that session and could stop at a blue repair screen: the \"Prepare boot for another PC\" option cancels it on the clone (the source is not modified). For a safer clone, shut Windows down completely (\"shutdown /s /t 0\") before cloning."),
         ));
     }
 

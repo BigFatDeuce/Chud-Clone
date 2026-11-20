@@ -33,6 +33,9 @@ Example, in the test bench: wait for a clone to finish with
  │  idle  │────────────────────▶│formatting│──┤
  └──────▲─┘ begin(Updating)     ├──────────┤  │
         │ ─────────────────────▶│ updating │──┤
+        │ begin(RepairingBoot)  ├──────────┤  │
+        │ ─────────────────────▶│repairing_│──┤
+        │                       │boot      │  │
         │                       └──────────┘  │
         └─────────────────────────────────────┘
 ```
@@ -44,7 +47,7 @@ Example, in the test bench: wait for a clone to finish with
 - `end()` goes back to idle, whatever the result (success, failure, panic caught).
 - `Cloning` carries what is needed to cancel the clone and to answer its question about
   unreadable sectors; `Scanning` carries what is needed to stop the scan.
-- `blocks_close()`: the window cannot be closed during a clone or a format (a disk would
+- `blocks_close()`: the window cannot be closed during a clone, a format or a boot repair (a disk would
   be left half written).
 - Shutting the computer down and restarting as administrator are refused unless idle.
 
@@ -114,7 +117,7 @@ They are computed from the data by one function each, never stored twice:
 
 | Function | Values | From |
 | --- | --- | --- |
-| `activity()` | `idle`, `cloning`, `formatting`, `scanning`, `updating` | the machines above; mirrors the back end's activity |
+| `activity()` | `idle`, `cloning`, `formatting`, `scanning`, `updating`, `repairing_boot` | the machines above; mirrors the back end's activity |
 | `prepState(x)` | `busy`, `error`, `blocked`, `ready` | the analysis of one destination |
 | `itemState(it, i)` | `waiting`, `running`, `ok`, `failed` | one clone of the queue |
 

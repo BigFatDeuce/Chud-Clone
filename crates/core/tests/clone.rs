@@ -409,7 +409,9 @@ fn mbr_smart_clone_preserves_positions_boot_track_and_logicals() {
         assert_same_files(&r, src);
         let boot = r.outcome.boot_destination.as_ref().unwrap();
         assert_eq!(boot.style, chud_clone_core::boot::BootStyle::WindowsBios);
-        assert!(boot.findings.is_empty(), "{:#?}", boot.findings);
+        // Only the reminder that a legacy BIOS clone needs a PC with "Legacy"/"CSM" mode.
+        assert!(boot.findings.iter().all(|f| f.code == "BOOT_LEGACY_BIOS"), "{:#?}", boot.findings);
+        assert_eq!(boot.findings.len(), 1);
         if dst_size > src.len() as u64 {
             assert!(r.plan.findings.iter().any(|f| f.code == "DEST_LARGER_UNUSED"));
         }

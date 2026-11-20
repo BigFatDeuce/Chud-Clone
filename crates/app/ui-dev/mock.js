@@ -275,7 +275,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.7.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.8.0", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },
@@ -301,6 +301,12 @@
       const boot = d.table === "gpt" && d.partitions.length > 1 ? clone(D().prep.boot) : { style: "data_only", checks: [], findings: [], windows_partition: null, esp_partition: null };
       const findings = d.number === 2 ? [{ severity: "warning", code: "NTFS_DIRTY", title: T("Volume NTFS marqué « à vérifier »", "NTFS volume marked \"to be checked\""), detail: T("Windows n'a pas été arrêté proprement ou une erreur a été détectée. Cette partition sera copiée secteur par secteur. Conseil : lancez « chkdsk D: /f » avant de cloner.", "Windows was not shut down cleanly or an error was detected. This partition will be copied sector by sector. Tip: run \"chkdsk D: /f\" before cloning."), blocking: false, scope: "Partition 1", lba: null }] : [{ severity: "info", code: "LAYOUT_OK", title: T("Table de partitions cohérente", "Consistent partition table"), detail: T("Aucune incohérence trouvée.", "No inconsistency found."), blocking: false, scope: null, lba: null }];
       return { disk: d, findings, boot };
+    },
+    fix_boot: async ({ id }) => {
+      const d = disks.find((x) => x.id === id);
+      if (d.is_system) throw T("c'est le disque du Windows en cours d'exécution", "this is the disk of the running Windows");
+      for (const st of [T("Démarrage : Windows (UEFI / GPT)", "Boot: Windows (UEFI / GPT)"), T("Partition Windows : Z: — partition système : Y:", "Windows partition: Z: — system partition: Y:"), T("Pilotes activés au démarrage : stornvme, storahci", "Drivers enabled at boot: stornvme, storahci"), T("Configuration de démarrage mise à jour (bcdedit)", "Boot configuration updated (bcdedit)")]) { emit("fixboot-step", st); await wait(600); }
+      return { bcd_fixed: true, bcd_method: "bcdedit", drivers: ["stornvme", "storahci"], hibernation_cleared: Q.get("hiber") === "1", fallback_added: false, warnings: [], steps: [] };
     },
     add_image: async () => {
       const img = mk({ id: "image:d:\\images\\sauvegarde-portable.img", kind: "image", path: "D:\\Images\\sauvegarde-portable.img", number: null, model: "sauvegarde-portable.img", serial: "", bus: "Fichier", media: "image", size: 256060514304, physical_sector_size: 512, partitions: winParts(256060514304, 88 * GiB) });

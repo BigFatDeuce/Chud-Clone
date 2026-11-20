@@ -100,6 +100,8 @@ pub struct CloneSettings {
     pub verify: VerifyMode,
     pub unreadable: UnreadablePolicy,
     pub retries: u32,
+    /// Prepare a Windows clone to boot on another PC (see `chud_clone_core::bootprep`).
+    pub boot_prep: bool,
     /// Safely remove the destination disk after a usable clone.
     pub eject: bool,
     /// Shut the computer down when the clone is finished (cancellable countdown).
@@ -115,13 +117,14 @@ impl Default for CloneSettings {
             verify: VerifyMode::Hash,
             unreadable: UnreadablePolicy::Ask,
             retries: 3,
+            boot_prep: true,
             eject: false,
             shutdown: false,
         }
     }
 }
 
-pub const OPTION_ROWS: usize = 8;
+pub const OPTION_ROWS: usize = 9;
 /// Seconds left to cancel the shutdown requested at the end of a clone.
 pub const SHUTDOWN_DELAY: u64 = 60;
 
@@ -923,7 +926,8 @@ impl App {
             5 => {
                 s.retries = if forward { (s.retries + 1).min(10) } else { s.retries.saturating_sub(1) };
             }
-            6 => s.eject = !s.eject,
+            6 => s.boot_prep = !s.boot_prep,
+            7 => s.eject = !s.eject,
             _ => s.shutdown = !s.shutdown,
         }
     }
@@ -942,6 +946,7 @@ impl App {
             expected_source_fingerprint: Some(src.info.fingerprint.clone()),
             expected_destination_fingerprint: None,
             app_paths: self.app_paths.clone(),
+            prepare_boot: s.boot_prep,
         })
     }
 

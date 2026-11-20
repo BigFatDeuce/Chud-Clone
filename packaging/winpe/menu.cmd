@@ -81,11 +81,12 @@ echo     8. !T_8!
 echo     9. !T_9!
 echo     F. !T_F!
 echo     E. !T_E!
+echo     R. !T_R!
 echo.
 rem WinPE has no choice.exe: the answer is read with set /p.
 set "C="
 set /p "C=   !T_CHOICE! "
-for %%k in (0 1 2 3 4 5 6 7 8 9 F E) do if /i "!C!"=="%%k" goto choice%%k
+for %%k in (0 1 2 3 4 5 6 7 8 9 F E R) do if /i "!C!"=="%%k" goto choice%%k
 goto menu
 
 :choice0
@@ -204,6 +205,15 @@ echo.
 call :disk N "!T_ASK_EJECT!"
 if errorlevel 1 goto menu
 "%CLI%" eject disk:!N!
+goto pause
+
+:choiceR
+rem Boot repair of a Windows disk for another PC (BCD, storage drivers, hibernation).
+"%CLI%" list
+echo.
+call :disk N "!T_ASK_FIXBOOT!"
+if errorlevel 1 goto menu
+"%CLI%" fix-boot disk:!N!
 goto pause
 
 :pause

@@ -135,7 +135,7 @@ fn clone_scan_and_screens_on_images() {
     press(&mut app, KeyCode::Left);
     assert!(app.settings.optimize);
     // End-of-clone options: eject (nothing to eject for an image) and shutdown.
-    for _ in 0..6 {
+    for _ in 0..7 {
         press(&mut app, KeyCode::Down);
     }
     render_all_sizes(&mut app, "Shut the computer down when done");

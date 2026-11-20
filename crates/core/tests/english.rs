@@ -51,6 +51,7 @@ fn whole_job_speaks_english() {
         expected_source_fingerprint: None,
         expected_destination_fingerprint: None,
         app_paths: vec![],
+        prepare_boot: false,
     };
 
     let prep = prepare(&cfg, false).unwrap();

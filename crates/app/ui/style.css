@@ -460,3 +460,8 @@ button.qtab:hover { border-color: var(--line-strong); color: var(--text); }
 .ring svg { position: relative; z-index: 1; }
 .ring .txt { z-index: 2; text-shadow: 0 1px 2px rgba(5, 6, 13, 0.95), 0 0 12px rgba(5, 6, 13, 0.9); }
 .ring .ph { color: var(--text); }
+
+/* Boot repair block, under the disk's boot diagnostics. */
+.fixboot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.fixboot h3 { font-size: 14px; font-weight: 650; margin-bottom: 6px; }
+.fixboot ul { margin: 6px 0 0; padding-left: 18px; }

@@ -49,6 +49,7 @@ enum Activity {
     Cloning(RunningJob),
     Scanning(Arc<Control>),
     Formatting,
+    RepairingBoot,
     Updating,
 }
 
@@ -60,6 +61,7 @@ impl Activity {
             Activity::Cloning(_) => "cloning",
             Activity::Scanning(_) => "scanning",
             Activity::Formatting => "formatting",
+            Activity::RepairingBoot => "repairing_boot",
             Activity::Updating => "updating",
         }
     }
@@ -74,6 +76,7 @@ impl Activity {
                     chud_clone_core::t!("un test de surface est en cours : arrêtez-le d'abord", "a surface scan is running: stop it first")
                 }
                 Activity::Formatting => chud_clone_core::t!("un formatage est en cours", "a format is running"),
+                Activity::RepairingBoot => chud_clone_core::t!("une réparation du démarrage est en cours", "a boot repair is running"),
                 Activity::Updating => chud_clone_core::t!("une mise à jour est en cours d'installation", "an update is being installed"),
             }
             .to_string(),
@@ -82,7 +85,7 @@ impl Activity {
 
     /// Closing the window now would leave a disk half written.
     fn blocks_close(&self) -> bool {
-        matches!(self, Activity::Cloning(_) | Activity::Formatting)
+        matches!(self, Activity::Cloning(_) | Activity::Formatting | Activity::RepairingBoot)
     }
 }
 
@@ -361,6 +364,9 @@ struct CloneParams {
     /// Safely remove the destination disk after a successful clone.
     #[serde(default)]
     eject: bool,
+    /// Prepare a Windows clone to boot on another PC.
+    #[serde(default = "default_true")]
+    boot_prep: bool,
 }
 
 fn config(state: &Inner, p: &CloneParams) -> Result<JobConfig, String> {
@@ -378,6 +384,7 @@ fn config(state: &Inner, p: &CloneParams) -> Result<JobConfig, String> {
         expected_source_fingerprint: p.source_fingerprint.clone(),
         expected_destination_fingerprint: p.destination_fingerprint.clone(),
         app_paths: state.app_paths(),
+        prepare_boot: p.boot_prep,
     })
 }
 
@@ -687,6 +694,41 @@ async fn format_disk(
     result?
 }
 
+/// Repairs the boot of a Windows disk for another PC (BCD on its own partitions,
+/// storage drivers at boot, saved session cancelled). Erases nothing; refused on the
+/// disk of the running Windows.
+#[tauri::command]
+async fn fix_boot(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<chud_clone_core::bootprep::BootPrepOutcome, String> {
+    let (target, _) = state.target(&id)?;
+    let paths = state.app_paths();
+    let info = blocking({
+        let target = target.clone();
+        move || job::describe(&target, false, &paths, None)
+    })
+    .await??;
+    let number = info.number.ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être réparés", "only disks can be repaired").to_string())?;
+    if info.is_system {
+        return Err(chud_clone_core::t!(
+            "c'est le disque du Windows en cours d'exécution : sa configuration de démarrage ne se répare pas depuis lui-même",
+            "this is the disk of the running Windows: its boot configuration is not repaired from itself"
+        )
+        .into());
+    }
+    state.activity.begin(Activity::RepairingBoot)?;
+    let shared = state.inner().clone();
+    let result = blocking(move || {
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            chud_clone_core::bootprep::prepare_disk(number, &|s| {
+                let _ = app.emit("fixboot-step", s);
+            })
+        }));
+        out.unwrap_or_else(|_| Err(chud_clone_core::t!("erreur interne pendant la réparation", "internal error during the repair").into()))
+    })
+    .await;
+    shared.activity.end();
+    result?
+}
+
 #[tauri::command]
 fn cancel_scan(state: State<'_, Shared>) {
     if let Activity::Scanning(ctl) = &*state.activity.get() {
@@ -931,6 +973,7 @@ fn main() {
             add_image,
             add_new_image,
             remove_image,
+            fix_boot,
             inspect_disk,
             read_smart,
             disk_health,

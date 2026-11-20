@@ -43,6 +43,10 @@ repository's GitHub releases.
   file only takes the space of the data it holds. The report shows both sizes.
 - **Automatic growth**: on a larger disk the Windows partition (NTFS) is extended over the added
   space, after the copy has been verified.
+- **Clones that boot on another PC**: at the end of a Windows clone, a session saved by
+  hibernation or "fast startup" is cancelled and the standard NVMe and AHCI drivers are set to
+  start at boot, directly on the clone (see [Booting on another PC](#booting-on-another-pc)).
+  **Repair boot** fixes a disk that already stops at "Your PC needs to be repaired" (0xc000000e).
 - **Verification** after every copy (read-back with BLAKE3 checksums, or a full source/destination
   comparison) and a **report** in TXT, HTML and JSON.
 - **Unreadable sectors are never skipped silently**: the engine isolates damaged areas, retries
@@ -89,10 +93,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.7.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.7.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.7.0.txt` | Checksums of the files above. |
-| `ChudClone-0.7.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.8.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.8.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.8.0.txt` | Checksums of the files above. |
+| `ChudClone-0.8.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -166,6 +170,30 @@ and its backup at the end of the partition. No file data is moved.
   this is expected.
 - Can be turned off: "Grow the Windows partition" option, or `--no-grow` on the command line.
 
+## Booting on another PC
+
+A cloned Windows usually stops at a blue screen on its new PC for one of three reasons. Chud Clone
+handles each of them:
+
+| Cause | What you see | What Chud Clone does |
+| --- | --- | --- |
+| Windows was hibernated or shut down with **fast startup** (the default): it tries to resume a session saved on other hardware. | "Your PC needs to be repaired", or a resume error | The session is cancelled on the clone: the header of `hiberfil.sys` is cleared. Windows then starts normally. |
+| The new PC's **storage controller** (NVMe, or SATA in AHCI mode instead of RAID) needs a driver Windows does not load at boot. | `INACCESSIBLE_BOOT_DEVICE`, then the automatic repair screen | The `stornvme` and `storahci` drivers are set to start at boot in the clone's registry (and a `StartOverride` that disables them is cleared). |
+| The clone's **identifiers were changed** by Windows: it was brought "online" while the source was connected. Its boot configuration then points to partitions that no longer exist. | "Your PC needs to be repaired", 0xc000000e | **Repair boot** rewrites the boot configuration (BCD) so it designates the disk's own partitions, and adds the fallback UEFI loader if it is missing. |
+
+- The first two fixes are done **at the end of every Windows clone to a disk** ("Prepare boot for
+  another PC" option, on by default; `--no-boot-prep` on the command line). They are written
+  directly on the clone while Chud Clone still holds it, before Windows sees it: a few bytes are
+  changed in place, each one checked against what the file holds before writing. The source is
+  never modified.
+- While the source and the clone are connected together, Windows keeps the clone offline
+  ("signature collision"). **Do not bring it online** in Disk Management: Windows would change its
+  identifiers, which is the third cause above. Unplug the source first.
+- **Repair boot** (Disks page in the application, `fix-boot` on the command line, `R` on the WinPE
+  key) applies all three fixes to a disk. It erases nothing and never changes this PC's own boot
+  entries. On a disk Windows keeps offline it does the first two and explains why the boot
+  configuration is left alone.
+
 ## Command line
 
 `chud-clone-cli.exe` drives the same engine, with the same checks:
@@ -180,6 +208,7 @@ chud-clone-cli report <report.json> (--txt | --html) [--out <file>]
 chud-clone-cli tui [--reports <folder>] [--image <file>]... [--only-virtual]
 chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr] [--label <name>] --confirm-erase
 chud-clone-cli eject <disk:N>
+chud-clone-cli fix-boot <disk:N> [--json]
 ```
 
 `tui` opens a full-screen keyboard interface in the console, with the same steps as the
@@ -206,7 +235,7 @@ the source, then the destination, check the options and the review, type `ERASE`
 and follow the progress. The options include ejecting the destination and shutting the computer
 down when the clone is finished (60-second countdown, Esc cancels). It also reads SMART health,
 analyses a disk, runs the surface scan and formats a disk (`M`; `F` in the text menu). The text
-menu also ejects a USB disk (`E`).
+menu also ejects a USB disk (`E`) and repairs the boot of a Windows disk for another PC (`R`).
 `L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
 or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
 
@@ -221,7 +250,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 118 tests
+cargo test --workspace                                         # 124 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -260,13 +289,14 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 71 unit tests and 39 integration tests on **real disk images**
+- `crates/core`: 75 unit tests and 41 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
   unstable reads recovered, source disappearing, access denied, destination errors and removal,
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
-  growth, write failure during growth), surface scan, and a complete job in English.
+  growth, write failure during growth), boot preparation written in place (a real registry hive
+  placed in the Windows volume of a test image), surface scan, and a complete job in English.
 - `crates/cli`: 2 tests that drive the full-screen interface with keys on image files, checking
   after every key that the states that must go together still do: a complete
   clone (choice of a new image as destination, wrong then right confirmation word, verified
@@ -307,6 +337,11 @@ application.
 - BitLocker, ReFS, ext4, etc. are copied sector by sector (no smart copy).
 - The boot check verifies that boot elements are present (ESP, bootmgfw.efi, BCD, winload…); it is
   not an actual boot.
+- Boot preparation covers the standard Microsoft NVMe and AHCI drivers. A new PC whose controller
+  needs a vendor driver (Intel VMD/RST, some RAID cards) still needs that driver, or the
+  controller set to AHCI in the firmware settings.
+- A clone of a Windows that boots in legacy BIOS mode (MBR) only boots on a PC that still offers
+  "Legacy"/"CSM" mode; Chud Clone says so before cloning and points to `mbr2gpt`.
 
 ## License
 

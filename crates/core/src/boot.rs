@@ -63,6 +63,9 @@ pub struct BootAssessment {
     pub esp_partition: Option<u32>,
     pub checks: Vec<BootCheck>,
     pub findings: Vec<Finding>,
+    /// Windows was hibernated or shut down with "fast startup" (saved session).
+    #[serde(default)]
+    pub hibernated: bool,
 }
 
 fn bounds(sp: &SourcePartition, ss: u64) -> (u64, u64) {
@@ -103,7 +106,8 @@ fn find_windows(dev: &mut dyn BlockDevice, a: &DiskAnalysis, loader: &str) -> Op
 /// Examines the boot elements of an already analysed disk. Read-only.
 pub fn assess_boot(dev: &mut dyn BlockDevice, a: &DiskAnalysis) -> BootAssessment {
     let ss = a.sector_size as u64;
-    let mut out = BootAssessment { style: BootStyle::Unknown, windows_partition: None, esp_partition: None, checks: vec![], findings: vec![] };
+    let mut out =
+        BootAssessment { style: BootStyle::Unknown, windows_partition: None, esp_partition: None, checks: vec![], findings: vec![], hibernated: false };
     let check = |out: &mut BootAssessment, key: &str, label: &str, state: CheckState, required: bool| {
         out.checks.push(BootCheck { key: key.into(), label: label.into(), state, required });
     };
@@ -237,6 +241,22 @@ pub fn assess_boot(dev: &mut dyn BlockDevice, a: &DiskAnalysis) -> BootAssessmen
         }
     }
 
+    if out.style == BootStyle::WindowsBios {
+        out.findings.push(Finding::info(
+            "BOOT_LEGACY_BIOS",
+            t!("Windows démarre en mode BIOS hérité (MBR)", "Windows boots in legacy BIOS mode (MBR)"),
+            t!("Le clone démarrera seulement sur un PC qui propose encore le mode « Legacy » ou « CSM » dans ses réglages \
+             de démarrage ; beaucoup de PC récents ne l'ont plus. Pour un tel PC, démarrez une fois le clone ici, puis \
+             convertissez-le en UEFI avec « mbr2gpt /convert /allowFullOS » (invite de commandes administrateur).", "The clone will only boot on a PC that still offers \"Legacy\" or \"CSM\" mode in its boot settings; many recent PCs no longer do. For such a PC, boot the clone once here, then convert it to UEFI with \"mbr2gpt /convert /allowFullOS\" (administrator command prompt)."),
+        ));
+    }
+    if let Some(sp) = out.windows_partition.and_then(|n| a.parts.iter().find(|p| p.part.number == n)) {
+        let (base, len) = bounds(sp, ss);
+        // The finding itself comes from the NTFS analysis (NTFS_HIBERNATED).
+        if let Ok(Some(head)) = fs::ntfs::read_file(dev, base, len, &["hiberfil.sys"], crate::bootprep::HIBER_HEAD) {
+            out.hibernated = crate::bootprep::hiber_active(&head);
+        }
+    }
     for c in &out.checks {
         if c.required && c.state == CheckState::Missing {
             out.findings.push(Finding::error(

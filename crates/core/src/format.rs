@@ -504,7 +504,7 @@ fn wait_for_volume(number: u32) {
 
 /// Runs a `diskpart` script; its output is returned in the error when it fails.
 #[cfg(windows)]
-fn run_diskpart(script: &str) -> Result<String, String> {
+pub(crate) fn run_diskpart(script: &str) -> Result<String, String> {
     let dir = std::env::temp_dir();
     let file = dir.join(format!("chudclone-diskpart-{}.txt", std::process::id()));
     std::fs::write(&file, script).map_err(|e| tf!("script diskpart : {e}", "diskpart script: {e}"))?;

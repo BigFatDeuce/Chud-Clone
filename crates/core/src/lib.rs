@@ -31,6 +31,7 @@ pub mod i18n;
 
 pub mod awake;
 pub mod boot;
+pub mod bootprep;
 pub mod clone;
 pub mod device;
 pub mod diag;

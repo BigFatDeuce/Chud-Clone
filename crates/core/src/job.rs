@@ -67,6 +67,10 @@ pub struct JobConfig {
     pub expected_destination_fingerprint: Option<String>,
     /// Program folders to protect (never on the destination).
     pub app_paths: Vec<String>,
+    /// After a Windows clone on a disk: prepare it to boot on another PC (BCD on its own
+    /// partitions, storage drivers at boot, saved session cancelled). See
+    /// [`crate::bootprep`].
+    pub prepare_boot: bool,
 }
 
 /// Everything shown to the user before confirmation. Read-only.
@@ -526,7 +530,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         );
     }
 
-    let outcome = run_clone(CloneRequest {
+    let mut outcome = run_clone(CloneRequest {
         src: opened.src.as_mut(),
         dst: opened.dst.as_mut(),
         src_analysis: &analysis,
@@ -536,7 +540,38 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         obs: &journal,
     });
 
-    // 6. Windows re-reads the destination's partition table.
+    // 6. Boot preparation for another PC (Windows clones on a disk), written in place
+    // while the destination is still held: Windows has not seen the clone yet, and a
+    // clone it later keeps offline (same identifiers as the source) is prepared too.
+    if matches!(cfg.destination, Target::Disk(_))
+        && cfg.prepare_boot
+        && matches!(boot_src.style, crate::boot::BootStyle::WindowsUefi | crate::boot::BootStyle::WindowsBios)
+        && matches!(outcome.status, crate::clone::FinalStatus::SuccessVerified | crate::clone::FinalStatus::CompletedWithWarnings)
+        && let Some(pp) = boot_src.windows_partition.and_then(|n| plan.partitions.iter().find(|p| p.number == n))
+    {
+        journal.note(LogLevel::Info, t!("Préparation du démarrage pour un autre PC", "Preparing boot for another PC"));
+        let mut prep = crate::bootprep::BootPrepOutcome::default();
+        crate::bootprep::prepare_volume(opened.dst.as_mut(), pp.dst_start, pp.dst_len, &mut prep, &|s| {
+            journal.note(LogLevel::Info, &format!("  · {s}"))
+        });
+        if prep.warnings.is_empty() {
+            journal.note(LogLevel::Info, &tf!("Démarrage préparé : {}", "Boot prepared: {}", prep.summary()));
+        } else {
+            for w in &prep.warnings {
+                journal.note(LogLevel::Warning, w);
+            }
+            outcome.reasons.push(tf!(
+                "Préparation du démarrage incomplète : {}. Les données copiées ne sont pas en cause ; « Réparer le démarrage » peut être relancé sur le clone.",
+                "Boot preparation incomplete: {}. The copied data is not affected; \"Repair boot\" can be run again on the clone.",
+                prep.warnings.join(" ; ")
+            ));
+            if outcome.status == crate::clone::FinalStatus::SuccessVerified {
+                outcome.status = crate::clone::FinalStatus::CompletedWithWarnings;
+            }
+        }
+    }
+
+    // 7. Windows re-reads the destination's partition table.
     #[cfg(windows)]
     if let Some(n) = opened.dst_number {
         match crate::win::rawdisk::RawDisk::open_read_write(&format!(r"\\.\PhysicalDrive{n}")).and_then(|d| crate::win::rawdisk::refresh_disk(&d)) {

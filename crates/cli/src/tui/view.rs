@@ -511,6 +511,14 @@ fn option_rows(app: &App) -> Vec<(&'static str, String, &'static str)> {
             t!("Tentatives supplémentaires sur un secteur difficile à lire (0 à 10).", "Extra attempts on a sector that is hard to read (0 to 10)."),
         ),
         (
+            t!("Préparer le démarrage pour un autre PC", "Prepare boot for another PC"),
+            yes_no(s.boot_prep),
+            t!(
+                "Clone de Windows : la configuration de démarrage désigne les partitions du clone, les pilotes NVMe et AHCI démarrent avec Windows et une session en veille prolongée est annulée. Évite « Votre PC doit être réparé » sur le nouveau PC.",
+                "Windows clone: the boot configuration designates the clone's partitions, the NVMe and AHCI drivers start with Windows and a hibernated session is cancelled. Avoids \"Your PC needs to be repaired\" on the new PC."
+            ),
+        ),
+        (
             t!("Éjecter la destination à la fin", "Eject the destination when done"),
             yes_no(s.eject),
             t!(
