@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-3a7bff">
   <img alt="Language" src="https://img.shields.io/badge/written%20in-Rust-b7410e">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-4fe3ff">
+  <img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-4fe3ff">
   <img alt="Languages" src="https://img.shields.io/badge/UI-English%20%7C%20Fran%C3%A7ais-9a6bff">
 </p>
 
@@ -372,5 +372,5 @@ application.
 
 ## License
 
-[MIT](LICENSE). Third-party components and fonts are listed with their licenses in the
-`licenses` folder of each release.
+© 2026 BigFatDeuce. The code is free software under the [GPL-3.0-or-later](LICENSE): you can use, study, share and modify it, and versions you distribute must stay under the same licence.
+Third-party components and fonts keep their own licenses, listed in the `licenses` folder of each release.

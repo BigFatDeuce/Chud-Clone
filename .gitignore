@@ -5,3 +5,9 @@
 /crates/app/gen
 .claude/
 /crates/*/Cargo.lock
+
+# Local assistant notes, never published
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
