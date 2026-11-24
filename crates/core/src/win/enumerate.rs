@@ -9,7 +9,7 @@ use super::rawdisk::{RawDisk, query_geometry, query_sector_sizes};
 use super::{Access, Handle, from_wide, ioctl, open_device, u32le, u64le, wide};
 use crate::guid::Guid;
 use crate::image::partition_infos;
-use crate::model::{DiskInfo, DiskKind, MediaKind, PartitionInfo, fingerprint};
+use crate::model::{DiskInfo, DiskKind, MediaKind, PartitionInfo, disk_fingerprint};
 use crate::partition::{PartRole, TableKind, gpt_role, gpt_type_label, mbr_role, mbr_type_label};
 use crate::plan::analyze_disk;
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, INVALID_HANDLE_VALUE};
@@ -287,19 +287,45 @@ pub fn volumes_of_disk(number: u32) -> Vec<(String, String)> {
         .collect()
 }
 
-fn layout_partitions(h: &Handle, number: u32, sector: u32, volumes: &[VolumeRec]) -> (TableKind, Vec<PartitionInfo>, Vec<String>) {
+/// Identity of a partition layout (`DRIVE_LAYOUT_INFORMATION_EX`): style, MBR disk
+/// signature or GPT disk GUID, and the position of every partition. Part of a disk's
+/// fingerprint: two identical disks without a serial number (cheap USB keys, some
+/// bridges) are told apart by their tables, which nothing changes between the moment a
+/// disk is chosen and the moment it is written.
+pub(crate) fn layout_key(buf: &[u8]) -> String {
+    if buf.len() < 48 {
+        return String::new();
+    }
+    let style = u32le(buf, 0);
+    let id = match style {
+        0 => format!("{:08x}", u32le(buf, 8)),
+        1 => buf[8..24].iter().map(|b| format!("{b:02x}")).collect(),
+        _ => String::new(),
+    };
+    let mut key = format!("{style}:{id}");
+    for e in buf[48..].chunks_exact(144).take(u32le(buf, 4) as usize) {
+        let (offset, size) = (u64le(e, 8), u64le(e, 16));
+        if size != 0 {
+            key.push_str(&format!(":{offset:x}+{size:x}"));
+        }
+    }
+    key
+}
+
+fn layout_partitions(h: &Handle, number: u32, sector: u32, volumes: &[VolumeRec]) -> (TableKind, Vec<PartitionInfo>, Vec<String>, String) {
     let mut notes = Vec::new();
     let mut buf = vec![0u8; 48 + 144 * 256];
     let n = match ioctl(h, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], &mut buf) {
         Ok(n) => n,
         Err(e) => {
             notes.push(tf!("Table de partitions non communiquée par Windows ({e}).", "Partition table not reported by Windows ({e})."));
-            return (TableKind::None, vec![], notes);
+            return (TableKind::None, vec![], notes, String::new());
         }
     };
     if n < 48 {
-        return (TableKind::None, vec![], notes);
+        return (TableKind::None, vec![], notes, String::new());
     }
+    let key = layout_key(&buf[..n]);
     let style = u32le(&buf, 0);
     let count = u32le(&buf, 4) as usize;
     let table = match style {
@@ -359,7 +385,7 @@ fn layout_partitions(h: &Handle, number: u32, sector: u32, volumes: &[VolumeRec]
     }
     let _ = sector;
     parts.sort_by_key(|p| p.offset);
-    (table, parts, notes)
+    (table, parts, notes, key)
 }
 
 /// Describes the disk `\\.\PhysicalDrive<number>`, or `None` if it does not exist.
@@ -449,7 +475,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
     };
 
     let scsi_address = scsi_address(&h);
-    let (table, mut partitions, lnotes) = layout_partitions(&h, number, sector, volumes);
+    let (table, mut partitions, lnotes, layout) = layout_partitions(&h, number, sector, volumes);
     notes.extend(lnotes);
     drop(h);
 
@@ -501,7 +527,7 @@ fn describe(number: u32, volumes: &[VolumeRec], system: &[u32], app: &[u32], dee
     Some(DiskInfo {
         id: format!("disk:{number}"),
         kind: DiskKind::Physical,
-        fingerprint: fingerprint(&display_model, &serial, size, &bus_s, sector),
+        fingerprint: disk_fingerprint(&display_model, &serial, size, &bus_s, sector, &layout),
         path,
         number: Some(number),
         model: display_model,
@@ -589,6 +615,36 @@ mod tests {
         assert_eq!(prefixed, disks);
         assert_eq!(missing, disks, "a file to be created is located by its folder");
         assert_eq!(of_dir, disks);
+    }
+
+    fn layout(style: u32, id: &[u8], parts: &[(u64, u64)]) -> Vec<u8> {
+        let mut b = vec![0u8; 48 + 144 * parts.len()];
+        b[0..4].copy_from_slice(&style.to_le_bytes());
+        b[4..8].copy_from_slice(&(parts.len() as u32).to_le_bytes());
+        b[8..8 + id.len()].copy_from_slice(id);
+        for (i, (o, s)) in parts.iter().enumerate() {
+            b[48 + i * 144 + 8..48 + i * 144 + 16].copy_from_slice(&o.to_le_bytes());
+            b[48 + i * 144 + 16..48 + i * 144 + 24].copy_from_slice(&s.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn layout_key_tells_identical_disks_apart() {
+        let a = layout(0, &[1, 2, 3, 4], &[(1 << 20, 1 << 30)]);
+        assert_eq!(layout_key(&a), layout_key(&a.clone()));
+        // Other MBR signature, other partition, other GPT disk GUID: other key.
+        assert_ne!(layout_key(&a), layout_key(&layout(0, &[9, 2, 3, 4], &[(1 << 20, 1 << 30)])));
+        assert_ne!(layout_key(&a), layout_key(&layout(0, &[1, 2, 3, 4], &[(2 << 20, 1 << 30)])));
+        let g1 = layout(1, &[7; 16], &[(1 << 20, 100 << 20), (101 << 20, 1 << 30)]);
+        let g2 = layout(1, &[8; 16], &[(1 << 20, 100 << 20), (101 << 20, 1 << 30)]);
+        assert_ne!(layout_key(&g1), layout_key(&g2));
+        // Empty slots of an MBR table do not count; a truncated buffer gives no key.
+        assert_eq!(layout_key(&layout(0, &[1, 2, 3, 4], &[(1 << 20, 1 << 30), (0, 0)])), layout_key(&a));
+        assert_eq!(layout_key(&a[..20]), "");
+        // The fingerprint follows the layout.
+        let fp = |l: &[u8]| disk_fingerprint("USB DISK", "", 16 << 30, "USB", 512, &layout_key(l));
+        assert_ne!(fp(&a), fp(&layout(0, &[9, 2, 3, 4], &[(1 << 20, 1 << 30)])));
     }
 
     #[test]

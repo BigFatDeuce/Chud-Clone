@@ -182,6 +182,16 @@ pub fn fingerprint(model: &str, serial: &str, size: u64, bus: &str, sector: u32)
     blake3::hash(text.as_bytes()).to_hex()[..16].to_string()
 }
 
+/// Fingerprint of a physical disk: its identity plus the identity of its partition
+/// layout (disk signature or GUID, partition positions). Many USB keys and bridges
+/// report no serial number, or the same one for every unit: two such disks of the same
+/// model and size differ by their tables, which nothing changes between the choice of a
+/// disk and the write.
+pub fn disk_fingerprint(model: &str, serial: &str, size: u64, bus: &str, sector: u32, layout: &str) -> String {
+    let text = format!("{}|{}|{}|{}|{}|{}", model.trim(), serial.trim(), size, bus, sector, layout);
+    blake3::hash(text.as_bytes()).to_hex()[..16].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

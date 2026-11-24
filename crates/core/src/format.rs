@@ -384,10 +384,10 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
     let label = validate_label(req.fs, &req.label)?;
     let req = FormatRequest { label: label.clone(), ..req.clone() };
     let disk = disk_by_number(number, false, app_paths).ok_or_else(|| tf!("disque {number} introuvable", "disk {number} not found"))?;
-    if disk.fingerprint != expected_fingerprint {
+    if !crate::job::same_fingerprint(expected_fingerprint, &disk.fingerprint) {
         return Err(t!(
-            "le disque n'est plus celui qui avait été choisi (modèle, numéro de série ou taille différents). Rien n'a été écrit.",
-            "the disk is no longer the one that was chosen (different model, serial number or size). Nothing was written."
+            "le disque n'est plus celui qui avait été choisi (modèle, numéro de série, taille ou partitions différents). Rien n'a été écrit.",
+            "the disk is no longer the one that was chosen (different model, serial number, size or partitions). Nothing was written."
         )
         .into());
     }

@@ -698,7 +698,12 @@ async fn format_disk(
 /// storage drivers at boot, saved session cancelled). Erases nothing; refused on the
 /// disk of the running Windows.
 #[tauri::command]
-async fn fix_boot(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<chud_clone_core::bootprep::BootPrepOutcome, String> {
+async fn fix_boot(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    id: String,
+    fingerprint: String,
+) -> Result<chud_clone_core::bootprep::BootPrepOutcome, String> {
     let (target, _) = state.target(&id)?;
     let paths = state.app_paths();
     let info = blocking({
@@ -707,6 +712,15 @@ async fn fix_boot(app: AppHandle, state: State<'_, Shared>, id: String) -> Resul
     })
     .await??;
     let number = info.number.ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être réparés", "only disks can be repaired").to_string())?;
+    // Disk numbers change when disks are plugged in or out: the disk read again now must
+    // be the one shown when the button was pressed.
+    if !job::same_fingerprint(&fingerprint, &info.fingerprint) {
+        return Err(chud_clone_core::t!(
+            "ce disque n'est plus celui qui était affiché (disques débranchés ou rebranchés ?). Actualisez la liste des disques. Rien n'a été modifié.",
+            "this disk is no longer the one that was displayed (disks unplugged or plugged in?). Refresh the list of disks. Nothing was changed."
+        )
+        .into());
+    }
     if info.is_system {
         return Err(chud_clone_core::t!(
             "c'est le disque du Windows en cours d'exécution : sa configuration de démarrage ne se répare pas depuis lui-même",

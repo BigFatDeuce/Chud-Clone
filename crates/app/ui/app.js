@@ -1353,7 +1353,7 @@ const actions = {
     if (busy()) return;
     S.fix[id] = { busy: true, steps: [] }; S.fixing = id; render();
     try {
-      S.fix[id].result = await api.invoke("fix_boot", { id });
+      S.fix[id].result = await api.invoke("fix_boot", { id, fingerprint: S.disks.find((d) => d.id === id)?.fingerprint ?? "" });
       // The BCD and the volumes changed: read the boot elements again.
       try { S.inspect[id] = await api.invoke("inspect_disk", { id }); } catch { /* the previous analysis stays */ }
     } catch (e) { S.fix[id].error = typeof e === "string" ? e : String(e); }

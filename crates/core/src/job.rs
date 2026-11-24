@@ -460,11 +460,11 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     // 1. Disk identities, read again now.
     let source = describe(&cfg.source, true, &cfg.app_paths, None).map_err(fail)?;
     if let Some(fp) = &cfg.expected_source_fingerprint
-        && *fp != source.fingerprint
+        && !same_fingerprint(fp, &source.fingerprint)
     {
         return Err(fail(t!(
-            "le disque source n'est plus celui qui avait été sélectionné (modèle, numéro de série ou taille différents). Opération annulée, rien n'a été écrit.",
-            "the source disk is no longer the one that was selected (different model, serial number or size). Operation cancelled, nothing was written."
+            "le disque source n'est plus celui qui avait été sélectionné (modèle, numéro de série, taille ou partitions différents). Opération annulée, rien n'a été écrit.",
+            "the source disk is no longer the one that was selected (different model, serial number, size or partitions). Operation cancelled, nothing was written."
         )));
     }
     journal.note(
@@ -501,11 +501,11 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     let wanted_size = cfg.new_image_size.unwrap_or_else(|| crate::plan::minimal_destination_size(&analysis, 512, &cfg.plan));
     let destination = describe(&cfg.destination, true, &cfg.app_paths, Some(wanted_size)).map_err(fail)?;
     if let Some(fp) = &cfg.expected_destination_fingerprint
-        && *fp != destination.fingerprint
+        && !same_fingerprint(fp, &destination.fingerprint)
     {
         return Err(fail(t!(
-            "le disque de destination n'est plus celui qui avait été sélectionné (modèle, numéro de série ou taille différents). Opération annulée, rien n'a été écrit.",
-            "the destination disk is no longer the one that was selected (different model, serial number or size). Operation cancelled, nothing was written."
+            "le disque de destination n'est plus celui qui avait été sélectionné (modèle, numéro de série, taille ou partitions différents). Opération annulée, rien n'a été écrit.",
+            "the destination disk is no longer the one that was selected (different model, serial number, size or partitions). Operation cancelled, nothing was written."
         )));
     }
     journal.note(
@@ -701,6 +701,13 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     Ok(report)
 }
 
+/// True if a disk read again now has the fingerprint taken when it was chosen. An empty
+/// fingerprint (disk whose identity Windows did not report) never matches: nothing
+/// proves it is the same disk.
+pub fn same_fingerprint(expected: &str, current: &str) -> bool {
+    !expected.is_empty() && expected == current
+}
+
 fn serial_text(d: &DiskInfo) -> String {
     if d.serial.trim().is_empty() {
         if d.kind == crate::model::DiskKind::Image {
@@ -748,6 +755,13 @@ fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool, s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_fingerprints_never_match() {
+        assert!(same_fingerprint("0123456789abcdef", "0123456789abcdef"));
+        assert!(!same_fingerprint("0123456789abcdef", "fedcba9876543210"));
+        assert!(!same_fingerprint("", ""));
+    }
 
     #[test]
     fn target_parsing() {
