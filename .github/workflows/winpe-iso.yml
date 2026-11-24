@@ -31,7 +31,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a commit: a moved tag cannot change what runs with write access.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.ref || inputs.tag }}
 
@@ -45,8 +46,15 @@ jobs:
         shell: pwsh
         run: |
           $v = $env:TAG.TrimStart('v')
-          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern "ChudClone-$v-portable.zip" --dir rel
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern "ChudClone-$v-portable.zip" --pattern "SHA256SUMS-$v.txt" --dir rel
           if ($LASTEXITCODE -ne 0) { throw 'download failed' }
+          # The ISO must carry exactly the published binary: the archive is checked
+          # against the release's checksum file before it is used.
+          $line = Get-Content "rel\SHA256SUMS-$v.txt" | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?ChudClone-$([regex]::Escape($v))-portable\.zip$" } | Select-Object -First 1
+          if (-not $line) { throw 'portable archive missing from the checksum file' }
+          $expected = ($line -split '\s+')[0].ToLower()
+          $actual = (Get-FileHash -Algorithm SHA256 "rel\ChudClone-$v-portable.zip").Hash.ToLower()
+          if ($actual -ne $expected) { throw "portable archive checksum mismatch: $actual, expected $expected" }
           Expand-Archive "rel\ChudClone-$v-portable.zip" rel
           "CLI=$PWD\rel\ChudClone-$v-portable\chud-clone-cli.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
