@@ -9,6 +9,13 @@
 //! SHA-256 checksum published with the release. A release without a checksum file is
 //! never installed automatically: the user is sent to the release page instead.
 //!
+//! The application runs as administrator, so the installer it starts runs as
+//! administrator too, without a UAC prompt. The package must therefore never be
+//! replaceable by a program running without those rights between its verification and
+//! its launch: it is downloaded into the installation folder (writable by
+//! administrators only), held open without write sharing while it is written, and its
+//! checksum is computed on the file itself, read back, not on the network stream.
+//!
 //! Three installation kinds are handled:
 //! - installed (Inno Setup uninstaller next to the executable): the new installer runs
 //!   silently, keeps the installation folder and restarts the application;
@@ -135,8 +142,10 @@ fn parse_release(json: &serde_json::Value, current: &str, method: Method) -> Res
         Method::Portable => Some("-portable.zip"),
         Method::Manual => None,
     };
-    let package = suffix.and_then(|suf| assets.iter().find(|a| a.name.starts_with("ChudClone-") && a.name.ends_with(suf)).cloned());
-    let sums = assets.iter().find(|a| a.name.starts_with("SHA256SUMS")).cloned();
+    let package = suffix.and_then(|suf| {
+        assets.iter().find(|a| a.name.starts_with("ChudClone-") && a.name.ends_with(suf) && is_release_asset(&a.url)).cloned()
+    });
+    let sums = assets.iter().find(|a| a.name.starts_with("SHA256SUMS") && is_release_asset(&a.url)).cloned();
     // Without a checksum file, nothing is installed automatically.
     let method = if package.is_some() && sums.is_some() { method } else { Method::Manual };
     let mut title = s("name");
@@ -171,19 +180,37 @@ pub fn check(portable: bool) -> Result<UpdateInfo, String> {
     parse_release(&json, chud_clone_core::APP_VERSION, method(portable))
 }
 
+/// True if `url` is a file published in one of the project's releases. Anything else in
+/// the API response (another repository, another host) is ignored.
+fn is_release_asset(url: &str) -> bool {
+    url.strip_prefix(&format!("https://github.com/{REPOSITORY}/releases/download/"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains("..") && !rest.contains(['\\', '?', '#']))
+}
+
 /// Download progress: (phase, bytes done, bytes expected).
 pub type ProgressFn<'a> = &'a dyn Fn(&'static str, u64, u64);
 
 /// Folder that receives the downloaded packages.
-fn work_dir() -> PathBuf {
-    std::env::temp_dir().join("ChudClone-update")
+///
+/// For an installed copy: a folder inside the installation folder, which only
+/// administrators can write to (Program Files). The user's temporary folder would not
+/// do: any program of the session can write there, and the installer is started with
+/// administrator rights. A portable copy lives in a folder the user controls anyway.
+fn work_dir_for(method: Method) -> PathBuf {
+    match (method, exe_dir()) {
+        (Method::Installer, Some(dir)) => dir.join("update"),
+        _ => std::env::temp_dir().join("ChudClone-update"),
+    }
 }
 
 /// Removes what a previous update left behind (downloaded packages, replaced
 /// executables of a portable copy). Errors are ignored: a file still in use is simply
 /// removed on a later start.
 pub fn cleanup(portable: bool) {
-    let _ = std::fs::remove_dir_all(work_dir());
+    let _ = std::fs::remove_dir_all(work_dir_for(Method::Portable));
+    if !portable && exe_dir().is_some_and(|d| d.join("unins000.exe").is_file()) {
+        let _ = std::fs::remove_dir_all(work_dir_for(Method::Installer));
+    }
     if portable && let Some(dir) = exe_dir() {
         for name in ["chud-clone.exe.old", "chud-clone-cli.exe.old"] {
             let _ = std::fs::remove_file(dir.join(name));
@@ -209,7 +236,7 @@ pub fn download(info: &UpdateInfo, progress: ProgressFn) -> Result<PathBuf, Stri
     if pkg.name.contains(['/', '\\', ':']) || pkg.name.contains("..") {
         return Err(t!("nom de fichier inattendu dans la publication", "unexpected file name in the release").into());
     }
-    let dir = work_dir().join(&info.latest);
+    let dir = work_dir_for(info.method).join(&info.latest);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| tf!("dossier temporaire inaccessible : {e}", "temporary folder unavailable: {e}"))?;
 
@@ -222,25 +249,26 @@ pub fn download(info: &UpdateInfo, progress: ProgressFn) -> Result<PathBuf, Stri
         .ok_or_else(|| tf!("somme de contrôle de {} absente de la publication", "checksum of {} missing from the release", pkg.name))?;
 
     let path = dir.join(&pkg.name);
-    let mut file = std::fs::File::create(&path).map_err(|e| tf!("écriture impossible : {e}", "cannot write: {e}"))?;
-    let mut hasher = Sha256::new();
+    let mut file = create_package(&path).map_err(|e| tf!("écriture impossible : {e}", "cannot write: {e}"))?;
     let mut done = 0u64;
     let total = pkg.size;
     progress("download", 0, total);
     let result = http::get(&pkg.url, "application/octet-stream", MAX_PACKAGE_BYTES, &mut |c| {
-        hasher.update(c);
         file.write_all(c).map_err(|e| tf!("écriture impossible : {e}", "cannot write: {e}"))?;
         done += c.len() as u64;
         progress("download", done, total);
         Ok(())
     });
-    drop(file);
     if let Err(e) = result {
+        drop(file);
         let _ = std::fs::remove_file(&path);
         return Err(e);
     }
     progress("verify", done, total);
-    let got: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    // The checksum of what is on disk, read back through the handle that kept every
+    // other writer out: that is the file that will be started.
+    let got = file.sync_all().and_then(|_| sha256_of(&mut file)).map_err(|e| tf!("vérification impossible : {e}", "cannot verify: {e}"))?;
+    drop(file);
     if got != expected || (total > 0 && done != total) {
         let _ = std::fs::remove_file(&path);
         return Err(t!(
@@ -250,6 +278,35 @@ pub fn download(info: &UpdateInfo, progress: ProgressFn) -> Result<PathBuf, Stri
         .into());
     }
     Ok(path)
+}
+
+/// Creates the file that receives a package, open for reading and writing and shared for
+/// reading only: no other program can write to it or replace it while it is filled.
+fn create_package(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        opts.share_mode(1); // FILE_SHARE_READ
+    }
+    opts.open(path)
+}
+
+/// SHA-256 (lowercase hexadecimal) of a whole open file, read from its start.
+fn sha256_of(file: &mut std::fs::File) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Starts the downloaded installer: silent installation in the same folder, then
@@ -506,6 +563,8 @@ mod tests {
         assert!(!is_newer("garbage", "0.1.0"));
     }
 
+    const DL: &str = "https://github.com/BigFatDeuce/Chud-Clone/releases/download/v9.1.0";
+
     fn release() -> serde_json::Value {
         serde_json::json!({
             "tag_name": "v9.1.0",
@@ -514,9 +573,9 @@ mod tests {
             "published_at": "2026-11-13T12:00:00Z",
             "html_url": format!("https://github.com/{REPOSITORY}/releases/tag/v9.1.0"),
             "assets": [
-                { "name": "ChudClone-9.1.0-setup.exe", "browser_download_url": "https://example.invalid/s.exe", "size": 100 },
-                { "name": "ChudClone-9.1.0-portable.zip", "browser_download_url": "https://example.invalid/p.zip", "size": 200 },
-                { "name": "SHA256SUMS-9.1.0.txt", "browser_download_url": "https://example.invalid/sums", "size": 10 }
+                { "name": "ChudClone-9.1.0-setup.exe", "browser_download_url": format!("{DL}/ChudClone-9.1.0-setup.exe"), "size": 100 },
+                { "name": "ChudClone-9.1.0-portable.zip", "browser_download_url": format!("{DL}/ChudClone-9.1.0-portable.zip"), "size": 200 },
+                { "name": "SHA256SUMS-9.1.0.txt", "browser_download_url": format!("{DL}/SHA256SUMS-9.1.0.txt"), "size": 10 }
             ]
         })
     }
@@ -557,6 +616,48 @@ mod tests {
         println!("{i:?}");
         assert!(parse_version(&i.latest).is_some());
         assert!(i.page_url.starts_with(&format!("https://github.com/{REPOSITORY}/releases/")));
+    }
+
+    #[test]
+    fn only_assets_of_the_project_releases_are_downloaded() {
+        let base = format!("https://github.com/{REPOSITORY}/releases/download");
+        assert!(is_release_asset(&format!("{base}/v9.1.0/ChudClone-9.1.0-setup.exe")));
+        for bad in [
+            "https://example.invalid/s.exe".to_string(),
+            "http://github.com/BigFatDeuce/Chud-Clone/releases/download/v1/x.exe".into(),
+            "https://github.com/someone/Chud-Clone/releases/download/v1/x.exe".into(),
+            format!("https://github.com/{REPOSITORY}/releases/download/"),
+            format!("https://github.com/{REPOSITORY}/releases/download/../../x/y.exe"),
+            format!("https://github.com/{REPOSITORY}/releases/download.evil.example/x.exe"),
+        ] {
+            assert!(!is_release_asset(&bad), "{bad}");
+        }
+        // A release whose files point elsewhere is not installed automatically.
+        let mut r = release();
+        for a in r["assets"].as_array_mut().unwrap() {
+            let name = a["name"].as_str().unwrap().to_string();
+            a["browser_download_url"] = format!("https://example.invalid/{name}").into();
+        }
+        assert_eq!(parse_release(&r, "0.2.0", Method::Installer).unwrap().method, Method::Manual);
+    }
+
+    /// While a package is written, no other program can open it for writing; its
+    /// checksum is the one of the bytes on disk.
+    #[test]
+    fn package_file_is_locked_against_other_writers() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("chudclone-pkg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ChudClone-9.9.9-setup.exe");
+        let mut f = create_package(&path).unwrap();
+        f.write_all(b"abc").unwrap();
+        #[cfg(windows)]
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err(), "another writer got in");
+        assert!(std::fs::File::open(&path).is_ok(), "reading stays possible");
+        // SHA-256("abc")
+        assert_eq!(sha256_of(&mut f).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        drop(f);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
