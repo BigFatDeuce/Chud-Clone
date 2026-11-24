@@ -11,6 +11,10 @@ chcp 65001 <nul >nul
 setlocal EnableExtensions EnableDelayedExpansion
 set "HOME=%~dp0"
 set "CLI=%HOME%chud-clone-cli.exe"
+rem Disks shown before a confirmation (fingerprints, written by "list" or "plan"): the
+rem operation confirmed afterwards is refused if one of them is no longer the disk that
+rem was shown (a USB key swapped for another one takes the same number).
+set "SHOWN=%TEMP%\chud-clone-shown.txt"
 set "LNG=en"
 if exist "%HOME%lang.txt" set /p LNG=<"%HOME%lang.txt"
 if /i not "!LNG!"=="fr" set "LNG=en"
@@ -117,7 +121,8 @@ goto pause
 :choice5
 call :pair
 if errorlevel 1 goto menu
-"%CLI%" plan disk:!S! disk:!D!
+if exist "%SHOWN%" del /q "%SHOWN%"
+"%CLI%" plan disk:!S! disk:!D! --save-identity "%SHOWN%"
 if errorlevel 1 (
   echo.
   echo   !T_BLOCKED!
@@ -138,7 +143,7 @@ if /i not "!OK!"=="!T_WORD!" (
   echo   !T_ABORTED!
   goto pause
 )
-"%CLI%" clone disk:!S! disk:!D! --confirm-erase --reports "%REP%"
+"%CLI%" clone disk:!S! disk:!D! --confirm-erase --reports "%REP%" --expect-identity "%SHOWN%"
 echo.
 echo   !T_SAVED! %REP%
 goto pause
@@ -170,7 +175,8 @@ goto menu
 
 :choiceF
 rem Whole-disk format: new table (GPT), one partition, a file system and a name.
-"%CLI%" list
+if exist "%SHOWN%" del /q "%SHOWN%"
+"%CLI%" list --save-identity "%SHOWN%"
 echo.
 call :disk N "!T_ASK_FORMAT!"
 if errorlevel 1 goto menu
@@ -195,25 +201,27 @@ if /i not "!OK!"=="!T_WORD!" (
   echo   !T_FABORTED!
   goto pause
 )
-"%CLI%" format disk:!N! --fs !FS! --label "!LBL!" --confirm-erase
+"%CLI%" format disk:!N! --fs !FS! --label "!LBL!" --confirm-erase --expect-identity "%SHOWN%"
 goto pause
 
 :choiceE
 rem Safe removal of a USB disk (the destination of a clone, for instance).
-"%CLI%" list
+if exist "%SHOWN%" del /q "%SHOWN%"
+"%CLI%" list --save-identity "%SHOWN%"
 echo.
 call :disk N "!T_ASK_EJECT!"
 if errorlevel 1 goto menu
-"%CLI%" eject disk:!N!
+"%CLI%" eject disk:!N! --expect-identity "%SHOWN%"
 goto pause
 
 :choiceR
 rem Boot repair of a Windows disk for another PC (BCD, storage drivers, hibernation).
-"%CLI%" list
+if exist "%SHOWN%" del /q "%SHOWN%"
+"%CLI%" list --save-identity "%SHOWN%"
 echo.
 call :disk N "!T_ASK_FIXBOOT!"
 if errorlevel 1 goto menu
-"%CLI%" fix-boot disk:!N!
+"%CLI%" fix-boot disk:!N! --expect-identity "%SHOWN%"
 goto pause
 
 :pause

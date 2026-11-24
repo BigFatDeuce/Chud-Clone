@@ -180,3 +180,8 @@ A loop between the full-screen interface and the text menu, driven by the exit c
 | 21 | text menu |
 | 22 | restart |
 | 23 | shut down (also used by "shut down when done") |
+
+In the text menu, every operation that writes or ejects follows the same steps: the disks are
+shown (`list`, or `plan` for a clone) and recorded with `--save-identity`, the user confirms,
+then the operation runs with `--expect-identity` and is refused if a disk is no longer the one
+shown (`job::check_shown_disks`).

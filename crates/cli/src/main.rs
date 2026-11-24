@@ -84,6 +84,13 @@ OPTIONS DE CLONAGE
                                  autre PC (voir fix-boot ; fait par défaut)
   --json                         sortie JSON
 
+CONFIRMATION APRÈS AFFICHAGE (menu texte de la clé de secours)
+  --save-identity <fichier>      list, plan : enregistre l'empreinte des
+                                 disques affichés
+  --expect-identity <fichier>    clone, format, eject, fix-boot : refuse si un
+                                 disque n'est plus celui affiché (clé échangée
+                                 sous le même numéro)
+
 OPTION GÉNÉRALE
   --lang fr|en                   langue des messages (défaut : langue de Windows,
                                  ou variable CHUD_LANG)
@@ -157,6 +164,13 @@ CLONE OPTIONS
                                  PC (see fix-boot; done by default)
   --json                         JSON output
 
+CONFIRMATION AFTER DISPLAY (rescue key text menu)
+  --save-identity <file>         list, plan: records the fingerprint of the
+                                 disks shown
+  --expect-identity <file>       clone, format, eject, fix-boot: refuses if a
+                                 disk is no longer the one shown (key swapped
+                                 under the same number)
+
 GENERAL OPTION
   --lang fr|en                   message language (default: Windows language,
                                  or the CHUD_LANG variable)
@@ -173,7 +187,23 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUE_FLAGS: [&str; 13] = ["--fs", "--table", "--label", "--mode", "--verify", "--on-unreadable", "--retries", "--image-size", "--reports", "--out", "--chunk", "--image", "--lang-file"];
+const VALUE_FLAGS: [&str; 15] = [
+    "--fs",
+    "--table",
+    "--label",
+    "--mode",
+    "--verify",
+    "--on-unreadable",
+    "--retries",
+    "--image-size",
+    "--reports",
+    "--out",
+    "--chunk",
+    "--image",
+    "--lang-file",
+    "--save-identity",
+    "--expect-identity",
+];
 
 fn parse_args(raw: &[String]) -> Result<Args, String> {
     let mut a = Args { positional: vec![], flags: vec![] };
@@ -388,7 +418,9 @@ fn job_config(a: &Args) -> Result<JobConfig, String> {
     })
 }
 
-const CLONE_FLAGS: [&str; 14] = [
+const CLONE_FLAGS: [&str; 16] = [
+    "--save-identity",
+    "--expect-identity",
     "--mode",
     "--no-optimize",
     "--no-grow",
@@ -409,6 +441,32 @@ fn only_virtual_ok(d: &DiskInfo) -> bool {
     d.is_virtual()
 }
 
+/// `--save-identity <file>`: records the disks just shown, for a confirmation given
+/// afterwards (rescue key text menu).
+fn save_shown(a: &Args, disks: &[&DiskInfo]) -> Result<(), String> {
+    if let Some(p) = a.value("--save-identity") {
+        report::write_atomic(std::path::Path::new(p), job::shown_disks_record(disks).as_bytes()).map_err(|e| {
+            chud_clone_core::tf!("enregistrement des disques affichés impossible ({p}) : {e}", "cannot record the disks shown ({p}): {e}")
+        })?;
+    }
+    Ok(())
+}
+
+/// `--expect-identity <file>`: refuses unless the disks of the operation, read again
+/// now, are the ones recorded by `--save-identity` when they were shown.
+fn check_shown(a: &Args, disks: &[&DiskInfo]) -> Result<(), String> {
+    if let Some(p) = a.value("--expect-identity") {
+        let record = std::fs::read_to_string(p).map_err(|e| {
+            chud_clone_core::tf!(
+                "liste des disques affichés illisible ({p}) : {e}. Rien n'a été écrit.",
+                "cannot read the list of disks shown ({p}): {e}. Nothing was written."
+            )
+        })?;
+        job::check_shown_disks(&record, disks)?;
+    }
+    Ok(())
+}
+
 fn run(raw: Vec<String>) -> Result<u8, String> {
     let a = parse_args(&raw)?;
     let cmd = a.positional.first().map(String::as_str).unwrap_or("");
@@ -419,8 +477,9 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             Ok(0)
         }
         "list" => {
-            a.check_known(&["--deep", "--json"])?;
+            a.check_known(&["--deep", "--json", "--save-identity"])?;
             let disks = job::list_disks(a.has("--deep"), &[]);
+            save_shown(&a, &disks.iter().collect::<Vec<_>>())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&disks).map_err(|e| e.to_string())?);
             } else {
@@ -529,6 +588,10 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             a.check_known(&CLONE_FLAGS)?;
             let cfg = job_config(&a)?;
             let prep = job::prepare(&cfg, false)?;
+            check_shown(&a, &[&prep.source, &prep.destination])?;
+            if cmd == "plan" {
+                save_shown(&a, &[&prep.source, &prep.destination])?;
+            }
             if a.has("--only-virtual") && !only_virtual_ok(&prep.destination) {
                 return Err(chud_clone_core::tf!(
                     "--only-virtual : la destination « {} » n'est ni une image ni un disque virtuel. Refusé.",
@@ -646,13 +709,14 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
         }
         "format" => {
             use chud_clone_core::format::{FormatRequest, FsChoice, TableChoice, refusals, validate_label};
-            a.check_known(&["--fs", "--table", "--label", "--confirm-erase", "--json", "--only-virtual"])?;
+            a.check_known(&["--fs", "--table", "--label", "--confirm-erase", "--json", "--only-virtual", "--expect-identity"])?;
             let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
             let fs = FsChoice::parse(a.value("--fs").ok_or(chud_clone_core::t!("--fs ntfs|exfat|fat32 attendu", "--fs ntfs|exfat|fat32 expected"))?)?;
             let table = TableChoice::parse(a.value("--table").unwrap_or("gpt"))?;
             let label = validate_label(fs, a.value("--label").unwrap_or(""))?;
             let req = FormatRequest { fs, table, label };
             let info = job::describe(&target, false, &[], None)?;
+            check_shown(&a, &[&info])?;
             let refused = refusals(&info, &req);
             if !refused.is_empty() {
                 return Err(refused.join(" ; "));
@@ -708,9 +772,10 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             Err("Windows only".into())
         }
         "eject" => {
-            a.check_known(&[])?;
+            a.check_known(&["--expect-identity"])?;
             let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
             let info = job::describe(&target, false, &[], None)?;
+            check_shown(&a, &[&info])?;
             let number = info.number.ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?;
             #[cfg(windows)]
             {
@@ -725,9 +790,10 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             }
         }
         "fix-boot" => {
-            a.check_known(&["--json"])?;
+            a.check_known(&["--json", "--expect-identity"])?;
             let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
             let info = job::describe(&target, false, &[], None)?;
+            check_shown(&a, &[&info])?;
             let number = info.number.ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?;
             if info.is_system {
                 return Err(chud_clone_core::t!(

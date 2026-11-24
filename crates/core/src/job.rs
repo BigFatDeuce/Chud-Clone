@@ -720,6 +720,43 @@ pub fn same_fingerprint(expected: &str, current: &str) -> bool {
     !expected.is_empty() && expected == current
 }
 
+/// Record of the disks shown to the user, for a confirmation given afterwards: one line
+/// per disk, `<fingerprint> <id>`. Image files are not recorded (their identity is
+/// checked on the files themselves). Used by the rescue key's text menu: it shows
+/// `list` or `plan`, asks for confirmation, then runs the operation with
+/// [`check_shown_disks`] — a disk swapped in the meantime under the same number is refused.
+pub fn shown_disks_record(disks: &[&DiskInfo]) -> String {
+    disks.iter().filter(|d| d.kind == DiskKind::Physical).map(|d| format!("{} {}\n", d.fingerprint, d.id)).collect()
+}
+
+/// Checks that every disk of an operation, read again now, is one of the disks of
+/// `record` ([`shown_disks_record`]) with the same fingerprint. Image files are not
+/// concerned.
+pub fn check_shown_disks(record: &str, disks: &[&DiskInfo]) -> Result<(), String> {
+    for d in disks.iter().filter(|d| d.kind == DiskKind::Physical) {
+        let shown = record.lines().filter_map(|l| l.trim().split_once(' ')).find(|(_, id)| *id == d.id).map(|(fp, _)| fp);
+        match shown {
+            None => {
+                return Err(tf!(
+                    "{} ne fait pas partie des disques affichés : recommencez depuis l'affichage des disques. Rien n'a été écrit.",
+                    "{} is not among the disks that were shown: start again from the list of disks. Nothing was written.",
+                    d.id
+                ));
+            }
+            Some(fp) if !same_fingerprint(fp, &d.fingerprint) => {
+                return Err(tf!(
+                    "{} n'est plus le disque affiché (débranché, remplacé ou modifié depuis : {}). Rien n'a été écrit.",
+                    "{} is no longer the disk that was shown (unplugged, replaced or changed since: {}). Nothing was written.",
+                    d.id,
+                    d.title()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn serial_text(d: &DiskInfo) -> String {
     if d.serial.trim().is_empty() {
         if d.kind == crate::model::DiskKind::Image {
@@ -778,6 +815,34 @@ mod tests {
         assert!(same_fingerprint("0123456789abcdef", "0123456789abcdef"));
         assert!(!same_fingerprint("0123456789abcdef", "fedcba9876543210"));
         assert!(!same_fingerprint("", ""));
+    }
+
+    /// Rescue key menu: a USB key swapped for another one between the display and the
+    /// confirmation takes the same disk number; the operation must be refused.
+    #[test]
+    fn a_disk_swapped_after_it_was_shown_is_refused() {
+        let disk = |n: u32, fp: &str| DiskInfo {
+            id: format!("disk:{n}"),
+            kind: DiskKind::Physical,
+            number: Some(n),
+            fingerprint: fp.into(),
+            ..DiskInfo::test_default()
+        };
+        let image = DiskInfo { id: "image:c:\\x\\a.img".into(), kind: DiskKind::Image, fingerprint: "aaaa".into(), ..DiskInfo::test_default() };
+        let (system, key) = (disk(0, "1111111111111111"), disk(2, "2222222222222222"));
+        let record = shown_disks_record(&[&system, &key, &image]);
+        assert_eq!(record, "1111111111111111 disk:0\n2222222222222222 disk:2\n", "images are not recorded");
+        assert!(check_shown_disks(&record, &[&key]).is_ok());
+        assert!(check_shown_disks(&record, &[&key, &image]).is_ok(), "images are not checked here");
+        // Another key now answers as disk 2.
+        let swapped = disk(2, "3333333333333333");
+        assert!(check_shown_disks(&record, &[&swapped]).unwrap_err().contains("disk:2"));
+        // A disk that was not shown, or a record without it.
+        assert!(check_shown_disks(&record, &[&disk(3, "2222222222222222")]).is_err());
+        assert!(check_shown_disks("", &[&key]).is_err());
+        // A disk whose identity Windows does not report never matches.
+        let anonymous = disk(4, "");
+        assert!(check_shown_disks(&shown_disks_record(&[&anonymous]), &[&anonymous]).is_err());
     }
 
     #[test]
