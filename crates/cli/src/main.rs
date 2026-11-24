@@ -47,7 +47,7 @@ UTILISATION
       l'application (clé de secours WinPE, ou toute console).
 
   chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr]
-                 [--label <nom>] --confirm-erase
+                 [--label <nom>] [--only-virtual] --confirm-erase
       Formate le disque entier : nouvelle table (défaut GPT), une partition,
       un système de fichiers. TOUT LE CONTENU DU DISQUE EST EFFACÉ.
 
@@ -120,7 +120,7 @@ USAGE
       application (WinPE rescue key, or any console).
 
   chud-clone-cli format <disk:N> --fs ntfs|exfat|fat32 [--table gpt|mbr]
-                 [--label <name>] --confirm-erase
+                 [--label <name>] [--only-virtual] --confirm-erase
       Formats the whole disk: new table (default GPT), one partition, one
       file system. ALL CONTENT OF THE DISK IS ERASED.
 
@@ -646,7 +646,7 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
         }
         "format" => {
             use chud_clone_core::format::{FormatRequest, FsChoice, TableChoice, refusals, validate_label};
-            a.check_known(&["--fs", "--table", "--label", "--confirm-erase", "--json"])?;
+            a.check_known(&["--fs", "--table", "--label", "--confirm-erase", "--json", "--only-virtual"])?;
             let target = Target::parse(a.positional.get(1).ok_or(chud_clone_core::t!("disque attendu (disk:N)", "disk expected (disk:N)"))?)?;
             let fs = FsChoice::parse(a.value("--fs").ok_or(chud_clone_core::t!("--fs ntfs|exfat|fat32 attendu", "--fs ntfs|exfat|fat32 expected"))?)?;
             let table = TableChoice::parse(a.value("--table").unwrap_or("gpt"))?;
@@ -656,6 +656,13 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
             let refused = refusals(&info, &req);
             if !refused.is_empty() {
                 return Err(refused.join(" ; "));
+            }
+            if a.has("--only-virtual") && !only_virtual_ok(&info) {
+                return Err(chud_clone_core::tf!(
+                    "--only-virtual : « {} » n'est pas un disque virtuel. Refusé.",
+                    "--only-virtual: \"{}\" is not a virtual disk. Refused.",
+                    info.title()
+                ));
             }
             println!(
                 "{}",
