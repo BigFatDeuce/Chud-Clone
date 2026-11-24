@@ -243,6 +243,38 @@ fn app_disks(volumes: &[VolumeRec], extra_paths: &[String]) -> Vec<u32> {
     out
 }
 
+/// Numbers of the disks holding the file (or folder) `path`; for a file that does not
+/// exist yet, the disks of its nearest existing parent folder. The volume is found from
+/// the opened handle (`GetFinalPathNameByHandleW`, volume GUID form), not from the
+/// spelling of the path: drive letter, mount folder, `subst`, short names all lead to
+/// the same answer. Empty if the volume is not on a local disk (network share).
+pub fn disks_of_file(path: &std::path::Path) -> Vec<u32> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, GetFinalPathNameByHandleW, VOLUME_NAME_GUID};
+    let mut cur = Some(path);
+    let file = loop {
+        let Some(p) = cur else { return Vec::new() };
+        // No access right, every sharing mode; FILE_FLAG_BACKUP_SEMANTICS opens folders.
+        match std::fs::OpenOptions::new().access_mode(0).share_mode(7).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p) {
+            Ok(f) => break f,
+            Err(_) => cur = p.parent().filter(|q| !q.as_os_str().is_empty()),
+        }
+    };
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: valid handle owned by `file`; buffer of the announced length.
+    let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buf.as_mut_ptr(), buf.len() as u32, VOLUME_NAME_GUID) } as usize;
+    if n == 0 || n >= buf.len() {
+        return Vec::new();
+    }
+    let full = String::from_utf16_lossy(&buf[..n]).to_ascii_lowercase();
+    list_volumes()
+        .into_iter()
+        .filter(|v| full.starts_with(&v.guid_path.to_ascii_lowercase()))
+        .flat_map(|v| v.extents.into_iter().map(|e| e.0))
+        .collect()
+}
+
 /// Volume paths (`\\?\Volume{…}\`, display name) of the volumes of a disk.
 pub fn volumes_of_disk(number: u32) -> Vec<(String, String)> {
     list_volumes()
@@ -538,6 +570,25 @@ mod tests {
         assert_eq!(normalize_serial(&hex), "WD-WCC4E1234567");
         assert_eq!(normalize_serial("  S4EWNX0M123456  "), "S4EWNX0M123456");
         assert_eq!(normalize_serial("0025_3856_01A2_B3C4."), "0025_3856_01A2_B3C4.");
+    }
+
+    /// Read-only: locates this test's own files. Whatever the spelling (drive letter,
+    /// `\\?\` prefix, file not created yet), the answer is the disk of the volume.
+    #[test]
+    fn file_location_follows_the_volume_not_the_spelling() {
+        let dir = std::env::temp_dir().join(format!("chudclone-where-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.bin");
+        std::fs::write(&file, b"x").unwrap();
+        let disks = disks_of_file(&file);
+        let prefixed = disks_of_file(&std::path::PathBuf::from(format!(r"\\?\{}", file.display())));
+        let missing = disks_of_file(&dir.join("not-yet").join("y.img"));
+        let of_dir = disks_of_file(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!disks.is_empty(), "the temporary folder is on a local disk");
+        assert_eq!(prefixed, disks);
+        assert_eq!(missing, disks, "a file to be created is located by its folder");
+        assert_eq!(of_dir, disks);
     }
 
     #[test]

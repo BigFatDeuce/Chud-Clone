@@ -245,6 +245,92 @@ pub fn is_all_zero(buf: &[u8]) -> bool {
     head.iter().all(|&b| b == 0) && mid.iter().all(|&w| w == 0) && tail.iter().all(|&b| b == 0)
 }
 
+/// Identity of a file on its volume (volume serial number and file ID), independent of
+/// the name used to reach it: two hard links, or a local path and an administrative
+/// share (`\\host\c$\...`) to the same file, give the same identity. Path comparisons
+/// cannot see through those aliases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    volume: u64,
+    file: u128,
+}
+
+impl FileIdentity {
+    /// Identity of an open file; `None` when the file system does not report one.
+    #[cfg(windows)]
+    pub fn of(file: &File) -> io::Result<Option<Self>> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        };
+        // 128-bit file ID first (ReFS needs it), then the classic 64-bit index.
+        // SAFETY: plain C structure, valid when zeroed.
+        let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: valid handle owned by `file`; output buffer of the announced size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(file.as_raw_handle(), FileIdInfo, (&mut id as *mut FILE_ID_INFO).cast(), size_of::<FILE_ID_INFO>() as u32)
+        };
+        if ok != 0 {
+            let file_id = u128::from_le_bytes(id.FileId.Identifier);
+            return Ok((file_id != 0).then_some(Self { volume: id.VolumeSerialNumber, file: file_id }));
+        }
+        // SAFETY: plain C structure, valid when zeroed.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: valid handle; output structure of the expected type.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file_id = ((info.nFileIndexHigh as u128) << 32) | info.nFileIndexLow as u128;
+        Ok((file_id != 0).then_some(Self { volume: info.dwVolumeSerialNumber as u64, file: file_id }))
+    }
+
+    #[cfg(unix)]
+    pub fn of(file: &File) -> io::Result<Option<Self>> {
+        use std::os::unix::fs::MetadataExt;
+        let m = file.metadata()?;
+        Ok(Some(Self { volume: m.dev(), file: m.ino() as u128 }))
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    pub fn of(_: &File) -> io::Result<Option<Self>> {
+        Ok(None)
+    }
+
+    /// Identity of the file at `path`, opened only to query it (no read access needed,
+    /// every sharing mode allowed: it does not disturb a program using the file).
+    pub fn of_path(path: &Path) -> io::Result<Option<Self>> {
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // No access right, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+            OpenOptions::new().access_mode(0).share_mode(7).open(path)?
+        };
+        #[cfg(not(windows))]
+        let file = File::open(path)?;
+        Self::of(&file)
+    }
+}
+
+/// True if both paths name the same existing file, whatever the names used (hard links,
+/// administrative share, `\\?\` prefix, 8.3 short name...). False if either is missing
+/// or if the file system cannot tell.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((FileIdentity::of_path(a), FileIdentity::of_path(b)), (Ok(Some(x)), Ok(Some(y))) if x == y)
+}
+
+/// Windows error: the file is open in a way that forbids this access.
+const ERROR_SHARING_VIOLATION: i32 = 32;
+
+fn not_a_file() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        t!(
+            "ce chemin ne désigne pas un fichier ordinaire (périphérique ou dossier) : un disque se choisit dans la liste des disques",
+            "this path is not an ordinary file (device or folder): a disk is chosen from the list of disks"
+        ),
+    )
+}
+
 /// Image file used as a block device.
 pub struct FileDevice {
     file: File,
@@ -264,6 +350,40 @@ impl FileDevice {
         Self::from_file(file, path, sector, true)
     }
 
+    /// Opens the source image of a clone read-only, forbidding any writer while it stays
+    /// open (Windows sharing mode). Opening the same file for writing afterwards — under
+    /// this name or any other (hard link, share) — then fails in Windows itself: the clone
+    /// cannot overwrite its own source, and no other program can change the source
+    /// during the copy.
+    pub fn open_source(path: &Path, sector: u32) -> io::Result<Self> {
+        let mut opts = OpenOptions::new();
+        opts.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            opts.share_mode(1); // FILE_SHARE_READ only
+        }
+        let file = opts.open(path).map_err(|e| {
+            if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) {
+                io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    t!(
+                        "l'image source est ouverte en écriture par un autre programme : fermez-le, l'image changerait pendant la copie",
+                        "the source image is open for writing in another program: close it, the image would change during the copy"
+                    ),
+                )
+            } else {
+                e
+            }
+        })?;
+        Self::from_file(file, path, sector, true)
+    }
+
+    /// Identity of the open file (see [`FileIdentity`]).
+    pub fn identity(&self) -> io::Result<Option<FileIdentity>> {
+        FileIdentity::of(&self.file)
+    }
+
     /// Opens an existing image read/write.
     pub fn open_read_write(path: &Path, sector: u32) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
@@ -278,13 +398,53 @@ impl FileDevice {
     /// a large image on a hard disk, with no progress to report. A sparse file reads as
     /// zeros where nothing was written and only takes the space actually copied.
     pub fn create(path: &Path, size: u64, sector: u32) -> io::Result<Self> {
+        Self::create_excluding(path, size, sector, None)
+    }
+
+    /// Like [`FileDevice::create`], but refuses — before changing a single byte — a file
+    /// that is not an ordinary file (device, `NUL`...) or that is the file `source`
+    /// under another name. The check is made on the handle actually used for writing,
+    /// so a file swapped in at the last moment is caught as well. The file is only
+    /// emptied afterwards, through that handle.
+    ///
+    /// On Windows, a source opened with [`FileDevice::open_source`] forbids writers: the
+    /// same file cannot even be opened here, whatever its name.
+    pub fn create_excluding(path: &Path, size: u64, sector: u32, source: Option<FileIdentity>) -> io::Result<Self> {
         if !size.is_multiple_of(sector as u64) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 t!("la taille de l'image doit être un multiple de la taille de secteur", "the image size must be a multiple of the sector size"),
             ));
         }
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
+        // No truncation at opening: nothing is changed before the checks below.
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|e| {
+            if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) {
+                io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    t!(
+                        "le fichier de destination est ouvert par un autre programme, ou c'est le fichier source sous un autre nom",
+                        "the destination file is open in another program, or it is the source file under another name"
+                    ),
+                )
+            } else {
+                e
+            }
+        })?;
+        if !file.metadata().map_err(|_| not_a_file())?.is_file() {
+            return Err(not_a_file());
+        }
+        if let Some(src) = source
+            && FileIdentity::of(&file)? == Some(src)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                t!(
+                    "le fichier de destination est le fichier source lui-même (sous un autre nom) : il serait effacé",
+                    "the destination file is the source file itself (under another name): it would be erased"
+                ),
+            ));
+        }
+        file.set_len(0)?;
         // File systems without sparse files (FAT32, exFAT) refuse it: the image is then
         // an ordinary file, which stays correct, only slower to start.
         let _ = set_sparse(&file);
@@ -301,7 +461,13 @@ impl FileDevice {
         if !sector.is_power_of_two() || sector < 512 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, t!("taille de secteur invalide", "invalid sector size")));
         }
-        let len = file.metadata()?.len();
+        let meta = file.metadata().map_err(|_| not_a_file())?;
+        // A device (`\\.\PhysicalDrive1`, `\\.\E:`, `NUL`...) is never an image: physical
+        // disks go through `Target::Disk` and all its protections.
+        if !meta.is_file() {
+            return Err(not_a_file());
+        }
+        let len = meta.len();
         // An image whose size is not a multiple of the sector is truncated to the
         // last complete sector (the remainder is not LBA-addressable).
         let size = len - (len % sector as u64);

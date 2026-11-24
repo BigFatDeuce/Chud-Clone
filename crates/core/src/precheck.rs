@@ -19,6 +19,60 @@ pub fn same_usb_bridge(src: &DiskInfo, dst: &DiskInfo) -> bool {
     }
 }
 
+/// Source and destination are the same disk or the same file: always blocking.
+pub fn same_disk_finding() -> Finding {
+    Finding::critical(
+        "SAME_DISK",
+        t!("Source et destination identiques", "Source and destination are the same"),
+        t!(
+            "Le disque source et le disque de destination sont le même disque (ou le même fichier image, sous deux noms). Un disque ne peut pas être cloné sur lui-même.",
+            "The source disk and the destination disk are the same disk (or the same image file, under two names). A disk cannot be cloned onto itself."
+        ),
+    )
+    .blocking()
+}
+
+/// Image files stored on the other disk of the operation. `src_file_disks`: disks holding
+/// the source image file; `dst_file_disks`: disks holding the destination image file (or
+/// the folder where it will be created).
+///
+/// - Source image on the destination disk: erasing that disk destroys the image being
+///   read.
+/// - Destination image on the source disk: the source volumes are locked during the
+///   copy, so the image could not be written, and it would change the disk being copied.
+pub fn location_findings(src: &DiskInfo, dst: &DiskInfo, src_file_disks: &[u32], dst_file_disks: &[u32]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if src.kind == DiskKind::Image && dst.kind == DiskKind::Physical && dst.number.is_some_and(|n| src_file_disks.contains(&n)) {
+        out.push(
+            Finding::critical(
+                "SOURCE_ON_DESTINATION",
+                t!("L'image source est sur le disque de destination", "The source image is on the destination disk"),
+                t!(
+                    "Le fichier image source est enregistré sur le disque de destination : effacer ce disque détruirait l'image pendant sa lecture. Copiez d'abord l'image sur un autre disque.",
+                    "The source image file is stored on the destination disk: erasing that disk would destroy the image while it is being read. First copy the image to another disk."
+                ),
+            )
+            .scope("destination")
+            .blocking(),
+        );
+    }
+    if dst.kind == DiskKind::Image && src.kind == DiskKind::Physical && src.number.is_some_and(|n| dst_file_disks.contains(&n)) {
+        out.push(
+            Finding::critical(
+                "DESTINATION_ON_SOURCE",
+                t!("L'image de destination serait sur le disque source", "The destination image would be on the source disk"),
+                t!(
+                    "Le fichier image de destination est sur le disque source : ses volumes sont verrouillés pendant la copie, et l'image modifierait le disque copié. Choisissez un dossier sur un autre disque.",
+                    "The destination image file is on the source disk: its volumes are locked during the copy, and the image would change the disk being copied. Choose a folder on another disk."
+                ),
+            )
+            .scope("destination")
+            .blocking(),
+        );
+    }
+    out
+}
+
 pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalysis>, plan: Option<&ClonePlan>) -> Vec<Finding> {
     let mut out = Vec::new();
 
@@ -26,17 +80,7 @@ pub fn precheck(src: &DiskInfo, dst: &DiskInfo, src_analysis: Option<&DiskAnalys
     let same_path = src.path.eq_ignore_ascii_case(&dst.path);
     let same_number = src.kind == DiskKind::Physical && dst.kind == DiskKind::Physical && src.number.is_some() && src.number == dst.number;
     if src.id == dst.id || same_path || same_number {
-        out.push(
-            Finding::critical(
-                "SAME_DISK",
-                t!("Source et destination identiques", "Source and destination are the same"),
-                t!(
-                    "Le disque source et le disque de destination sont le même disque. Un disque ne peut pas être cloné sur lui-même.",
-                    "The source disk and the destination disk are the same disk. A disk cannot be cloned onto itself."
-                ),
-            )
-            .blocking(),
-        );
+        out.push(same_disk_finding());
         return out;
     }
     if !src.serial.trim().is_empty() && src.serial.trim() == dst.serial.trim() && src.model == dst.model && src.size == dst.size {
@@ -431,6 +475,31 @@ mod tests {
         a.partitions = vec![part(2 << 30, None, PartRole::BasicData)];
         let f = precheck(&a, &b, None, None);
         assert!(codes(&f).contains(&"SWAP_POSSIBLE"));
+    }
+
+    #[test]
+    fn image_stored_on_the_other_disk_is_blocked() {
+        let image = |name: &str| DiskInfo {
+            id: format!("image:{name}"),
+            kind: DiskKind::Image,
+            path: name.into(),
+            number: None,
+            serial: String::new(),
+            ..disk(9, 1 << 30)
+        };
+        let (img, d2) = (image("e:\\src.img"), disk(2, 1 << 40));
+        // Source image on disk 2, which is the destination.
+        let f = location_findings(&img, &d2, &[2], &[]);
+        assert!(f.iter().any(|x| x.code == "SOURCE_ON_DESTINATION" && x.blocking), "{f:#?}");
+        // Destination image to be written on disk 2, which is the source.
+        let f = location_findings(&d2, &img, &[], &[2]);
+        assert!(f.iter().any(|x| x.code == "DESTINATION_ON_SOURCE" && x.blocking), "{f:#?}");
+        // Spanned volume: the image is on disks 1 and 2.
+        assert!(!location_findings(&img, &d2, &[1, 2], &[]).is_empty());
+        // Elsewhere: nothing to say.
+        assert!(location_findings(&img, &d2, &[0], &[]).is_empty());
+        assert!(location_findings(&d2, &img, &[], &[0]).is_empty());
+        assert!(location_findings(&img, &image("f:\\dst.img"), &[2], &[2]).is_empty());
     }
 
     #[test]

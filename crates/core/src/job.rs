@@ -4,7 +4,7 @@
 
 use crate::boot::{BootAssessment, assess_boot};
 use crate::clone::{CloneRequest, run_clone};
-use crate::device::{BlockDevice, FileDevice, ReadOnly};
+use crate::device::{BlockDevice, FileDevice, FileIdentity, ReadOnly};
 use crate::diag::{Finding, has_blocking};
 use crate::engine::{Control, EngineOptions, LogLevel, Observer};
 use crate::image::image_info;
@@ -289,7 +289,7 @@ pub fn prepare(cfg: &JobConfig, with_smart: bool) -> Result<Preparation, String>
     #[cfg(windows)]
     let locks = match cfg.source {
         Target::Disk(_) if !source.is_system && source.has_mounted_volumes() => {
-            match crate::win::rawdisk::try_lock_disk_volumes(&volumes_for_lock(&source)) {
+            match crate::win::rawdisk::try_lock_disk_volumes(&volumes_to_lock(&source)) {
                 Ok(l) => l,
                 Err(_) => {
                     in_use = true;
@@ -306,6 +306,7 @@ pub fn prepare(cfg: &JobConfig, with_smart: bool) -> Result<Preparation, String>
     let destination = describe(&cfg.destination, true, &cfg.app_paths, Some(wanted_size))?;
     let plan = build_plan(&analysis, destination.size, destination.sector_size, &cfg.plan);
     let mut findings = precheck(&source, &destination, Some(&analysis), Some(&plan));
+    add_identity_findings(&mut findings, cfg, &source, &destination);
     for f in &boot.findings {
         if !findings.iter().any(|x| x.code == f.code && x.title == f.title) {
             findings.push(f.clone().scope("source"));
@@ -381,6 +382,67 @@ fn volumes_for_lock(info: &DiskInfo) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Volumes to lock on a disk: those matched to its partitions, plus any other volume
+/// Windows places on it. A volume that matches no partition (dynamic disk, whole-disk
+/// volume) would otherwise stay mounted while the disk is rewritten underneath it.
+fn volumes_to_lock(info: &DiskInfo) -> Vec<(String, String)> {
+    let mut list = volumes_for_lock(info);
+    #[cfg(windows)]
+    if info.kind == DiskKind::Physical
+        && let Some(n) = info.number
+    {
+        let key = |g: &str| g.trim_end_matches('\\').to_ascii_lowercase();
+        for (guid, display) in crate::win::enumerate::volumes_of_disk(n) {
+            if !list.iter().any(|(g, _)| key(g) == key(&guid)) {
+                list.push((guid, display));
+            }
+        }
+    }
+    list
+}
+
+/// Opens the source of a clone. Like [`open_read_only`], but an image file is also
+/// protected against writers for as long as it stays open (see
+/// [`FileDevice::open_source`]); its identity is returned to check the destination.
+fn open_source(target: &Target) -> Result<(Box<dyn BlockDevice>, Option<FileIdentity>), String> {
+    match target {
+        Target::Image(p) => {
+            let dev = FileDevice::open_source(p, 512).map_err(|e| tf!("ouverture de l'image impossible : {e}", "cannot open the image: {e}"))?;
+            let id = dev.identity().ok().flatten();
+            Ok((Box::new(dev), id))
+        }
+        Target::Disk(_) => Ok((open_read_only(target)?, None)),
+    }
+}
+
+/// Adds the checks between the two targets that the per-disk pre-checks cannot make:
+/// one image file under two names (hard link, administrative share...), an image file
+/// stored on the other disk of the operation.
+fn add_identity_findings(findings: &mut Vec<Finding>, cfg: &JobConfig, source: &DiskInfo, destination: &DiskInfo) {
+    let mut extra = Vec::new();
+    if let (Target::Image(a), Target::Image(b)) = (&cfg.source, &cfg.destination)
+        && crate::device::same_file(a, b)
+    {
+        extra.push(crate::precheck::same_disk_finding());
+    }
+    #[cfg(windows)]
+    {
+        let disks = |t: &Target| match t {
+            Target::Image(p) => crate::win::enumerate::disks_of_file(p),
+            Target::Disk(_) => Vec::new(),
+        };
+        extra.extend(crate::precheck::location_findings(source, destination, &disks(&cfg.source), &disks(&cfg.destination)));
+    }
+    #[cfg(not(windows))]
+    let _ = (source, destination);
+    for f in extra {
+        if !findings.iter().any(|x| x.code == f.code) {
+            findings.push(f);
+        }
+    }
+    findings.sort_by(|a, b| b.blocking.cmp(&a.blocking).then(b.severity.cmp(&a.severity)));
+}
+
 /// Runs the clone. Everything is checked again here: disk identities, analysis, plan
 /// and pre-checks, whatever preparation was displayed before.
 ///
@@ -417,7 +479,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     if let Target::Disk(_) = cfg.source {
         // A system disk is refused below by the pre-checks: no need to lock it.
         if !source.is_system {
-            locks = crate::win::rawdisk::lock_disk_volumes(&source, &volumes_for_lock(&source)).map_err(fail)?;
+            locks = crate::win::rawdisk::lock_disk_volumes(&source, &volumes_to_lock(&source)).map_err(fail)?;
             if !locks.is_empty() {
                 journal.note(
                     LogLevel::Info,
@@ -430,7 +492,8 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
             }
         }
     }
-    let mut src = ReadOnly(open_read_only(&cfg.source).map_err(fail)?);
+    let (src_dev, src_identity) = open_source(&cfg.source).map_err(fail)?;
+    let mut src = ReadOnly(src_dev);
     let analysis = analyze_disk(&mut src).map_err(|e| fail(tf!("analyse de la source impossible : {e}", "source analysis failed: {e}")))?;
     let boot_src = assess_boot(&mut src, &analysis);
 
@@ -457,6 +520,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     );
     let plan = build_plan(&analysis, destination.size, destination.sector_size, &cfg.plan);
     let mut findings = precheck(&source, &destination, Some(&analysis), Some(&plan));
+    add_identity_findings(&mut findings, cfg, &source, &destination);
     for f in &boot_src.findings {
         findings.push(f.clone().scope("source"));
     }
@@ -504,7 +568,7 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
     // 5. Opening the destination. From here on, its content is modified.
     let mut opened = Opened {
         src: Box::new(src),
-        dst: open_destination(&cfg.destination, &destination, cfg.allow_unvalidated_physical_write)?,
+        dst: open_destination(&cfg.destination, &destination, cfg.allow_unvalidated_physical_write, src_identity)?,
         #[cfg(windows)]
         _locks: locks,
         #[cfg(windows)]
@@ -649,7 +713,7 @@ fn serial_text(d: &DiskInfo) -> String {
     }
 }
 
-fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool) -> Result<Box<dyn BlockDevice>, JobError> {
+fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool, source: Option<FileIdentity>) -> Result<Box<dyn BlockDevice>, JobError> {
     match target {
         Target::Image(p) => {
             // An existing image is recreated at the same size: its content is erased by
@@ -660,14 +724,15 @@ fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool) -
             {
                 std::fs::create_dir_all(parent).map_err(fail)?;
             }
-            let dev = FileDevice::create(p, info.size, 512);
+            // Refused, before any change, if it is the source file under another name.
+            let dev = FileDevice::create_excluding(p, info.size, 512, source);
             dev.map(|d| Box::new(d) as Box<dyn BlockDevice>)
                 .map_err(|e| fail(tf!("ouverture de l'image de destination impossible : {e}", "cannot open the destination image: {e}")))
         }
         Target::Disk(_n) => {
             #[cfg(windows)]
             {
-                crate::win::rawdisk::prepare_destination(info, &volumes_for_lock(info), allow_unvalidated)
+                crate::win::rawdisk::prepare_destination(info, &volumes_to_lock(info), allow_unvalidated)
                     .map(|d| Box::new(d) as Box<dyn BlockDevice>)
                     .map_err(|e| fail(tf!("préparation du disque de destination impossible : {e}", "cannot prepare the destination disk: {e}")))
             }
