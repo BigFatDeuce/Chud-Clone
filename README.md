@@ -95,10 +95,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.9.0-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.9.0-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.9.0.txt` | Checksums of the files above. |
-| `ChudClone-0.9.0-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.9.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.9.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.9.1.txt` | Checksums of the files above. |
+| `ChudClone-0.9.1-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
@@ -112,7 +112,10 @@ a generic `ChudClone/<version>` user agent and follows the Windows proxy setting
 turned off in **Settings → Updates**, where it can also be run by hand.
 
 When a newer version exists, **Update now** downloads the package for your kind of installation and
-checks it against the `SHA256SUMS` file published with the release before running anything:
+checks it against the `SHA256SUMS` file published with the release before running anything. Both
+files are only taken from this repository's releases, and the checksum is computed on the file
+written to disk, which no program without administrator rights can change: an installed copy
+downloads into its own folder under Program Files.
 
 - **installed version**: the new installer runs silently in the same folder (Windows asks for
   administrator permission), then Chud Clone restarts;
@@ -154,6 +157,14 @@ match its checksum is deleted without being opened.
   cache), and a partition table and file systems matching the source. Without
   verification the best possible status is *completed with warnings*. Booting is never promised:
   it also depends on the machine's firmware.
+- **Source and destination are told apart by identity, not by name.** An image destination that
+  is the source file under another name (hard link, `\\localhost\D$` share) is refused, and the
+  source image is opened so that nothing can write to it during the copy. An image stored on the
+  other disk of the clone is refused. A disk is recognised by a fingerprint that includes its
+  partition layout, so two identical USB keys without a serial number are not mixed up; it is
+  checked again before writing, before every formatting step and before a boot repair.
+- **Cancel means nothing written.** A clone cancelled before its first write leaves the
+  destination untouched.
 - **The running Windows disk** is refused as a source (inconsistent copy without a VSS snapshot,
   not supported) and as a destination. The WinPE rescue key covers that case.
 
@@ -320,7 +331,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 78 unit tests and 46 integration tests on **real disk images**
+- `crates/core`: 89 unit tests and 57 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
@@ -328,15 +339,19 @@ application.
   silent corruption detected, cancellation, different sector sizes, NTFS growth (GPT, MBR, second
   growth, write failure during growth), NTFS shrink (GPT, MBR, data moved, grown back and shrunk
   again, too small even shrunk, write failure during the shrink), boot preparation written in place (a real registry hive
-  placed in the Windows volume of a test image), surface scan, and a complete job in English.
+  placed in the Windows volume of a test image), surface scan, a complete job in English, source
+  and destination identity (hard links, shares, devices, a file busy elsewhere), and deterministic
+  damage to tables, boot sectors, MFT and FAT that must never panic or hang (`CHUD_FUZZ_ROUNDS`
+  for longer runs).
 - `crates/cli`: 2 tests that drive the full-screen interface with keys on image files, checking
   after every key that the states that must go together still do: a complete
   clone (choice of a new image as destination, wrong then right confirmation word, verified
   result, reports written), analysis, SMART, surface scan, formatting refused on an image, language switch, quit menu, and every
   screen rendered at 60 x 18, 80 x 25 and 140 x 45.
-- `crates/app`: 6 unit tests: one activity at a time (clone, scan, format, update), and the
+- `crates/app`: 8 unit tests: one activity at a time (clone, scan, format, update), and the
   updater (version comparison, release parsing, checksum
-  lookup, refusal of releases without checksums or with a foreign page), plus a network test run
+  lookup, refusal of releases without checksums, with a foreign page or with files hosted
+  elsewhere, package locked against other writers), plus a network test run
   on demand (`cargo test -p chud-clone-app -- --ignored`).
 - `scripts/validate-clone.sh`: **independent** check of a clone on Linux (sgdisk -v,
   ntfsresize --check, fsck.fat, MD5 of every file).
@@ -361,6 +376,8 @@ application.
   `chkdsk /f` finding nothing to fix.
 - WinPE rescue ISO: built automatically for each release. As with any rescue media, try it once
   on the machines you care about before you need it.
+- Updates are checked against the checksums published with the same release; they are not
+  signed.
 - The surface scan does not repair sectors (rewriting an unreadable sector destroys its content)
   and reads the whole disk: on a dying disk, clone first.
 - Refused with an explanation: dynamic disks, different logical sector sizes between source and
