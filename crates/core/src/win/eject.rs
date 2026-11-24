@@ -119,9 +119,9 @@ fn request_eject(number: u32) -> Result<(), String> {
 pub fn shutdown_now() -> Result<(), String> {
     let winpe = std::env::var("SystemDrive").map(|d| d.eq_ignore_ascii_case("X:")).unwrap_or(false);
     let status = if winpe {
-        std::process::Command::new("wpeutil").arg("shutdown").status()
+        std::process::Command::new(super::system_tool("wpeutil")).arg("shutdown").status()
     } else {
-        std::process::Command::new("shutdown").args(["/s", "/t", "0"]).status()
+        std::process::Command::new(super::system_tool("shutdown")).args(["/s", "/t", "0"]).status()
     };
     match status {
         Ok(s) if s.success() => Ok(()),

@@ -36,6 +36,22 @@ impl Drop for Handle {
     }
 }
 
+/// Full path of a Windows tool in the system folder (`System32\<name>.exe`). The engine
+/// runs as administrator: a bare name would be looked up in the program's own folder
+/// first, then in `PATH`, where another program could have placed a file of that name.
+pub fn system_tool(name: &str) -> std::path::PathBuf {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; 260];
+    // SAFETY: buffer of the announced length.
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    let dir = if n > 0 && n < buf.len() {
+        std::path::PathBuf::from(String::from_utf16_lossy(&buf[..n]))
+    } else {
+        std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into()).join("System32")
+    };
+    dir.join(format!("{name}.exe"))
+}
+
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

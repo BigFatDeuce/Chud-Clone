@@ -125,7 +125,7 @@ fn mount(number: u32, offset: u64, taken: &[char], what: &str) -> Result<Mounted
 
 /// Runs a system tool; returns (success, output).
 fn run(program: &str, args: &[&str]) -> (bool, String) {
-    match Command::new(program).args(args).output() {
+    match Command::new(super::system_tool(program)).args(args).output() {
         Ok(o) => {
             let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&o.stderr));

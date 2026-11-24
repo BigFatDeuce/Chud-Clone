@@ -410,13 +410,25 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         req.table.label()
     ));
     let steps_dp = diskpart_steps(number, &req, !own_fat32);
+    // Before every diskpart run: disk number `number` must still be this disk (same
+    // hardware identity; its layout changes as it is erased).
+    let identity = hardware_identity(&disk);
+    let same_disk = || -> Result<(), String> {
+        match disk_by_number(number, false, app_paths) {
+            Some(d) if hardware_identity(&d) == identity && !d.is_system && !d.hosts_app => Ok(()),
+            _ => Err(tf!(
+                "le disque {number} n'est plus celui qui avait été choisi (débranché ou remplacé pendant le formatage) : arrêt",
+                "disk {number} is no longer the one that was chosen (unplugged or replaced during formatting): stopped"
+            )),
+        }
+    };
     // Erase, then table and partition. A table of the wrong style (conversion refused
     // while Windows was still re-reading the disk) is retried once from the start.
     let mut layout = None;
     for attempt in 0..2 {
-        run_diskpart_retry(&steps_dp.clean)?;
+        run_diskpart_retry(&steps_dp.clean, &same_disk)?;
         std::thread::sleep(std::time::Duration::from_millis(1500));
-        run_diskpart_retry(&steps_dp.partition)?;
+        run_diskpart_retry(&steps_dp.partition, &same_disk)?;
         std::thread::sleep(std::time::Duration::from_millis(500));
         // The table actually written, read back from the disk: a conversion skipped
         // by `noerr` must not go unnoticed.
@@ -447,6 +459,7 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         let (start, len) = (p.start_lba * ss, p.sectors * ss);
         partition_size = len;
         // The new, unformatted volume is locked and dismounted while it is written.
+        same_disk()?;
         let fresh = disk_by_number(number, false, app_paths).unwrap_or(disk.clone());
         let locks = lock_disk_volumes(&fresh, &volumes_of_disk(number)).map_err(|e| e.to_string())?;
         let mut dev = RawDisk::open_read_write(&disk.path).map_err(|e| e.to_string())?;
@@ -456,7 +469,7 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         drop(locks);
     } else if let Some(script) = &steps_dp.format {
         note(tf!("Formatage {} par Windows", "{} formatting by Windows", req.fs.label()));
-        run_diskpart_retry(script)?;
+        run_diskpart_retry(script, &same_disk)?;
     }
     // A drive letter, unless Windows already gave one.
     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -475,19 +488,57 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
 
 /// Runs a `diskpart` script, up to three times: on a USB key that Windows is still
 /// re-reading, diskpart answers "device not ready" or "no volume selected" for a moment.
+///
+/// diskpart designates the disk by its number, and a USB key that is being re-read can
+/// briefly disappear and come back under another number while another disk takes its
+/// own. `same_disk` is therefore checked before every attempt, the first one included.
 #[cfg(windows)]
-fn run_diskpart_retry(script: &str) -> Result<String, String> {
+fn run_diskpart_retry(script: &str, same_disk: &dyn Fn() -> Result<(), String>) -> Result<String, String> {
     let mut last = String::new();
     for attempt in 0..3u64 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(2000 * attempt));
         }
+        same_disk()?;
         match run_diskpart(script) {
             Ok(out) => return Ok(out),
             Err(e) => last = e,
         }
     }
     Err(last)
+}
+
+/// Identity of a disk without its partition layout (model, serial number, size, bus,
+/// sector size): what stays the same while it is being erased and partitioned.
+pub fn hardware_identity(d: &crate::model::DiskInfo) -> String {
+    crate::model::fingerprint(&d.model, &d.serial, d.size, &d.bus, d.sector_size)
+}
+
+/// Writes a diskpart script so that no other program can change it before diskpart
+/// reads it: a new file (never an existing one or a link put there in advance), then
+/// held open without write or delete sharing, and read back through that handle. The
+/// script runs as administrator, and the temporary folder is writable by every program
+/// of the session.
+#[cfg(windows)]
+fn script_file(script: &str) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let name = format!("chudclone-diskpart-{}-{}-{:x}.txt", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed), nonce);
+    let file = std::env::temp_dir().join(name);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&file)?;
+    f.write_all(script.as_bytes())?;
+    drop(f);
+    // FILE_SHARE_READ only: diskpart can read it, nobody can write, rename or delete it.
+    let mut guard = std::fs::OpenOptions::new().read(true).share_mode(1).open(&file)?;
+    let mut back = String::new();
+    guard.read_to_string(&mut back)?;
+    if back != script {
+        return Err(std::io::Error::other(t!("le script a été modifié par un autre programme", "the script was changed by another program")));
+    }
+    Ok((file, guard))
 }
 
 /// Waits (20 s at most) until Windows lists a volume on the disk.
@@ -505,10 +556,9 @@ fn wait_for_volume(number: u32) {
 /// Runs a `diskpart` script; its output is returned in the error when it fails.
 #[cfg(windows)]
 pub(crate) fn run_diskpart(script: &str) -> Result<String, String> {
-    let dir = std::env::temp_dir();
-    let file = dir.join(format!("chudclone-diskpart-{}.txt", std::process::id()));
-    std::fs::write(&file, script).map_err(|e| tf!("script diskpart : {e}", "diskpart script: {e}"))?;
-    let out = std::process::Command::new("diskpart").arg("/s").arg(&file).output();
+    let (file, guard) = script_file(script).map_err(|e| tf!("script diskpart : {e}", "diskpart script: {e}"))?;
+    let out = std::process::Command::new(crate::win::system_tool("diskpart")).arg("/s").arg(&file).output();
+    drop(guard);
     let _ = std::fs::remove_file(&file);
     let out = out.map_err(|e| tf!("diskpart introuvable ou refusé : {e}", "diskpart not found or refused: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).replace('\r', "");
@@ -526,6 +576,40 @@ pub(crate) fn run_diskpart(script: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::device::MemDevice;
+
+    /// The diskpart script cannot be changed by another program between its writing and
+    /// its reading by diskpart.
+    #[cfg(windows)]
+    #[test]
+    fn diskpart_script_is_locked_while_it_runs() {
+        let script = "select disk 99\r\nclean\r\n";
+        let (path, guard) = script_file(script).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), script, "readable by diskpart");
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err(), "another program could rewrite it");
+        assert!(std::fs::remove_file(&path).is_err(), "another program could replace it");
+        drop(guard);
+        std::fs::remove_file(&path).unwrap();
+        // Each script gets its own new file.
+        let (a, ga) = script_file("x").unwrap();
+        let (b, gb) = script_file("x").unwrap();
+        assert_ne!(a, b);
+        drop((ga, gb));
+        let _ = (std::fs::remove_file(a), std::fs::remove_file(b));
+    }
+
+    /// The identity re-checked between diskpart runs ignores the partitions (they change
+    /// while the disk is erased) but not the hardware.
+    #[test]
+    fn hardware_identity_ignores_the_layout() {
+        let a = DiskInfo { model: "USB DISK".into(), serial: String::new(), size: 16 << 30, bus: "USB".into(), ..DiskInfo::test_default() };
+        let mut b = a.clone();
+        b.table = crate::partition::TableKind::Mbr;
+        b.partitions.clear();
+        b.fingerprint = "other".into();
+        assert_eq!(hardware_identity(&a), hardware_identity(&b));
+        assert_ne!(hardware_identity(&a), hardware_identity(&DiskInfo { size: 32 << 30, ..a.clone() }));
+        assert_ne!(hardware_identity(&a), hardware_identity(&DiskInfo { model: "Other".into(), ..a.clone() }));
+    }
 
     fn req(fs: FsChoice, label: &str) -> FormatRequest {
         FormatRequest { fs, table: TableChoice::Gpt, label: label.into() }
