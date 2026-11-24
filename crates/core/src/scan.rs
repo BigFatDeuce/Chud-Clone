@@ -263,6 +263,16 @@ pub fn scan(dev: &mut dyn BlockDevice, opts: &ScanOptions, ctl: &Control, obs: &
                         end = ScanEnd::DeviceLost(msg);
                         break;
                     }
+                    // Cancelled during the examination: the block was not read to the end.
+                    // Sectors already found unreadable stay listed, and their block marked.
+                    if ctl.is_cancelled() {
+                        if bad.total > before {
+                            counts[CLASS_ERROR as usize] += 1;
+                            mark(&mut cells, &mut dirty, idx, CLASS_ERROR);
+                        }
+                        end = ScanEnd::Cancelled;
+                        break;
+                    }
                     if bad.total == before {
                         // The block failed in one go but each piece reads back: difficult area,
                         // not unreadable. Ranked among the slowest.
@@ -476,5 +486,25 @@ mod tests {
         assert_eq!(r.end, ScanEnd::Cancelled);
         assert_eq!(r.scanned_bytes, 2 * MIB);
         assert!(r.cells.contains(&CELL_UNREAD));
+    }
+
+    /// Cancelled while a failing block is examined piece by piece: that block was not read
+    /// to the end, so it is neither "re-read in pieces" nor slow, and not counted as read.
+    #[test]
+    fn cancellation_while_a_failing_block_is_examined() {
+        static CTL: std::sync::OnceLock<Control> = std::sync::OnceLock::new();
+        let ctl = CTL.get_or_init(Control::new);
+        // Block 3 holds an unreadable sector in its second 64 KiB piece; "Cancel" is
+        // pressed once its first piece has been read.
+        let plan =
+            FaultPlan { bad_read: vec![(3 * MIB + 64 * 1024, 512)], cancel_after_read: Some((3 * MIB + 64 * 1024, ctl)), ..Default::default() };
+        let mut dev = FaultyDevice::new(MemDevice::new(8 * MIB, 512), plan);
+        let r = scan(&mut dev, &ScanOptions::default(), ctl, &NullScanObserver);
+        assert_eq!(r.end, ScanEnd::Cancelled);
+        assert_eq!(r.recovered_blocks, 0);
+        assert_eq!(r.counts.iter().sum::<u64>(), 3, "{:?}", r.counts);
+        assert!(r.slowest.is_empty());
+        assert_eq!(r.scanned_bytes, 3 * MIB);
+        assert!(!r.findings.iter().any(|f| f.code == "SCAN_READ_RETRIED"));
     }
 }
