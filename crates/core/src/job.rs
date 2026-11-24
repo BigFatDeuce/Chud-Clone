@@ -565,6 +565,18 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         }
     }
 
+    // Cancelled while the disks were read again, locked and checked: nothing has been
+    // written yet, and the destination must stay that way (opening a destination disk
+    // deletes its partition table, opening an image file empties it).
+    if ctl.is_cancelled() {
+        let msg = t!(
+            "Opération annulée avant toute écriture : la destination n'a pas été modifiée.",
+            "Operation cancelled before any write: the destination was not changed."
+        );
+        journal.note(LogLevel::Warning, msg);
+        return Err(fail(msg));
+    }
+
     // 5. Opening the destination. From here on, its content is modified.
     let mut opened = Opened {
         src: Box::new(src),

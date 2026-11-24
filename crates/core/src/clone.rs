@@ -518,6 +518,17 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
         ),
     );
 
+    // Cancelled during the preparation (shrink computed from the source): nothing has been
+    // written to the destination yet.
+    if req.ctl.is_cancelled() {
+        let msg = t!("Opération annulée avant toute écriture sur la destination", "Operation cancelled before any write to the destination");
+        req.obs.log(LogLevel::Warning, msg);
+        outcome.stop = StopReason::Internal(msg.into());
+        outcome.reasons.push(format!("{msg}."));
+        outcome.duration_ms = started.elapsed().as_millis() as u64;
+        return outcome;
+    }
+
     // --- 1. Preparation: invalidating the old tables -----------------------------
     let dst_size = req.plan.dst_size;
     let head = MIB.min(dst_size);

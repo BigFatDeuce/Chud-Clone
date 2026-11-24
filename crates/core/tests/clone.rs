@@ -831,6 +831,25 @@ fn cancellation_stops_promptly_and_leaves_no_partition_table() {
     assert!(r.outcome.reasons[0].contains("annulée"));
 }
 
+/// Cancelled before the engine starts (during the preparation of the job): not a single
+/// write reaches the destination, its old content is intact.
+#[test]
+fn cancel_before_the_start_writes_nothing() {
+    let _g = heavy();
+    let mut src = SliceDev::new(gpt_image());
+    let analysis = analyze_disk(&mut src).unwrap();
+    let plan = build_plan(&analysis, 256 * MIB, 512, &PlanOptions::default());
+    let mut dst = MemDevice::from_vec(vec![0xA5; 256 * MIB as usize], 512);
+    let ctl = Control::new();
+    ctl.cancel();
+    let rec = Recorder::default();
+    let o = run_clone(CloneRequest { src: &mut src, dst: &mut dst, src_analysis: &analysis, plan: &plan, opts: &opts(), ctl: &ctl, obs: &rec });
+    assert_ne!(o.status, FinalStatus::SuccessVerified);
+    assert!(o.reasons.iter().any(|r| r.contains("annulée avant toute écriture")), "{:#?}", o.reasons);
+    assert_eq!(dst.writes, 0);
+    assert!(dst.data.iter().all(|&b| b == 0xA5));
+}
+
 #[test]
 fn plan_and_device_mismatch_is_refused() {
     let _g = heavy();
