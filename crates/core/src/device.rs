@@ -127,6 +127,15 @@ pub trait BlockDevice: Send {
     fn is_read_only(&self) -> bool;
     /// Readable description, for the logs.
     fn label(&self) -> String;
+    /// From now on (`true`), or no longer (`false`), reads come from the medium itself
+    /// rather than from a copy kept in memory by the system. The verification after a
+    /// copy uses it: it must show what the medium holds, not what is still in memory.
+    /// Returns whether reads now bypass the system's cache (a physical disk is always
+    /// read that way; an image file on Windows is reopened without buffering).
+    fn set_uncached_reads(&mut self, on: bool) -> io::Result<bool> {
+        let _ = on;
+        Ok(false)
+    }
 }
 
 fn check_io_args(dev_size: u64, sector: u32, offset: u64, len: usize) -> io::Result<()> {
@@ -212,6 +221,99 @@ fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
 #[cfg(not(windows))]
 fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<()> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
+/// Second handle on an image file, opened without buffering
+/// (`FILE_FLAG_NO_BUFFERING`): its reads come from the disk that holds the file, not
+/// from the system's cache. Such reads must cover whole sectors of that disk, at
+/// aligned positions, into aligned memory: each request is widened to the sectors it
+/// touches and goes through an aligned buffer.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct DirectReader {
+    file: File,
+    /// Alignment of positions, lengths and memory (≥ the disk's sector).
+    align: u64,
+    buf: Option<AlignedBuf>,
+}
+
+/// Largest single unbuffered read.
+#[cfg(windows)]
+const DIRECT_IO_MAX: usize = 8 << 20;
+
+#[cfg(windows)]
+impl DirectReader {
+    /// Opens a second handle on the file of `file` itself (`ReOpenFile`), never on its
+    /// path: the file read back is the one written, whatever happened to the name since.
+    fn open(file: &File) -> io::Result<Self> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_NO_BUFFERING, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STORAGE_INFO, FileStorageInfo,
+            GetFileInformationByHandleEx, ReOpenFile,
+        };
+        // SAFETY: zeroed plain C structure, filled by the call for its stated size.
+        let mut info: FILE_STORAGE_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: valid handle owned by `file`; buffer of the announced size.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileStorageInfo,
+                (&mut info as *mut FILE_STORAGE_INFO).cast(),
+                std::mem::size_of::<FILE_STORAGE_INFO>() as u32,
+            )
+        };
+        // Sector sizes of the disk holding the file; 4096 covers every common disk when
+        // the file system does not tell (network share).
+        let sector = if ok != 0 { info.LogicalBytesPerSector.max(info.PhysicalBytesPerSectorForAtomicity) } else { 0 };
+        let align = (sector as usize).max(4096);
+        if !align.is_power_of_two() || align > BUF_ALIGN {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, tf!("secteurs de {align} octets", "{align}-byte sectors")));
+        }
+        // SAFETY: valid handle; the new handle is owned by the `File` built below.
+        let h =
+            unsafe { ReOpenFile(file.as_raw_handle(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_FLAG_NO_BUFFERING) };
+        if h == INVALID_HANDLE_VALUE || h.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `h` is a new, valid handle that nothing else owns.
+        let file = unsafe { File::from_raw_handle(h) };
+        Ok(Self { file, align: align as u64, buf: None })
+    }
+
+    fn read(&mut self, offset: u64, out: &mut [u8]) -> io::Result<()> {
+        use std::os::windows::fs::FileExt;
+        let a = self.align;
+        let start = offset / a * a;
+        let span = ((offset + out.len() as u64).div_ceil(a) * a - start) as usize;
+        // Bytes needed from `start`; the file may end inside the last aligned block.
+        let need = (offset - start) as usize + out.len();
+        let mut buf = match self.buf.take() {
+            Some(b) if b.len() >= span => b,
+            _ => AlignedBuf::new(span),
+        };
+        let mut got = 0usize;
+        let mut result = Ok(());
+        while got < need {
+            let n = (span - got).min(DIRECT_IO_MAX);
+            match self.file.seek_read(&mut buf[got..got + n], start + got as u64) {
+                Ok(0) => {
+                    result = Err(io::Error::new(io::ErrorKind::UnexpectedEof, t!("fin de l'image atteinte", "end of the image reached")));
+                    break;
+                }
+                Ok(k) => got += k,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        if result.is_ok() {
+            let skip = (offset - start) as usize;
+            out.copy_from_slice(&buf[skip..skip + out.len()]);
+        }
+        self.buf = Some(buf);
+        result
+    }
 }
 
 /// Space a file actually takes on disk (less than its size for a sparse image).
@@ -341,6 +443,8 @@ pub struct FileDevice {
     /// Sparse file: runs of zeros are stored as holes instead of being written, so
     /// an image only takes the space of the data it holds.
     sparse: bool,
+    /// Unbuffered reading, while [`BlockDevice::set_uncached_reads`] is on.
+    direct: Option<DirectReader>,
 }
 
 impl FileDevice {
@@ -472,7 +576,7 @@ impl FileDevice {
         // last complete sector (the remainder is not LBA-addressable).
         let size = len - (len % sector as u64);
         let sparse = !read_only && is_sparse(&file);
-        Ok(Self { file, path: path.to_path_buf(), size, sector, read_only, sparse })
+        Ok(Self { file, path: path.to_path_buf(), size, sector, read_only, sparse, direct: None })
     }
 
     pub fn path(&self) -> &Path {
@@ -489,6 +593,10 @@ impl BlockDevice for FileDevice {
     }
     fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         check_io_args(self.size, self.sector, offset, buf.len())?;
+        #[cfg(windows)]
+        if let Some(d) = self.direct.as_mut() {
+            return d.read(offset, buf);
+        }
         self.file.seek(SeekFrom::Start(offset))?;
         self.file.read_exact(buf)
     }
@@ -514,6 +622,21 @@ impl BlockDevice for FileDevice {
     }
     fn label(&self) -> String {
         format!("image {}", self.path.display())
+    }
+    fn set_uncached_reads(&mut self, on: bool) -> io::Result<bool> {
+        if !on {
+            self.direct = None;
+            return Ok(false);
+        }
+        #[cfg(windows)]
+        {
+            if self.direct.is_none() {
+                self.direct = Some(DirectReader::open(&self.file)?);
+            }
+            Ok(true)
+        }
+        #[cfg(not(windows))]
+        Ok(false)
     }
 }
 
@@ -599,6 +722,9 @@ impl<D: BlockDevice> BlockDevice for ReadOnly<D> {
     fn label(&self) -> String {
         self.0.label()
     }
+    fn set_uncached_reads(&mut self, on: bool) -> io::Result<bool> {
+        self.0.set_uncached_reads(on)
+    }
 }
 
 impl BlockDevice for Box<dyn BlockDevice> {
@@ -625,6 +751,9 @@ impl BlockDevice for Box<dyn BlockDevice> {
     }
     fn label(&self) -> String {
         (**self).label()
+    }
+    fn set_uncached_reads(&mut self, on: bool) -> io::Result<bool> {
+        (**self).set_uncached_reads(on)
     }
 }
 
@@ -779,6 +908,45 @@ impl Write for DeviceReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The verification reads an image back from the disk holding it, bypassing the
+    /// system cache. Any sector reads back what was written, at positions and lengths
+    /// that are not multiples of the disk's 4 KiB, up to the last sector of a file whose
+    /// size is not a multiple of 4 KiB.
+    #[cfg(windows)]
+    #[test]
+    fn image_reads_back_from_its_disk_without_the_cache() {
+        use std::os::windows::fs::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("direct.img");
+        let size = (1u64 << 20) + 3 * 512;
+        let mut d = FileDevice::create(&path, size, 512).unwrap();
+        let pattern: Vec<u8> = (0..size as usize).map(|i| (i * 7 + i / 512) as u8).collect();
+        d.write_at(0, &pattern).unwrap();
+        d.flush().unwrap();
+        assert!(d.set_uncached_reads(true).unwrap());
+        // The second handle really is unbuffered: Windows refuses a read at a position
+        // that is not sector-aligned (a buffered handle accepts it).
+        let mut probe = AlignedBuf::new(4096);
+        let err = d.direct.as_ref().unwrap().file.seek_read(&mut probe, 1).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(87), "{err}");
+        assert!(d.file.seek_read(&mut probe, 1).is_ok());
+        let size = size as usize;
+        for (off, len) in [(0, 512), (512, 1024), (4096 - 512, 1024), (size - 512, 512), (size - 3 * 512, 3 * 512), (512_000, 32_768), (0, size)] {
+            let mut b = vec![0u8; len];
+            d.read_at(off as u64, &mut b).unwrap();
+            assert!(b == pattern[off..off + len], "offset {off}, length {len}");
+        }
+        // Data written later, not flushed yet, is read back too: the file system writes
+        // its cache back before an unbuffered read.
+        d.write_at(512, &[0xEE; 512]).unwrap();
+        let mut b = vec![0u8; 512];
+        d.read_at(512, &mut b).unwrap();
+        assert_eq!(b, [0xEE; 512]);
+        assert!(!d.set_uncached_reads(false).unwrap());
+        d.read_at(0, &mut b).unwrap();
+        assert!(b == pattern[..512]);
+    }
 
     /// Regression: a large new image must not be zero-filled by the file system when
     /// the clone clears its last mebibyte first ("Preparing the destination" stalled

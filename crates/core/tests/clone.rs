@@ -916,3 +916,87 @@ fn minimal_image_size_holds_the_partitions() {
     let raw = PlanOptions { mode: CloneMode::RawDisk, optimize_layout: false, grow_main: false };
     assert_eq!(minimal_destination_size(&analysis, 512, &raw), analysis.size.div_ceil(MIB) * MIB);
 }
+
+/// Destination with a memory cache in front of its medium, like an image file under
+/// Windows. With `lose_writes`, the medium does not keep what was written (a failing
+/// disk, a network share that dropped the data) while the cache still returns it.
+struct CachedMedium {
+    cache: Vec<u8>,
+    medium: Vec<u8>,
+    lose_writes: bool,
+    uncached: bool,
+    medium_reads: u64,
+}
+impl CachedMedium {
+    fn new(size: usize, lose_writes: bool) -> Self {
+        Self { cache: vec![0xA5; size], medium: vec![0xA5; size], lose_writes, uncached: false, medium_reads: 0 }
+    }
+}
+impl BlockDevice for CachedMedium {
+    fn size(&self) -> u64 {
+        self.cache.len() as u64
+    }
+    fn sector_size(&self) -> u32 {
+        512
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        chud_clone_core::device::validate_io(self, offset, buf.len())?;
+        let at = offset as usize;
+        if self.uncached {
+            self.medium_reads += 1;
+            buf.copy_from_slice(&self.medium[at..at + buf.len()]);
+        } else {
+            buf.copy_from_slice(&self.cache[at..at + buf.len()]);
+        }
+        Ok(())
+    }
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> std::io::Result<()> {
+        chud_clone_core::device::validate_io(self, offset, buf.len())?;
+        let at = offset as usize;
+        self.cache[at..at + buf.len()].copy_from_slice(buf);
+        if !self.lose_writes {
+            self.medium[at..at + buf.len()].copy_from_slice(buf);
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn is_read_only(&self) -> bool {
+        false
+    }
+    fn label(&self) -> String {
+        "destination with a cache".into()
+    }
+    fn set_uncached_reads(&mut self, on: bool) -> std::io::Result<bool> {
+        self.uncached = on;
+        Ok(true)
+    }
+}
+
+/// The verification after the copy reads the destination's medium, not the system's
+/// cache: data that never reached the medium is found missing, and data that did is
+/// verified. Reads go back to normal afterwards.
+#[test]
+fn verification_reads_the_medium_not_the_cache() {
+    let _g = heavy();
+    let img = gpt_image();
+    for lose_writes in [false, true] {
+        let mut src = FaultyDevice::new(SliceDev::new(img), FaultPlan::default());
+        let analysis = analyze_disk(&mut src).unwrap();
+        let plan = build_plan(&analysis, img.len() as u64, 512, &PlanOptions::default());
+        let mut dst = CachedMedium::new(img.len(), lose_writes);
+        let rec = Recorder::default();
+        let ctl = Control::new();
+        let outcome =
+            run_clone(CloneRequest { src: &mut src, dst: &mut dst, src_analysis: &analysis, plan: &plan, opts: &opts(), ctl: &ctl, obs: &rec });
+        assert!(dst.medium_reads > 0, "the verification must read the medium");
+        assert!(!dst.uncached, "normal reads are restored after the verification");
+        if lose_writes {
+            assert!(!outcome.data_check.passed(), "data missing from the medium must be found");
+            assert_ne!(outcome.status, FinalStatus::SuccessVerified);
+        } else {
+            assert_eq!(outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&outcome));
+        }
+    }
+}

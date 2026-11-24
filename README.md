@@ -150,7 +150,8 @@ match its checksum is deleted without being opened.
   sectors with zeros, lists each LBA in the report and makes the result *incomplete*. Write errors
   are never worked around (bounded retries, then stop).
 - **An honest final status.** *Succeeded and verified* requires an error-free copy, a read-back
-  without differences, and a partition table and file systems matching the source. Without
+  without differences (from the medium itself: an image file is read back bypassing the Windows
+  cache), and a partition table and file systems matching the source. Without
   verification the best possible status is *completed with warnings*. Booting is never promised:
   it also depends on the machine's firmware.
 - **The running Windows disk** is refused as a source (inconsistent copy without a VSS snapshot,
@@ -265,6 +266,9 @@ analyses a disk, runs the surface scan and formats a disk (`M`; `F` in the text 
 menu also ejects a USB disk (`E`) and repairs the boot of a Windows disk for another PC (`R`).
 `L` switches between English (US keyboard) and French (AZERTY keyboard). Its Quit menu restarts
 or shuts down the computer, opens a command prompt, or the classic text menu (kept as a fallback).
+The text menu records the disks it shows (`list` or `plan` with `--save-identity <file>`) and runs
+the operation you confirm with `--expect-identity <file>`: a USB disk swapped for another one in
+the meantime, under the same number, is refused before anything is written.
 
 To build it yourself, `scripts\make-winpe.ps1` (administrator PowerShell) builds an ISO image and, with `-UsbDrive E:`,
 a USB key (after checks: USB disk, neither system nor boot disk, and a typed confirmation). It
@@ -277,7 +281,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 132 tests
+cargo test --workspace                                         # 157 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 

@@ -141,4 +141,7 @@ impl<D: BlockDevice> BlockDevice for FaultyDevice<D> {
     fn label(&self) -> String {
         format!("{} (défauts simulés)", self.inner.label())
     }
+    fn set_uncached_reads(&mut self, on: bool) -> io::Result<bool> {
+        self.inner.set_uncached_reads(on)
+    }
 }

@@ -585,7 +585,28 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
     if outcome.stop == StopReason::Completed {
         if req.opts.verify != VerifyMode::None {
             phase(req.obs, Phase::Verifying);
+            // The destination is read back from its medium, not from the copy Windows
+            // still holds in memory: otherwise data that never reached an image's disk
+            // (failing disk, network share) would pass the verification.
+            match req.dst.set_uncached_reads(true) {
+                Ok(true) => req.obs.log(
+                    LogLevel::Info,
+                    t!(
+                        "Vérification : la destination est relue sur son support, sans passer par le cache de Windows.",
+                        "Verification: the destination is read back from its medium, bypassing the Windows cache."
+                    ),
+                ),
+                Ok(false) => {}
+                Err(e) => req.obs.log(
+                    LogLevel::Warning,
+                    &tf!(
+                        "Relecture directe de la destination impossible ({e}) : elle est relue à travers le cache de Windows.",
+                        "Cannot read the destination back directly ({e}): it is read back through the Windows cache."
+                    ),
+                ),
+            }
             outcome.data_check = verify_data(req.src, req.dst, &stats.hashes, req.opts.verify, req.ctl, req.obs);
+            let _ = req.dst.set_uncached_reads(false);
         }
         // Growth: only on a destination that has just returned the data faithfully
         // (it modifies areas already verified).

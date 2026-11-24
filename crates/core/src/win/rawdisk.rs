@@ -245,6 +245,10 @@ impl BlockDevice for RawDisk {
     fn label(&self) -> String {
         self.path.clone()
     }
+    fn set_uncached_reads(&mut self, _on: bool) -> io::Result<bool> {
+        // Always opened with FILE_FLAG_NO_BUFFERING.
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------------------
