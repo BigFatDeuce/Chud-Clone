@@ -589,7 +589,7 @@ fn start_scan(app: AppHandle, state: State<'_, Shared>, id: String) -> Result<()
                     let saved = std::fs::create_dir_all(&dir)
                         .ok()
                         .and_then(|_| serde_json::to_vec_pretty(&serde_json::json!({ "disk": disk, "result": result })).ok())
-                        .and_then(|b| std::fs::write(&file, b).ok())
+                        .and_then(|b| report::write_atomic(&file, &b).ok())
                         .map(|_| file.to_string_lossy().to_string());
                     ScanDone { id, disk: Some(disk), result: Some(result), error: None, saved }
                 }

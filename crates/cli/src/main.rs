@@ -620,8 +620,8 @@ fn run(raw: Vec<String>) -> Result<u8, String> {
                 }
                 println!("{}", chud_clone_core::tf!("Rapport : {}", "Report: {}", reports.join(format!("{}.json", rep.id)).display()));
             }
-            let _ = std::fs::write(reports.join(format!("{}.txt", rep.id)), report::render_txt(&rep));
-            let _ = std::fs::write(reports.join(format!("{}.html", rep.id)), report::render_html(&rep));
+            let _ = report::write_atomic(&reports.join(format!("{}.txt", rep.id)), report::render_txt(&rep).as_bytes());
+            let _ = report::write_atomic(&reports.join(format!("{}.html", rep.id)), report::render_html(&rep).as_bytes());
             Ok(match rep.outcome.status {
                 FinalStatus::SuccessVerified => 0,
                 FinalStatus::CompletedWithWarnings => 1,

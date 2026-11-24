@@ -998,8 +998,8 @@ impl App {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job::execute(&cfg, &reports, &ctl, &obs)));
             let res = match res {
                 Ok(Ok(rep)) => {
-                    let _ = std::fs::write(reports.join(format!("{}.txt", rep.id)), report::render_txt(&rep));
-                    let _ = std::fs::write(reports.join(format!("{}.html", rep.id)), report::render_html(&rep));
+                    let _ = report::write_atomic(&reports.join(format!("{}.txt", rep.id)), report::render_txt(&rep).as_bytes());
+                    let _ = report::write_atomic(&reports.join(format!("{}.html", rep.id)), report::render_html(&rep).as_bytes());
                     Ok(rep)
                 }
                 Ok(Err(JobError::Blocked(f))) => Err(tf!(

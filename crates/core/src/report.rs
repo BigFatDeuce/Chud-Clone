@@ -156,8 +156,30 @@ pub fn save_report(dir: &Path, report: &Report) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.json", report.id));
     let json = serde_json::to_vec_pretty(report).map_err(std::io::Error::other)?;
-    std::fs::write(&path, json)?;
+    write_atomic(&path, &json)?;
     Ok(path)
+}
+
+/// Writes a file so that an interruption (crash, power cut: the very situations a
+/// clone report must document) leaves either the previous content or the new one,
+/// never a truncated file: a temporary file in the same folder, flushed to the disk,
+/// then renamed over the target.
+pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 pub fn load_report(dir: &Path, id: &str) -> std::io::Result<Report> {
@@ -914,5 +936,25 @@ fn grow_text(g: &crate::clone::GrowOutcome) -> String {
         }
         (_, _, Some(e)) => tf!("partition {} : non effectué — {e}", "partition {}: not done — {e}", g.number),
         _ => tf!("partition {} : non effectué", "partition {}: not done", g.number),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_temporary_file() {
+        let dir = std::env::temp_dir().join(format!("chudclone-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.json");
+        std::fs::write(&path, b"old content, longer than the new one").unwrap();
+        write_atomic(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        // Target folder missing: an error, and nothing left behind.
+        assert!(write_atomic(&dir.join("missing").join("r.json"), b"x").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
