@@ -303,7 +303,7 @@ pub(crate) fn layout_key(buf: &[u8]) -> String {
         _ => String::new(),
     };
     let mut key = format!("{style}:{id}");
-    for e in buf[48..].chunks_exact(144).take(u32le(buf, 4) as usize) {
+    for e in buf[48..].as_chunks::<144>().0.iter().take(u32le(buf, 4) as usize) {
         let (offset, size) = (u64le(e, 8), u64le(e, 16));
         if size != 0 {
             key.push_str(&format!(":{offset:x}+{size:x}"));

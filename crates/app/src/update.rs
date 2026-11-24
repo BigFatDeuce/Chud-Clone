@@ -142,9 +142,8 @@ fn parse_release(json: &serde_json::Value, current: &str, method: Method) -> Res
         Method::Portable => Some("-portable.zip"),
         Method::Manual => None,
     };
-    let package = suffix.and_then(|suf| {
-        assets.iter().find(|a| a.name.starts_with("ChudClone-") && a.name.ends_with(suf) && is_release_asset(&a.url)).cloned()
-    });
+    let package =
+        suffix.and_then(|suf| assets.iter().find(|a| a.name.starts_with("ChudClone-") && a.name.ends_with(suf) && is_release_asset(&a.url)).cloned());
     let sums = assets.iter().find(|a| a.name.starts_with("SHA256SUMS") && is_release_asset(&a.url)).cloned();
     // Without a checksum file, nothing is installed automatically.
     let method = if package.is_some() && sums.is_some() { method } else { Method::Manual };

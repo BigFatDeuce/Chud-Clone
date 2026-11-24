@@ -676,9 +676,23 @@ mod tests {
             number,
             start_lba,
             sectors,
-            info: PartInfo::Gpt { type_guid: Guid::must(type_guid), unique_guid: Guid::must(GPT_MSR), attributes: 0, name: String::new(), slot: number - 1 },
+            info: PartInfo::Gpt {
+                type_guid: Guid::must(type_guid),
+                unique_guid: Guid::must(GPT_MSR),
+                attributes: 0,
+                name: String::new(),
+                slot: number - 1,
+            },
         };
-        let layout = |partitions| DiskLayout { kind: TableKind::Gpt, sector_size: 512, disk_sectors: 1 << 21, partitions, gpt: None, mbr: None, findings: Vec::new() };
+        let layout = |partitions| DiskLayout {
+            kind: TableKind::Gpt,
+            sector_size: 512,
+            disk_sectors: 1 << 21,
+            partitions,
+            gpt: None,
+            mbr: None,
+            findings: Vec::new(),
+        };
         let msr = gpt(1, 34, 32768, GPT_MSR);
         let data = gpt(2, 34816, 2_000_000, GPT_BASIC_DATA);
         // Removable disk: the data partition alone.
@@ -709,7 +723,10 @@ mod tests {
         let s = diskpart_steps(3, &req(FsChoice::Ntfs, "Data"));
         assert!(s.clean.starts_with("select disk 3\r\n") && s.clean.ends_with("clean\r\n"));
         assert_eq!(s.partition, "select disk 3\r\nconvert gpt noerr\r\ncreate partition primary\r\n");
-        assert_eq!(format_script(3, 1, &req(FsChoice::Ntfs, "Data")), "select disk 3\r\nselect partition 1\r\nformat fs=ntfs label=\"Data\" quick\r\n");
+        assert_eq!(
+            format_script(3, 1, &req(FsChoice::Ntfs, "Data")),
+            "select disk 3\r\nselect partition 1\r\nformat fs=ntfs label=\"Data\" quick\r\n"
+        );
         let s = diskpart_steps(3, &FormatRequest { fs: FsChoice::Fat32, table: TableChoice::Mbr, label: String::new() });
         assert!(s.partition.contains("convert mbr noerr"));
         assert!(uses_own_fat32(&req(FsChoice::Fat32, ""), 64 * GIB));

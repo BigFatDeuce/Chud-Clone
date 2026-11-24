@@ -711,7 +711,8 @@ async fn fix_boot(
         move || job::describe(&target, false, &paths, None)
     })
     .await??;
-    let number = info.number.ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être réparés", "only disks can be repaired").to_string())?;
+    let number =
+        info.number.ok_or_else(|| chud_clone_core::t!("seuls les disques peuvent être réparés", "only disks can be repaired").to_string())?;
     // Disk numbers change when disks are plugged in or out: the disk read again now must
     // be the one shown when the button was pressed.
     if !job::same_fingerprint(&fingerprint, &info.fingerprint) {

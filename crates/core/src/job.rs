@@ -732,7 +732,12 @@ fn serial_text(d: &DiskInfo) -> String {
     }
 }
 
-fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool, source: Option<FileIdentity>) -> Result<Box<dyn BlockDevice>, JobError> {
+fn open_destination(
+    target: &Target,
+    info: &DiskInfo,
+    allow_unvalidated: bool,
+    source: Option<FileIdentity>,
+) -> Result<Box<dyn BlockDevice>, JobError> {
     match target {
         Target::Image(p) => {
             // An existing image is recreated at the same size: its content is erased by
