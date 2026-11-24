@@ -130,7 +130,10 @@ function Assert-OurVhd([int]$n, $path) {
 
 function Invoke-Clone($from, $to, $label, [string[]]$extra = @()) {
   Say "`n=== $label" Cyan
-  $cliArgs = @('clone', $from, $to, '--confirm-erase', '--only-virtual', '--verify', 'full', '--reports', $reports, '--json') + $extra
+  # --no-boot-prep: the test image's Windows is simulated (its registry is not a real
+  # hive), so preparing it to boot elsewhere can only end in a warning. That step is
+  # covered by the engine's tests; this script checks the copy itself.
+  $cliArgs = @('clone', $from, $to, '--confirm-erase', '--only-virtual', '--verify', 'full', '--no-boot-prep', '--reports', $reports, '--json') + $extra
   $json = & $Cli @cliArgs
   $code = $LASTEXITCODE
   $rep = $null

@@ -177,15 +177,13 @@ pub fn refusals(disk: &DiskInfo, req: &FormatRequest) -> Vec<String> {
 pub struct DiskpartSteps {
     /// Erases the disk.
     pub clean: String,
-    /// New table and its single partition.
+    /// New table and its data partition.
     pub partition: String,
-    /// Windows' formatter; `None` when Chud Clone writes the FAT32 volume itself.
-    pub format: Option<String>,
 }
 
-/// `diskpart` scripts for one disk. `format` false: the partition is created but left
-/// unformatted (large FAT32, written by [`format_fat32`] afterwards).
-pub fn diskpart_steps(number: u32, req: &FormatRequest, format: bool) -> DiskpartSteps {
+/// `diskpart` scripts that erase one disk and create its table and data partition. The
+/// file system is written afterwards, by [`format_script`] or [`format_fat32`].
+pub fn diskpart_steps(number: u32, req: &FormatRequest) -> DiskpartSteps {
     let select = format!("select disk {number}\r\n");
     // A disk taken offline by Windows (same signature as another one, typical after a
     // clone) or marked read-only by an attribute is brought back first.
@@ -198,19 +196,24 @@ pub fn diskpart_steps(number: u32, req: &FormatRequest, format: bool) -> Diskpar
         TableChoice::Mbr => "convert mbr noerr\r\n",
     };
     let partition = format!("{select}{convert}create partition primary\r\n");
-    let format = format.then(|| {
-        let label = req.label.trim();
-        let fs = req.fs.diskpart_name();
-        let cmd = if label.is_empty() { format!("format fs={fs} quick") } else { format!("format fs={fs} label=\"{label}\" quick") };
-        format!("{select}select partition 1\r\n{cmd}\r\n")
-    });
-    DiskpartSteps { clean, partition, format }
+    DiskpartSteps { clean, partition }
 }
 
-/// Checks the table read back after `diskpart`: the requested style, with exactly one
-/// partition.
-pub fn check_new_table(layout: &crate::partition::DiskLayout, wanted: TableChoice) -> Result<(), String> {
-    use crate::partition::TableKind;
+/// `diskpart` script giving the data partition (number `partition`, as returned by
+/// [`check_new_table`]) Windows' file system.
+pub fn format_script(number: u32, partition: u32, req: &FormatRequest) -> String {
+    let label = req.label.trim();
+    let fs = req.fs.diskpart_name();
+    let cmd = if label.is_empty() { format!("format fs={fs} quick") } else { format!("format fs={fs} label=\"{label}\" quick") };
+    format!("select disk {number}\r\nselect partition {partition}\r\n{cmd}\r\n")
+}
+
+/// Checks the table read back after `diskpart`: the requested style, with a single data
+/// partition. On a GPT table, diskpart puts a Microsoft reserved partition (MSR) in front
+/// of it when the disk is a fixed one (internal disk, external hard disk, VHDX), not on a
+/// removable USB key. Returns the number of the data partition, as diskpart counts them.
+pub fn check_new_table(layout: &crate::partition::DiskLayout, wanted: TableChoice) -> Result<u32, String> {
+    use crate::partition::{PartRole, TableKind};
     let ok = matches!((wanted, layout.kind), (TableChoice::Gpt, TableKind::Gpt) | (TableChoice::Mbr, TableKind::Mbr));
     if !ok {
         return Err(tf!(
@@ -220,14 +223,28 @@ pub fn check_new_table(layout: &crate::partition::DiskLayout, wanted: TableChoic
             wanted.label()
         ));
     }
-    if layout.partitions.len() != 1 {
+    let parts = &layout.partitions;
+    let is_msr = |p: &crate::partition::Partition| layout.kind == TableKind::Gpt && p.role() == PartRole::Msr;
+    let msr = parts.iter().filter(|p| is_msr(p)).count();
+    let data: Vec<usize> = (0..parts.len()).filter(|&i| !is_msr(&parts[i])).collect();
+    if data.len() != 1 || msr > 1 {
         return Err(tf!(
-            "{} partition(s) trouvée(s) après le formatage au lieu d'une seule.",
-            "{} partition(s) found after formatting instead of one.",
-            layout.partitions.len()
+            "La nouvelle table contient {} partition(s) au lieu d'une seule (sans compter la partition réservée Microsoft). Le disque a été effacé mais n'est pas formaté.",
+            "The new table holds {} partition(s) instead of one (not counting the Microsoft reserved partition). The disk was erased but is not formatted.",
+            data.len()
         ));
     }
-    Ok(())
+    // diskpart numbers the partitions in table order, without gaps. A table with an
+    // unused entry before the data partition would make that number ambiguous.
+    let position = data[0] as u32 + 1;
+    if parts[data[0]].number != position {
+        return Err(tf!(
+            "Partition {} inattendue dans la nouvelle table (entrée vide avant elle). Le disque a été effacé mais n'est pas formaté.",
+            "Unexpected partition {} in the new table (empty entry before it). The disk was erased but is not formatted.",
+            parts[data[0]].number
+        ));
+    }
+    Ok(position)
 }
 
 /// Uses Windows' formatter (`diskpart format`) for this request, or this module.
@@ -409,7 +426,7 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         "Erasing disk {number} and creating a new {} table",
         req.table.label()
     ));
-    let steps_dp = diskpart_steps(number, &req, !own_fat32);
+    let steps_dp = diskpart_steps(number, &req);
     // Before every diskpart run: disk number `number` must still be this disk (same
     // hardware identity; its layout changes as it is erased).
     let identity = hardware_identity(&disk);
@@ -437,24 +454,26 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
             crate::partition::read_layout(&mut dev).map_err(|e| tf!("nouvelle table illisible : {e}", "new table unreadable: {e}"))?
         };
         match check_new_table(&read, req.table) {
-            Ok(()) => {
-                layout = Some(read);
+            Ok(data) => {
+                layout = Some((read, data));
                 break;
             }
             Err(e) if attempt == 1 => return Err(e),
             Err(_) => std::thread::sleep(std::time::Duration::from_secs(3)),
         }
     }
-    let layout = layout.ok_or_else(|| t!("nouvelle table introuvable", "new table not found").to_string())?;
+    let (layout, data_number) = layout.ok_or_else(|| t!("nouvelle table introuvable", "new table not found").to_string())?;
+    // The data partition (on a fixed disk, the MSR comes before it).
+    let data = layout
+        .partitions
+        .get(data_number as usize - 1)
+        .ok_or_else(|| t!("la partition créée par diskpart est introuvable", "the partition created by diskpart cannot be found").to_string())?;
     // Windows announces the new volume a moment after the partition is created.
     wait_for_volume(number);
-    let mut partition_size = layout.partitions.first().map(|p| p.sectors * disk.sector_size as u64).unwrap_or(estimated);
+    let mut partition_size = data.sectors * disk.sector_size as u64;
     if own_fat32 {
-        note(tf!("Formatage FAT32 ({}) par Chud Clone", "FAT32 formatting ({}) by Chud Clone", crate::diag::human_size(estimated)));
-        let p = layout
-            .partitions
-            .first()
-            .ok_or_else(|| t!("la partition créée par diskpart est introuvable", "the partition created by diskpart cannot be found").to_string())?;
+        note(tf!("Formatage FAT32 ({}) par Chud Clone", "FAT32 formatting ({}) by Chud Clone", crate::diag::human_size(partition_size)));
+        let p = data;
         let ss = disk.sector_size as u64;
         let (start, len) = (p.start_lba * ss, p.sectors * ss);
         partition_size = len;
@@ -467,15 +486,17 @@ pub fn format_disk(number: u32, expected_fingerprint: &str, req: &FormatRequest,
         let _ = refresh_disk(&dev);
         drop(dev);
         drop(locks);
-    } else if let Some(script) = &steps_dp.format {
+    } else {
         note(tf!("Formatage {} par Windows", "{} formatting by Windows", req.fs.label()));
-        run_diskpart_retry(script, &same_disk)?;
+        run_diskpart_retry(&format_script(number, data_number, &req), &same_disk)?;
     }
     // A drive letter, unless Windows already gave one.
     std::thread::sleep(std::time::Duration::from_millis(800));
     let mut mount = volumes_of_disk(number).into_iter().map(|v| v.1).find(|m| m.ends_with(":\\") || m.ends_with(':'));
     if mount.is_none() {
-        let _ = run_diskpart(&format!("select disk {number}\r\nselect partition 1\r\nassign noerr\r\n"));
+        if same_disk().is_ok() {
+            let _ = run_diskpart(&format!("select disk {number}\r\nselect partition {data_number}\r\nassign noerr\r\n"));
+        }
         std::thread::sleep(std::time::Duration::from_millis(800));
         mount = volumes_of_disk(number).into_iter().map(|v| v.1).find(|m| m.ends_with(":\\") || m.ends_with(':'));
     }
@@ -645,15 +666,52 @@ mod tests {
         assert!(check_new_table(&layout(TableKind::Mbr, vec![part.clone(), Partition { number: 2, ..part }]), TableChoice::Mbr).is_err());
     }
 
+    /// On a fixed disk (internal disk, external USB hard disk, VHDX), diskpart adds a
+    /// Microsoft reserved partition (MSR) in front of the one it creates on a GPT table.
+    #[test]
+    fn gpt_table_of_a_fixed_disk_has_an_msr_first() {
+        use crate::guid::Guid;
+        use crate::partition::{DiskLayout, GPT_BASIC_DATA, GPT_MSR, PartInfo, Partition, TableKind};
+        let gpt = |number: u32, start_lba: u64, sectors: u64, type_guid: &str| Partition {
+            number,
+            start_lba,
+            sectors,
+            info: PartInfo::Gpt { type_guid: Guid::must(type_guid), unique_guid: Guid::must(GPT_MSR), attributes: 0, name: String::new(), slot: number - 1 },
+        };
+        let layout = |partitions| DiskLayout { kind: TableKind::Gpt, sector_size: 512, disk_sectors: 1 << 21, partitions, gpt: None, mbr: None, findings: Vec::new() };
+        let msr = gpt(1, 34, 32768, GPT_MSR);
+        let data = gpt(2, 34816, 2_000_000, GPT_BASIC_DATA);
+        // Removable disk: the data partition alone.
+        assert!(check_new_table(&layout(vec![gpt(1, 2048, 2_000_000, GPT_BASIC_DATA)]), TableChoice::Gpt).is_ok());
+        // Fixed disk: MSR, then the data partition.
+        assert!(check_new_table(&layout(vec![msr.clone(), data.clone()]), TableChoice::Gpt).is_ok());
+        assert_eq!(check_new_table(&layout(vec![gpt(1, 2048, 2_000_000, GPT_BASIC_DATA)]), TableChoice::Gpt), Ok(1));
+        assert_eq!(check_new_table(&layout(vec![msr.clone(), data.clone()]), TableChoice::Gpt), Ok(2));
+        assert_eq!(format_script(4, 2, &req(FsChoice::Exfat, "")), "select disk 4\r\nselect partition 2\r\nformat fs=exfat quick\r\n");
+        // Anything else is still refused: two data partitions, two MSRs, an MSR alone, a gap.
+        let data3 = gpt(3, 3_000_000, 1000, GPT_BASIC_DATA);
+        assert!(check_new_table(&layout(vec![msr.clone(), data.clone(), data3.clone()]), TableChoice::Gpt).is_err());
+        assert!(check_new_table(&layout(vec![msr.clone(), gpt(2, 40000, 32768, GPT_MSR), data3.clone()]), TableChoice::Gpt).is_err());
+        assert!(check_new_table(&layout(vec![msr.clone()]), TableChoice::Gpt).is_err());
+        assert!(check_new_table(&layout(vec![msr.clone(), data3]), TableChoice::Gpt).is_err());
+        // The MSR type means nothing on an MBR table (no such type there): counted as data.
+        let mbr = |number: u32| Partition {
+            number,
+            start_lba: 2048 * number as u64,
+            sectors: 1000,
+            info: PartInfo::Mbr { type_id: 0x07, active: false, logical: false, slot: number - 1, ebr_lba: None },
+        };
+        assert!(check_new_table(&DiskLayout { kind: TableKind::Mbr, ..layout(vec![mbr(1), mbr(2)]) }, TableChoice::Mbr).is_err());
+    }
+
     #[test]
     fn script() {
-        let s = diskpart_steps(3, &req(FsChoice::Ntfs, "Data"), true);
+        let s = diskpart_steps(3, &req(FsChoice::Ntfs, "Data"));
         assert!(s.clean.starts_with("select disk 3\r\n") && s.clean.ends_with("clean\r\n"));
         assert_eq!(s.partition, "select disk 3\r\nconvert gpt noerr\r\ncreate partition primary\r\n");
-        assert_eq!(s.format.as_deref(), Some("select disk 3\r\nselect partition 1\r\nformat fs=ntfs label=\"Data\" quick\r\n"));
-        let s = diskpart_steps(3, &FormatRequest { fs: FsChoice::Fat32, table: TableChoice::Mbr, label: String::new() }, false);
+        assert_eq!(format_script(3, 1, &req(FsChoice::Ntfs, "Data")), "select disk 3\r\nselect partition 1\r\nformat fs=ntfs label=\"Data\" quick\r\n");
+        let s = diskpart_steps(3, &FormatRequest { fs: FsChoice::Fat32, table: TableChoice::Mbr, label: String::new() });
         assert!(s.partition.contains("convert mbr noerr"));
-        assert!(s.format.is_none());
         assert!(uses_own_fat32(&req(FsChoice::Fat32, ""), 64 * GIB));
         assert!(!uses_own_fat32(&req(FsChoice::Fat32, ""), 16 * GIB));
         assert!(!uses_own_fat32(&req(FsChoice::Exfat, ""), 64 * GIB));
