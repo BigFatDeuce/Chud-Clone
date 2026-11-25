@@ -10,6 +10,7 @@
 
 mod common;
 
+use chud_clone_core::device::SourceFile;
 use chud_clone_core::engine::{Control, EngineOptions, NullObserver};
 use chud_clone_core::job::{JobConfig, JobError, Target, execute, prepare};
 use chud_clone_core::plan::PlanOptions;
@@ -95,21 +96,47 @@ fn alias_made_after_the_checks_is_refused_on_the_open_handle() {
     assert!(id.is_some(), "NTFS reports file identities");
     let alias = dir.join("late.img");
     std::fs::hard_link(&src, &alias).unwrap();
-    assert!(FileDevice::create_excluding(&alias, size, 512, id).is_err());
+    assert!(FileDevice::create_excluding(&alias, size, 512, SourceFile::Image(id)).is_err());
     drop(held);
     assert_eq!(hash(&src), before);
 
     // Even when the source was opened without that protection, the identity check on the
     // destination handle refuses it before emptying it.
     let plain = FileDevice::open_read_only(&src, 512).unwrap();
-    let err = FileDevice::create_excluding(&alias, size, 512, plain.identity().unwrap()).err().expect("alias refused");
+    let err = FileDevice::create_excluding(&alias, size, 512, SourceFile::Image(plain.identity().unwrap())).err().expect("alias refused");
     assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
     drop(plain);
     assert_eq!(hash(&src), before, "the source image was modified");
 
     // A genuinely different file is created normally.
     let other = dir.join("other.img");
-    let dev = FileDevice::create_excluding(&other, 1 << 20, 512, id).unwrap();
+    let dev = FileDevice::create_excluding(&other, 1 << 20, 512, SourceFile::Image(id)).unwrap();
+    assert_eq!(chud_clone_core::device::BlockDevice::size(&dev), 1 << 20);
+}
+
+/// When the identity of the source cannot be known (some network shares, some file
+/// systems), the alias check cannot be made: an existing destination is then refused,
+/// because it could be the source. A file created for the occasion cannot be.
+#[test]
+fn existing_destination_is_refused_when_identities_are_unknown() {
+    use chud_clone_core::device::FileDevice;
+    let dir = work_dir("unknown-identity");
+    let (src, before) = source_copy(&dir);
+    let size = std::fs::metadata(&src).unwrap().len();
+    let alias = dir.join("alias.img");
+    std::fs::hard_link(&src, &alias).unwrap();
+
+    let err = FileDevice::create_excluding(&alias, size, 512, SourceFile::Image(None)).err().expect("existing file refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+    assert_eq!(hash(&src), before, "the source image was modified");
+
+    let fresh = dir.join("fresh.img");
+    let dev = FileDevice::create_excluding(&fresh, 1 << 20, 512, SourceFile::Image(None)).unwrap();
+    assert_eq!(chud_clone_core::device::BlockDevice::size(&dev), 1 << 20);
+    drop(dev);
+
+    // With a disk as the source there is no file to protect: an existing image is reused.
+    let dev = FileDevice::create_excluding(&fresh, 1 << 20, 512, SourceFile::NotAFile).unwrap();
     assert_eq!(chud_clone_core::device::BlockDevice::size(&dev), 1 << 20);
 }
 

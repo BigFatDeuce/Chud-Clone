@@ -4,7 +4,7 @@
 
 use crate::boot::{BootAssessment, assess_boot};
 use crate::clone::{CloneRequest, run_clone};
-use crate::device::{BlockDevice, FileDevice, FileIdentity, ReadOnly};
+use crate::device::{BlockDevice, FileDevice, ReadOnly, SourceFile};
 use crate::diag::{Finding, has_blocking};
 use crate::engine::{Control, EngineOptions, LogLevel, Observer};
 use crate::image::image_info;
@@ -404,14 +404,14 @@ fn volumes_to_lock(info: &DiskInfo) -> Vec<(String, String)> {
 /// Opens the source of a clone. Like [`open_read_only`], but an image file is also
 /// protected against writers for as long as it stays open (see
 /// [`FileDevice::open_source`]); its identity is returned to check the destination.
-fn open_source(target: &Target) -> Result<(Box<dyn BlockDevice>, Option<FileIdentity>), String> {
+fn open_source(target: &Target) -> Result<(Box<dyn BlockDevice>, SourceFile), String> {
     match target {
         Target::Image(p) => {
             let dev = FileDevice::open_source(p, 512).map_err(|e| tf!("ouverture de l'image impossible : {e}", "cannot open the image: {e}"))?;
             let id = dev.identity().ok().flatten();
-            Ok((Box::new(dev), id))
+            Ok((Box::new(dev), SourceFile::Image(id)))
         }
-        Target::Disk(_) => Ok((open_read_only(target)?, None)),
+        Target::Disk(_) => Ok((open_read_only(target)?, SourceFile::NotAFile)),
     }
 }
 
@@ -769,12 +769,7 @@ fn serial_text(d: &DiskInfo) -> String {
     }
 }
 
-fn open_destination(
-    target: &Target,
-    info: &DiskInfo,
-    allow_unvalidated: bool,
-    source: Option<FileIdentity>,
-) -> Result<Box<dyn BlockDevice>, JobError> {
+fn open_destination(target: &Target, info: &DiskInfo, allow_unvalidated: bool, source: SourceFile) -> Result<Box<dyn BlockDevice>, JobError> {
     match target {
         Target::Image(p) => {
             // An existing image is recreated at the same size: its content is erased by

@@ -413,6 +413,17 @@ impl FileIdentity {
     }
 }
 
+/// The source of a clone, as far as an image destination must stay away from it
+/// (see [`FileDevice::create_excluding`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceFile {
+    /// The source is not a file (a disk), or there is no source.
+    NotAFile,
+    /// The source is an image file: its identity, or `None` if its file system could
+    /// not report it.
+    Image(Option<FileIdentity>),
+}
+
 /// True if both paths name the same existing file, whatever the names used (hard links,
 /// administrative share, `\\?\` prefix, 8.3 short name...). False if either is missing
 /// or if the file system cannot tell.
@@ -502,7 +513,7 @@ impl FileDevice {
     /// a large image on a hard disk, with no progress to report. A sparse file reads as
     /// zeros where nothing was written and only takes the space actually copied.
     pub fn create(path: &Path, size: u64, sector: u32) -> io::Result<Self> {
-        Self::create_excluding(path, size, sector, None)
+        Self::create_excluding(path, size, sector, SourceFile::NotAFile)
     }
 
     /// Like [`FileDevice::create`], but refuses — before changing a single byte — a file
@@ -513,15 +524,26 @@ impl FileDevice {
     ///
     /// On Windows, a source opened with [`FileDevice::open_source`] forbids writers: the
     /// same file cannot even be opened here, whatever its name.
-    pub fn create_excluding(path: &Path, size: u64, sector: u32, source: Option<FileIdentity>) -> io::Result<Self> {
+    ///
+    /// When the source is a file and the comparison cannot be made (a file system that
+    /// reports no identity, for the source or for the destination), only a destination
+    /// created by this call is accepted: a file that did not exist cannot be the source.
+    pub fn create_excluding(path: &Path, size: u64, sector: u32, source: SourceFile) -> io::Result<Self> {
         if !size.is_multiple_of(sector as u64) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 t!("la taille de l'image doit être un multiple de la taille de secteur", "the image size must be a multiple of the sector size"),
             ));
         }
-        // No truncation at opening: nothing is changed before the checks below.
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|e| {
+        // No truncation at opening: nothing is changed before the checks below. A new
+        // file is tried first, so that it is known whether the file existed before.
+        let created = OpenOptions::new().read(true).write(true).create_new(true).open(path);
+        let (file, existed) = match created {
+            Ok(f) => (Ok(f), false),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (OpenOptions::new().read(true).write(true).open(path), true),
+            Err(e) => (Err(e), false),
+        };
+        let file = file.map_err(|e| {
             if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) {
                 io::Error::new(
                     io::ErrorKind::ResourceBusy,
@@ -537,16 +559,26 @@ impl FileDevice {
         if !file.metadata().map_err(|_| not_a_file())?.is_file() {
             return Err(not_a_file());
         }
-        if let Some(src) = source
-            && FileIdentity::of(&file)? == Some(src)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                t!(
-                    "le fichier de destination est le fichier source lui-même (sous un autre nom) : il serait effacé",
-                    "the destination file is the source file itself (under another name): it would be erased"
-                ),
-            ));
+        if let SourceFile::Image(src) = source {
+            let dst = FileIdentity::of(&file)?;
+            if existed && (src.is_none() || dst.is_none()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    t!(
+                        "le fichier de destination existe déjà et le système de fichiers ne permet pas de vérifier que ce n'est pas le fichier source : choisissez un nouveau nom de fichier",
+                        "the destination file already exists and the file system cannot tell whether it is the source file: choose a new file name"
+                    ),
+                ));
+            }
+            if src.is_some() && dst == src {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    t!(
+                        "le fichier de destination est le fichier source lui-même (sous un autre nom) : il serait effacé",
+                        "the destination file is the source file itself (under another name): it would be erased"
+                    ),
+                ));
+            }
         }
         file.set_len(0)?;
         // File systems without sparse files (FAT32, exFAT) refuse it: the image is then
