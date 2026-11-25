@@ -292,7 +292,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 157 tests
+cargo test --workspace                                         # 162 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -331,7 +331,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 89 unit tests and 57 integration tests on **real disk images**
+- `crates/core`: 89 unit tests and 58 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),
@@ -348,10 +348,11 @@ application.
   clone (choice of a new image as destination, wrong then right confirmation word, verified
   result, reports written), analysis, SMART, surface scan, formatting refused on an image, language switch, quit menu, and every
   screen rendered at 60 x 18, 80 x 25 and 140 x 45.
-- `crates/app`: 8 unit tests: one activity at a time (clone, scan, format, update), and the
+- `crates/app`: 12 unit tests: one activity at a time (clone, scan, format, update), and the
   updater (version comparison, release parsing, checksum
   lookup, refusal of releases without checksums, with a foreign page or with files hosted
-  elsewhere, package locked against other writers), plus a network test run
+  elsewhere, package locked against other writers, all-or-nothing replacement of a portable
+  copy and its repair after an interrupted update), plus a network test run
   on demand (`cargo test -p chud-clone-app -- --ignored`).
 - `scripts/validate-clone.sh`: **independent** check of a clone on Linux (sgdisk -v,
   ntfsresize --check, fsck.fat, MD5 of every file).

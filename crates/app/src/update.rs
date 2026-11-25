@@ -211,10 +211,103 @@ pub fn cleanup(portable: bool) {
         let _ = std::fs::remove_dir_all(work_dir_for(Method::Installer));
     }
     if portable && let Some(dir) = exe_dir() {
-        for name in ["chud-clone.exe.old", "chud-clone-cli.exe.old"] {
-            let _ = std::fs::remove_file(dir.join(name));
+        settle_portable(&dir);
+    }
+}
+
+/// Executables replaced by a portable update.
+const PORTABLE_EXES: [&str; 2] = ["chud-clone.exe", "chud-clone-cli.exe"];
+
+/// Tidies the executables of a portable copy after an update: a previous version
+/// (`.old`) whose replacement is missing, because the update was interrupted (crash,
+/// power cut), is put back; otherwise it is removed, together with any half-copied new
+/// version (`.new`). Errors are ignored: a file still in use is handled on a later start.
+fn settle_portable(dir: &Path) {
+    for name in PORTABLE_EXES {
+        let cur = dir.join(name);
+        let old = dir.join(format!("{name}.old"));
+        let _ = std::fs::remove_file(dir.join(format!("{name}.new")));
+        if !cur.exists() && old.is_file() {
+            let _ = std::fs::rename(&old, &cur);
+        } else {
+            let _ = std::fs::remove_file(&old);
         }
     }
+}
+
+/// Replaces the executables in `target` with those of the extracted archive `source`,
+/// all or nothing. Every executable must be in the archive. The new files are first
+/// copied next to the old ones (`.new`); only then is each old one renamed (`.old`, a
+/// running executable can be renamed but not overwritten) and the new one moved in its
+/// place. Any failure puts the previous version back. The documentation files follow,
+/// on a best-effort basis.
+fn replace_portable_files(source: &Path, target: &Path) -> Result<(), String> {
+    if let Some(name) = PORTABLE_EXES.iter().find(|n| !source.join(n).is_file()) {
+        return Err(tf!("archive incomplète : {name} absent", "incomplete archive: {name} missing"));
+    }
+    let staged = |name: &str| target.join(format!("{name}.new"));
+    let discard_staged = || {
+        for name in PORTABLE_EXES {
+            let _ = std::fs::remove_file(staged(name));
+        }
+    };
+    for name in PORTABLE_EXES {
+        if let Err(e) = std::fs::copy(source.join(name), staged(name)) {
+            discard_staged();
+            return Err(tf!(
+                "copie de la nouvelle version impossible ({name}) : {e}. Le dossier du programme est peut-être protégé en écriture ou plein.",
+                "cannot copy the new version ({name}): {e}. The program folder may be write-protected or full."
+            ));
+        }
+    }
+    // (current path, previous version kept aside if there was one)
+    let mut done: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let swap = |name: &str| -> std::io::Result<(PathBuf, Option<PathBuf>)> {
+        let cur = target.join(name);
+        let old = target.join(format!("{name}.old"));
+        let kept = if cur.exists() {
+            let _ = std::fs::remove_file(&old);
+            std::fs::rename(&cur, &old)?;
+            Some(old)
+        } else {
+            None
+        };
+        if let Err(e) = std::fs::rename(staged(name), &cur) {
+            if let Some(old) = &kept {
+                let _ = std::fs::rename(old, &cur);
+            }
+            return Err(e);
+        }
+        Ok((cur, kept))
+    };
+    for name in PORTABLE_EXES {
+        match swap(name) {
+            Ok(entry) => done.push(entry),
+            Err(e) => {
+                for (cur, kept) in done.iter().rev() {
+                    let _ = std::fs::remove_file(cur);
+                    if let Some(old) = kept {
+                        let _ = std::fs::rename(old, cur);
+                    }
+                }
+                discard_staged();
+                return Err(tf!(
+                    "impossible de remplacer {name} : {e}. L'ancienne version a été remise en place.",
+                    "cannot replace {name}: {e}. The previous version has been put back."
+                ));
+            }
+        }
+    }
+    let _ = std::fs::copy(source.join("README.txt"), target.join("README.txt"));
+    let lic = source.join("licenses");
+    if lic.is_dir() && std::fs::create_dir_all(target.join("licenses")).is_ok() {
+        for e in std::fs::read_dir(&lic).into_iter().flatten().flatten() {
+            if e.path().is_file() {
+                let _ = std::fs::copy(e.path(), target.join("licenses").join(e.file_name()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Expected SHA-256 of `name` in a `SHA256SUMS` file (`<hash>  <name>` lines).
@@ -344,54 +437,9 @@ pub fn apply_portable(zip: &Path) -> Result<PathBuf, String> {
         .find(|d| d.join("chud-clone.exe").is_file())
         .ok_or_else(|| t!("archive inattendue : programme absent", "unexpected archive: program missing").to_string())?;
 
-    // A running executable cannot be overwritten but it can be renamed.
-    let exes = ["chud-clone.exe", "chud-clone-cli.exe"];
-    let mut renamed = Vec::new();
-    for name in exes {
-        let cur = target.join(name);
-        if !cur.exists() {
-            continue;
-        }
-        let old = target.join(format!("{name}.old"));
-        let _ = std::fs::remove_file(&old);
-        if let Err(e) = std::fs::rename(&cur, &old) {
-            for (c, o) in renamed.iter().rev() {
-                let _ = std::fs::rename(o, c);
-            }
-            return Err(tf!(
-                "impossible de remplacer {name} : {e}. Le dossier du programme est peut-être protégé en écriture.",
-                "cannot replace {name}: {e}. The program folder may be write-protected."
-            ));
-        }
-        renamed.push((cur, old));
-    }
-    let copy_all = || -> std::io::Result<()> {
-        for name in exes.iter().chain(["README.txt"].iter()) {
-            let from = source.join(name);
-            if from.is_file() {
-                std::fs::copy(&from, target.join(name))?;
-            }
-        }
-        let lic = source.join("licenses");
-        if lic.is_dir() {
-            std::fs::create_dir_all(target.join("licenses"))?;
-            for e in std::fs::read_dir(&lic)?.flatten() {
-                if e.path().is_file() {
-                    std::fs::copy(e.path(), target.join("licenses").join(e.file_name()))?;
-                }
-            }
-        }
-        Ok(())
-    };
-    if let Err(e) = copy_all() {
-        // Puts the previous version back.
-        for (c, o) in renamed.iter().rev() {
-            let _ = std::fs::remove_file(c);
-            let _ = std::fs::rename(o, c);
-        }
-        return Err(tf!("copie de la nouvelle version impossible : {e}", "cannot copy the new version: {e}"));
-    }
+    let result = replace_portable_files(&source, &target);
     let _ = std::fs::remove_dir_all(&extract);
+    result?;
     Ok(target.join("chud-clone.exe"))
 }
 
@@ -666,5 +714,73 @@ mod tests {
         assert_eq!(expected_hash(&sums, "ChudClone-9.1.0-setup.exe"), Some(h));
         assert_eq!(expected_hash(&sums, "missing.exe"), None);
         assert_eq!(expected_hash("xyz  ChudClone-9.1.0-setup.exe", "ChudClone-9.1.0-setup.exe"), None);
+    }
+
+    /// A portable folder with the given files (name, content), in a fresh folder.
+    fn folder(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("chudclone-portable-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (f, content) in files {
+            std::fs::write(dir.join(f), content).unwrap();
+        }
+        dir
+    }
+
+    fn read(dir: &Path, name: &str) -> Option<String> {
+        std::fs::read_to_string(dir.join(name)).ok()
+    }
+
+    #[test]
+    fn portable_update_replaces_both_executables() {
+        let target = folder("ok-target", &[("chud-clone.exe", "gui 1"), ("chud-clone-cli.exe", "cli 1")]);
+        let source = folder("ok-source", &[("chud-clone.exe", "gui 2"), ("chud-clone-cli.exe", "cli 2"), ("README.txt", "doc 2")]);
+        replace_portable_files(&source, &target).unwrap();
+        assert_eq!(read(&target, "chud-clone.exe").as_deref(), Some("gui 2"));
+        assert_eq!(read(&target, "chud-clone-cli.exe").as_deref(), Some("cli 2"));
+        assert_eq!(read(&target, "README.txt").as_deref(), Some("doc 2"));
+        settle_portable(&target);
+        assert!(!target.join("chud-clone.exe.old").exists() && !target.join("chud-clone-cli.exe.old").exists());
+    }
+
+    /// An archive without the command-line program used to leave the copy without one.
+    #[test]
+    fn incomplete_archive_changes_nothing() {
+        let target = folder("partial-target", &[("chud-clone.exe", "gui 1"), ("chud-clone-cli.exe", "cli 1")]);
+        let source = folder("partial-source", &[("chud-clone.exe", "gui 2")]);
+        assert!(replace_portable_files(&source, &target).is_err());
+        assert_eq!(read(&target, "chud-clone.exe").as_deref(), Some("gui 1"));
+        assert_eq!(read(&target, "chud-clone-cli.exe").as_deref(), Some("cli 1"));
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 2, "files left behind");
+    }
+
+    /// The second executable cannot be put in place: the first one is rolled back too.
+    #[test]
+    fn failed_replacement_puts_the_previous_version_back() {
+        let target = folder("fail-target", &[("chud-clone.exe", "gui 1"), ("chud-clone-cli.exe", "cli 1")]);
+        // A non-empty folder named like the kept-aside copy of the command-line program:
+        // that program cannot be renamed, after the main one has already been replaced.
+        std::fs::create_dir(target.join("chud-clone-cli.exe.old")).unwrap();
+        std::fs::write(target.join("chud-clone-cli.exe.old").join("inside"), "x").unwrap();
+        let source = folder("fail-source", &[("chud-clone.exe", "gui 2"), ("chud-clone-cli.exe", "cli 2")]);
+        assert!(replace_portable_files(&source, &target).is_err());
+        assert_eq!(read(&target, "chud-clone.exe").as_deref(), Some("gui 1"));
+        assert_eq!(read(&target, "chud-clone-cli.exe").as_deref(), Some("cli 1"));
+        assert!(!target.join("chud-clone.exe.new").exists() && !target.join("chud-clone-cli.exe.new").exists());
+    }
+
+    /// An update interrupted between the two renames (crash, power cut): the next start
+    /// puts the previous version back instead of deleting it.
+    #[test]
+    fn interrupted_update_is_repaired_at_the_next_start() {
+        let dir = folder(
+            "interrupted",
+            &[("chud-clone.exe", "gui 2"), ("chud-clone.exe.old", "gui 1"), ("chud-clone-cli.exe.old", "cli 1"), ("chud-clone-cli.exe.new", "cli 2 (half)")],
+        );
+        settle_portable(&dir);
+        assert_eq!(read(&dir, "chud-clone-cli.exe").as_deref(), Some("cli 1"));
+        assert_eq!(read(&dir, "chud-clone.exe").as_deref(), Some("gui 2"));
+        assert!(!dir.join("chud-clone.exe.old").exists());
+        assert!(!dir.join("chud-clone-cli.exe.new").exists());
     }
 }
