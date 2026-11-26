@@ -667,7 +667,20 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
             ),
         }
     }
+    #[cfg(windows)]
+    let dst_number = opened.dst_number;
     drop(opened);
+
+    // 8. Last identity check, once Windows has re-read the clone and the volumes are
+    // released (see `clone::recheck_identity`).
+    #[cfg(windows)]
+    if let Some(n) = dst_number
+        && outcome.table_written
+        && outcome.table_check.ok
+    {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        recheck_destination_identity(n, &plan, &analysis, &mut outcome, &journal);
+    }
 
     // An image only takes the space of its data (zeros are stored as holes).
     if let Target::Image(p) = &cfg.destination
@@ -711,6 +724,60 @@ pub fn execute(cfg: &JobConfig, reports_dir: &Path, ctl: &Control, obs: &dyn Obs
         obs.log(LogLevel::Error, &tf!("Le rapport n'a pas pu être enregistré : {e}", "The report could not be saved: {e}"));
     }
     Ok(report)
+}
+
+/// Step 8 of a clone onto a disk: the clone's identifiers are read again from the disk
+/// itself; if Windows changed them after the clone, they are put back.
+#[cfg(windows)]
+fn recheck_destination_identity(n: u32, plan: &ClonePlan, src: &DiskAnalysis, outcome: &mut crate::clone::CloneOutcome, journal: &Journal) {
+    use crate::clone::{FinalStatus, IdentityRecheck, recheck_identity};
+    let result = match crate::win::rawdisk::RawDisk::open_read_write(&format!(r"\\.\PhysicalDrive{n}")) {
+        Ok(mut d) => recheck_identity(&mut d, plan, src),
+        Err(e) => IdentityRecheck::Failed(Vec::new(), e.to_string()),
+    };
+    let warn = match result {
+        IdentityRecheck::Unchanged => {
+            journal.note(
+                LogLevel::Info,
+                t!(
+                    "Identifiants du clone relus après la relecture par Windows : inchangés.",
+                    "Clone identifiers read again after Windows re-read the disk: unchanged."
+                ),
+            );
+            None
+        }
+        IdentityRecheck::Restored(changes) => Some(tf!(
+            "Windows a modifié les identifiants du clone après la copie ({}), sans doute parce que la source est encore branchée ; \
+             ils ont été remis à l'identique de la source. Débranchez la source avant de démarrer sur le clone.",
+            "Windows changed the clone's identifiers after the copy ({}), most likely because the source is still connected; \
+             they were put back as on the source. Unplug the source before booting from the clone.",
+            changes.join(" ; ")
+        )),
+        IdentityRecheck::Failed(changes, e) if changes.is_empty() => {
+            journal.note(
+                LogLevel::Warning,
+                &tf!(
+                    "Identifiants du clone non revérifiés à la fin ({e}). Les données copiées ne sont pas en cause.",
+                    "Clone identifiers not checked again at the end ({e}). The copied data is not affected."
+                ),
+            );
+            None
+        }
+        IdentityRecheck::Failed(changes, e) => Some(tf!(
+            "Windows a modifié les identifiants du clone après la copie ({}) et ils n'ont pas pu être remis ({e}). Le clone risque de \
+             ne pas démarrer (0xc000000e) : source débranchée, lancez « Réparer le démarrage » sur le clone.",
+            "Windows changed the clone's identifiers after the copy ({}) and they could not be put back ({e}). The clone may not \
+             boot (0xc000000e): with the source unplugged, run \"Repair boot\" on the clone.",
+            changes.join(" ; ")
+        )),
+    };
+    if let Some(w) = warn {
+        journal.note(LogLevel::Warning, &w);
+        outcome.reasons.push(w);
+        if outcome.status == FinalStatus::SuccessVerified {
+            outcome.status = FinalStatus::CompletedWithWarnings;
+        }
+    }
 }
 
 /// True if a disk read again now has the fingerprint taken when it was chosen. An empty

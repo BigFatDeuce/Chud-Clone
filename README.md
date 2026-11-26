@@ -228,6 +228,9 @@ handles each of them:
 - While the source and the clone are connected together, Windows keeps the clone offline
   ("signature collision"). **Do not bring it online** in Disk Management: Windows would change its
   identifiers, which is the third cause above. Unplug the source first.
+- At the very end of a clone to a disk, once Windows has re-read it, Chud Clone reads the clone's
+  identifiers again from the disk itself. If Windows changed them in the meantime, the source's
+  partition table is written back (outside the partitions) and the report says so.
 - **Repair boot** (Disks page in the application, `fix-boot` on the command line, `R` on the WinPE
   key) applies all three fixes to a disk. It erases nothing and never changes this PC's own boot
   entries. On a disk Windows keeps offline it does the first two and explains why the boot
@@ -292,7 +295,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 162 tests
+cargo test --workspace                                         # 163 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -331,7 +334,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 89 unit tests and 58 integration tests on **real disk images**
+- `crates/core`: 89 unit tests and 59 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),

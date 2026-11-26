@@ -231,14 +231,19 @@ fn zero_range(dst: &mut dyn BlockDevice, offset: u64, len: u64) -> std::io::Resu
 }
 
 fn write_table(req: &mut CloneRequest) -> Result<bool, String> {
-    let ss = req.dst.sector_size() as u64;
-    match &req.plan.table_plan {
+    put_table(req.dst, req.plan)
+}
+
+/// Writes the partition table the plan describes, with the source's identifiers.
+fn put_table(dst: &mut dyn BlockDevice, plan: &ClonePlan) -> Result<bool, String> {
+    let ss = dst.sector_size() as u64;
+    match &plan.table_plan {
         TablePlan::None => Ok(false),
         TablePlan::Mbr { sector0 } => {
             let mut s = AlignedBuf::new(ss as usize);
             let n = sector0.len().min(ss as usize);
             s[..n].copy_from_slice(&sector0[..n]);
-            req.dst.write_at(0, &s[..ss as usize]).map_err(|e| tf!("écriture du MBR : {e}", "writing the MBR: {e}"))?;
+            dst.write_at(0, &s[..ss as usize]).map_err(|e| tf!("écriture du MBR : {e}", "writing the MBR: {e}"))?;
             Ok(true)
         }
         TablePlan::Gpt { spec, src_sector0 } => {
@@ -249,12 +254,49 @@ fn write_table(req: &mut CloneRequest) -> Result<bool, String> {
                 dst.write_at(lba * ss, &b).map_err(|e| tf!("écriture de {what} (LBA {lba}) : {e}", "writing {what} (LBA {lba}): {e}"))
             };
             // Backup first, primary next, protective MBR last.
-            write(req.dst, img.backup_lba, &img.backup, t!("la table GPT de secours", "the backup GPT"))?;
-            write(req.dst, img.primary_lba, &img.primary, t!("la table GPT principale", "the primary GPT"))?;
+            write(dst, img.backup_lba, &img.backup, t!("la table GPT de secours", "the backup GPT"))?;
+            write(dst, img.primary_lba, &img.primary, t!("la table GPT principale", "the primary GPT"))?;
             let pm = mbr::build_protective(src_sector0.as_deref(), spec.sector_size, spec.disk_sectors);
-            write(req.dst, 0, &pm, t!("le MBR de protection", "the protective MBR"))?;
+            write(dst, 0, &pm, t!("le MBR de protection", "the protective MBR"))?;
             Ok(true)
         }
+    }
+}
+
+/// Last identity check of a clone, made once Windows has re-read the destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityRecheck {
+    /// The clone still carries the source's identifiers.
+    Unchanged,
+    /// They had changed (the differences found) and the clone's table was written again.
+    Restored(Vec<String>),
+    /// They changed and could not be put back: the differences, then the error.
+    Failed(Vec<String>, String),
+}
+
+/// Reads the clone's partition table again and compares it with the source's. If the
+/// identifiers changed after the clone (Windows gives a new disk GUID or signature to a
+/// disk that collides with another one, and the BCD copied from the source then points
+/// to a disk that no longer exists: 0xc000000e at boot), the table the clone wrote is
+/// written again, in the areas outside the partitions, and read back.
+pub fn recheck_identity(dst: &mut dyn BlockDevice, plan: &ClonePlan, src: &DiskAnalysis) -> IdentityRecheck {
+    let read_back = |dst: &mut dyn BlockDevice| {
+        analyze_disk(dst)
+            .map(|a| check_table(plan, src, &a))
+            .map_err(|e| tf!("relecture de la destination impossible : {e}", "cannot read the destination back: {e}"))
+    };
+    let first = match read_back(dst) {
+        Ok(c) if c.ok => return IdentityRecheck::Unchanged,
+        Ok(c) => c.problems,
+        Err(e) => return IdentityRecheck::Failed(Vec::new(), e),
+    };
+    if let Err(e) = put_table(dst, plan).and_then(|_| dst.flush().map_err(|e| e.to_string())) {
+        return IdentityRecheck::Failed(first, e);
+    }
+    match read_back(dst) {
+        Ok(c) if c.ok => IdentityRecheck::Restored(first),
+        Ok(c) => IdentityRecheck::Failed(first, c.problems.join(" ; ")),
+        Err(e) => IdentityRecheck::Failed(first, e),
     }
 }
 

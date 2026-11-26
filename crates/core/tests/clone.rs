@@ -1000,3 +1000,57 @@ fn verification_reads_the_medium_not_the_cache() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Identifiers changed by Windows after the clone (0xc000000e at boot)
+// ---------------------------------------------------------------------------
+
+/// Windows gives a new disk GUID (GPT) or signature (MBR) to a disk that collides with
+/// another connected one. The last check finds it on the clone and writes the source's
+/// table again; a clone left alone is not touched.
+#[test]
+fn identifiers_changed_after_the_clone_are_put_back() {
+    use chud_clone_core::clone::{IdentityRecheck, recheck_identity};
+    use chud_clone_core::guid::Guid;
+    use chud_clone_core::plan::TablePlan;
+    let _g = heavy();
+
+    // GPT: new disk GUID written in both headers, as Windows does.
+    let src = gpt_image();
+    let r = run(src, src.len() as u64, PlanOptions::default());
+    assert!(r.outcome.table_written && r.outcome.table_check.ok, "{}", dump_reasons(&r.outcome));
+    let mut d = MemDevice::from_vec(r.dst.clone(), 512);
+    assert_eq!(recheck_identity(&mut d, &r.plan, &r.analysis), IdentityRecheck::Unchanged);
+    assert!(d.data == r.dst, "an unchanged clone must not be written to");
+    let TablePlan::Gpt { spec, .. } = &r.plan.table_plan else { panic!("GPT plan expected") };
+    let mut other = spec.clone();
+    other.disk_guid = Guid::must("0BADC0DE-0000-4000-8000-000000000001");
+    let img = build_gpt(&other).unwrap();
+    d.write_at(img.backup_lba * SS, &img.backup).unwrap();
+    d.write_at(img.primary_lba * SS, &img.primary).unwrap();
+    assert_eq!(read_layout(&mut d).unwrap().gpt.unwrap().disk_guid, other.disk_guid);
+    match recheck_identity(&mut d, &r.plan, &r.analysis) {
+        IdentityRecheck::Restored(changes) => assert!(changes.iter().any(|c| c.contains("GPT")), "{changes:?}"),
+        x => panic!("GPT identifiers not put back: {x:?}"),
+    }
+    assert!(d.data == r.dst, "the clone must be back to the table it was written with");
+
+    // MBR: new disk signature.
+    let src = mbr_image();
+    let r = run(src, src.len() as u64, PlanOptions::default());
+    assert!(r.outcome.table_written && r.outcome.table_check.ok, "{}", dump_reasons(&r.outcome));
+    let mut d = MemDevice::from_vec(r.dst.clone(), 512);
+    d.data[440..444].copy_from_slice(&0x0BADC0DEu32.to_le_bytes());
+    assert_eq!(read_layout(&mut d).unwrap().mbr.unwrap().signature, 0x0BADC0DE);
+    match recheck_identity(&mut d, &r.plan, &r.analysis) {
+        IdentityRecheck::Restored(changes) => assert!(changes.iter().any(|c| c.contains("MBR")), "{changes:?}"),
+        x => panic!("MBR signature not put back: {x:?}"),
+    }
+    assert!(d.data == r.dst);
+
+    // A destination that refuses the write: reported, not hidden.
+    let mut d = FaultyDevice::new(MemDevice::from_vec(r.dst.clone(), 512), FaultPlan::default());
+    d.inner.data[440..444].copy_from_slice(&0x0BADC0DEu32.to_le_bytes());
+    d.inner.read_only = true;
+    assert!(matches!(recheck_identity(&mut d, &r.plan, &r.analysis), IdentityRecheck::Failed(c, _) if !c.is_empty()));
+}
