@@ -300,7 +300,7 @@
 
   // ---------------------------------------------------------------------- API
   const cmds = {
-    env_info: () => ({ name: "Chud Clone", version: "0.9.1", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
+    env_info: () => ({ name: "Chud Clone", version: "0.9.2", elevated: ADMIN, portable: true, data_dir: "E:\\ChudClone\\ChudClone-data", reports_dir: "E:\\ChudClone\\ChudClone-data\\reports", physical_write_validated: true, confirm_word: "EFFACER", system_lang: Q.get("lang") === "en" ? "en" : "fr" }),
     set_language: ({ lang }) => { MLANG = lang === "en" ? "en" : "fr"; setDisks(); return null; },
     list_disks: async () => { await wait(700); return clone(disks); },
     read_smart: async ({ id }) => { await wait(600); return smartOf(disks.find((d) => d.id === id)); },

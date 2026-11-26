@@ -95,10 +95,10 @@ Grab the latest build from the [Releases page](https://github.com/BigFatDeuce/Ch
 
 | File | Use |
 | --- | --- |
-| `ChudClone-0.9.1-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
-| `ChudClone-0.9.1-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
-| `SHA256SUMS-0.9.1.txt` | Checksums of the files above. |
-| `ChudClone-0.9.1-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
+| `ChudClone-0.9.2-setup.exe` | Installs into Program Files (administrator rights), Start menu/desktop shortcuts, clean uninstall (reports in `%APPDATA%\ChudClone` are kept). English or French wizard. |
+| `ChudClone-0.9.2-portable.zip` | Unzip anywhere (USB key…). With `portable.flag` next to the exe, settings, reports and the WebView2 cache stay in `ChudClone-data\`. |
+| `SHA256SUMS-0.9.2.txt` | Checksums of the files above. |
+| `ChudClone-0.9.2-winpe.iso` | WinPE rescue image for Ventoy or a USB key (see [WinPE rescue key](#winpe-rescue-key)), with its `.sha256` checksum. |
 
 **Requirements:** Windows 10 or 11, 64-bit, and the Microsoft Edge WebView2 Runtime (included with
 Windows 11 and up-to-date Windows 10). Reading and cloning disks needs administrator rights, so
