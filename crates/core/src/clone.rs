@@ -574,7 +574,27 @@ pub fn run_clone(mut req: CloneRequest) -> CloneOutcome {
     // --- 1. Preparation: invalidating the old tables -----------------------------
     let dst_size = req.plan.dst_size;
     let head = MIB.min(dst_size);
-    let prep = zero_range(req.dst, 0, head).and_then(|_| if dst_size > 2 * MIB { zero_range(req.dst, dst_size - MIB, MIB) } else { Ok(()) });
+    let mut prep = zero_range(req.dst, 0, head).and_then(|_| if dst_size > 2 * MIB { zero_range(req.dst, dst_size - MIB, MIB) } else { Ok(()) });
+    // Partitions with nothing to copy (Microsoft reserved) are emptied: they would keep
+    // the destination's old content, and a former EFI partition left there is started
+    // by the firmware instead of the clone's (0xc000000e).
+    for pp in req.plan.partitions.iter().filter(|p| p.method == CopyMethod::Skip) {
+        if prep.is_err() {
+            break;
+        }
+        if let Some(kind) = crate::bootprep::reserved_leftover(req.dst, pp.dst_start, pp.dst_len) {
+            req.obs.log(
+                LogLevel::Info,
+                &tf!(
+                    "Partition {} (réservée) : ancien contenu {} de la destination effacé.",
+                    "Partition {} (reserved): the destination's old {} content erased.",
+                    pp.number,
+                    kind.label()
+                ),
+            );
+        }
+        prep = crate::bootprep::clear_reserved(req.dst, pp.dst_start, pp.dst_len);
+    }
     if let Err(e) = prep {
         let msg =
             tf!("Impossible d'écrire sur la destination pendant la préparation : {e}", "Cannot write to the destination during preparation: {e}");

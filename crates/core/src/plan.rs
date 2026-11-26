@@ -708,7 +708,13 @@ fn partition_tasks(
         return (
             CopyMethod::Skip,
             vec![],
-            Some(t!("partition réservée Microsoft : aucun contenu à conserver", "Microsoft reserved partition: no content to keep").into()),
+            Some(
+                t!(
+                    "partition réservée Microsoft : aucun contenu à conserver, remise à zéro sur la destination",
+                    "Microsoft reserved partition: no content to keep, filled with zeros on the destination"
+                )
+                .into(),
+            ),
         );
     }
     if mode == CloneMode::Smart {

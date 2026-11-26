@@ -53,6 +53,10 @@ pub struct BootPrepOutcome {
     /// firmware entry for this disk starts it anyway.
     #[serde(default)]
     pub fallback_added: bool,
+    /// Microsoft reserved partitions (numbers) where a file system left by an earlier
+    /// use of the disk was erased.
+    #[serde(default)]
+    pub reserved_cleared: Vec<u32>,
     /// Steps that could not be done (each one explained).
     pub warnings: Vec<String>,
     /// Detailed journal of the operation.
@@ -74,6 +78,13 @@ impl BootPrepOutcome {
         }
         if self.fallback_added {
             parts.push(t!("chargeur UEFI de secours ajouté", "fallback UEFI loader added").to_string());
+        }
+        if !self.reserved_cleared.is_empty() {
+            parts.push(tf!(
+                "ancienne partition de démarrage effacée de la partition réservée ({})",
+                "former boot partition erased from the reserved partition ({})",
+                self.reserved_cleared.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+            ));
         }
         if parts.is_empty() {
             t!("aucune modification nécessaire", "no change needed").to_string()
@@ -365,6 +376,49 @@ fn enable_drivers(dev: &mut dyn BlockDevice, base: u64, len: u64, out: &mut Boot
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- Reserved partition
+
+/// File system found at the start of the Microsoft reserved partition `[base, base+len)`,
+/// if any (`None` when it is blank, holds no recognised file system, or cannot be read).
+///
+/// A reserved partition holds no data. A file system there was left by an earlier use of
+/// the disk, typically a former EFI partition at the same place (Windows puts its EFI
+/// partition first, 1 MiB into the disk). The firmware does not look at partition types:
+/// it finds the old boot manager on it, offers it as a boot entry ("UEFI: <disk>") and
+/// may start it, and the old boot configuration then points to a disk that no longer
+/// exists (0xc000000e).
+pub fn reserved_leftover(dev: &mut dyn BlockDevice, base: u64, len: u64) -> Option<crate::fs::FsKind> {
+    use crate::fs::FsKind;
+    let ss = dev.sector_size() as u64;
+    let n = (128 * 1024u64).min(len);
+    let n = n - n % ss;
+    if n == 0 {
+        return None;
+    }
+    let mut buf = AlignedBuf::new(n as usize);
+    dev.read_at(base, &mut buf).ok()?;
+    match crate::fs::probe_kind(&buf) {
+        FsKind::Blank | FsKind::Unknown => None,
+        k => Some(k),
+    }
+}
+
+/// Fills the Microsoft reserved partition `[base, base+len)` with zeros, which is what
+/// Windows expects there (see [`reserved_leftover`]).
+pub fn clear_reserved(dev: &mut dyn BlockDevice, base: u64, len: u64) -> std::io::Result<()> {
+    const STEP: u64 = 1 << 20;
+    let ss = dev.sector_size() as u64;
+    let len = len - len % ss;
+    let buf = AlignedBuf::new(STEP.min(len.max(ss)) as usize);
+    let mut p = 0;
+    while p < len {
+        let n = STEP.min(len - p) as usize;
+        dev.write_at(base + p, &buf[..n])?;
+        p += n as u64;
+    }
+    dev.flush()
 }
 
 /// Prepares the Windows volume `[base, base+len)` of `dev` to boot on another PC:

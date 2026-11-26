@@ -331,7 +331,7 @@
       const d = disks.find((x) => x.id === id);
       if (d.is_system) throw T("c'est le disque du Windows en cours d'exécution", "this is the disk of the running Windows");
       for (const st of [T("Démarrage : Windows (UEFI / GPT)", "Boot: Windows (UEFI / GPT)"), T("Partition Windows : Z: — partition système : Y:", "Windows partition: Z: — system partition: Y:"), T("Pilotes activés au démarrage : stornvme, storahci", "Drivers enabled at boot: stornvme, storahci"), T("Configuration de démarrage mise à jour (bcdedit)", "Boot configuration updated (bcdedit)")]) { emit("fixboot-step", st); await wait(600); }
-      return { bcd_fixed: true, bcd_method: "bcdedit", drivers: ["stornvme", "storahci"], hibernation_cleared: Q.get("hiber") === "1", fallback_added: false, warnings: [], steps: [] };
+      return { bcd_fixed: true, bcd_method: "bcdedit", drivers: ["stornvme", "storahci"], hibernation_cleared: Q.get("hiber") === "1", fallback_added: false, reserved_cleared: [], warnings: [], steps: [] };
     },
     add_image: async () => {
       const img = mk({ id: "image:d:\\images\\sauvegarde-portable.img", kind: "image", path: "D:\\Images\\sauvegarde-portable.img", number: null, model: "sauvegarde-portable.img", serial: "", bus: "Fichier", media: "image", size: 256060514304, physical_sector_size: 512, partitions: winParts(256060514304, 88 * GiB) });

@@ -184,6 +184,29 @@ pub fn assess_boot(dev: &mut dyn BlockDevice, a: &DiskAnalysis) -> BootAssessmen
                     if msr { CheckState::Present } else { CheckState::Missing },
                     false,
                 );
+                for p in a.parts.iter().filter(|p| p.part.role() == PartRole::Msr) {
+                    if let Some(kind) = crate::bootprep::reserved_leftover(dev, p.part.start_lba * ss, p.part.sectors * ss) {
+                        out.findings.push(
+                            Finding::warning(
+                                "BOOT_MSR_LEFTOVER",
+                                t!("Ancienne partition dans la partition réservée", "Former partition inside the reserved partition"),
+                                tf!(
+                                    "La partition réservée Microsoft contient un système de fichiers {} laissé par une utilisation précédente \
+                                     du disque, souvent une ancienne partition EFI. Le micrologiciel peut démarrer son ancien gestionnaire \
+                                     de démarrage au lieu de celui de Windows : « Votre PC doit être réparé », 0xc000000e, et le disque \
+                                     apparaît deux fois dans le menu de démarrage. « Réparer le démarrage » l'efface ; un clone vers un \
+                                     disque le remet à zéro de lui-même.",
+                                    "The Microsoft reserved partition holds a {} file system left by an earlier use of the disk, often a \
+                                     former EFI partition. The firmware may start its old boot manager instead of Windows': \"Your PC \
+                                     needs to be repaired\", 0xc000000e, and the disk shows up twice in the boot menu. \"Repair boot\" \
+                                     erases it; a clone to a disk empties it by itself.",
+                                    kind.label()
+                                ),
+                            )
+                            .scope(format!("partition {}", p.part.number)),
+                        );
+                    }
+                }
             }
         }
         TableKind::Mbr => {

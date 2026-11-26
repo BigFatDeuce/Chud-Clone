@@ -211,7 +211,7 @@ shrink happens while the data is copied.
 
 ## Booting on another PC
 
-A cloned Windows usually stops at a blue screen on its new PC for one of three reasons. Chud Clone
+A cloned Windows usually stops at a blue screen on its new PC for one of four reasons. Chud Clone
 handles each of them:
 
 | Cause | What you see | What Chud Clone does |
@@ -219,6 +219,7 @@ handles each of them:
 | Windows was hibernated or shut down with **fast startup** (the default): it tries to resume a session saved on other hardware. | "Your PC needs to be repaired", or a resume error | The session is cancelled on the clone: the header of `hiberfil.sys` is cleared. Windows then starts normally. |
 | The new PC's **storage controller** (NVMe, or SATA in AHCI mode instead of RAID) needs a driver Windows does not load at boot. | `INACCESSIBLE_BOOT_DEVICE`, then the automatic repair screen | The `stornvme` and `storahci` drivers are set to start at boot in the clone's registry (and a `StartOverride` that disables them is cleared). |
 | The clone's **identifiers were changed** by Windows: it was brought "online" while the source was connected. Its boot configuration then points to partitions that no longer exist. | "Your PC needs to be repaired", 0xc000000e | **Repair boot** rewrites the boot configuration (BCD) so it designates the disk's own partitions, and adds the fallback UEFI loader if it is missing. |
+| A **former EFI partition** is left on the destination where the clone's Microsoft reserved partition (MSR) now lies, typically on a disk that held Windows before. The firmware ignores partition types, finds the old boot manager there and may start it; its boot configuration points to a disk that no longer exists. | "Your PC needs to be repaired", 0xc000000e; the disk shows up twice in the boot menu | A clone fills the reserved partition with zeros. The disk check flags a reserved partition that still holds a file system, and **Repair boot** erases it. |
 
 - The first two fixes are done **at the end of every Windows clone to a disk** ("Prepare boot for
   another PC" option, on by default; `--no-boot-prep` on the command line). They are written
@@ -232,9 +233,9 @@ handles each of them:
   identifiers again from the disk itself. If Windows changed them in the meantime, the source's
   partition table is written back (outside the partitions) and the report says so.
 - **Repair boot** (Disks page in the application, `fix-boot` on the command line, `R` on the WinPE
-  key) applies all three fixes to a disk. It erases nothing and never changes this PC's own boot
-  entries. On a disk Windows keeps offline it does the first two and explains why the boot
-  configuration is left alone.
+  key) applies all four fixes to a disk. It erases no data (a reserved partition holds none) and
+  never changes this PC's own boot entries. On a disk Windows keeps offline it does all but the
+  boot configuration and explains why that is left alone.
 
 ## Command line
 
@@ -295,7 +296,7 @@ WinPE, so the key uses `chud-clone-cli`, linked without the Visual C++ runtime.
 ## Building from source
 
 ```powershell
-cargo test --workspace                                         # 163 tests
+cargo test --workspace                                         # 164 tests
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1   # release binaries + zip + installer
 ```
 
@@ -334,7 +335,7 @@ Every state machine of the program (application, interface, rescue key, engine) 
 [docs/STATE-MACHINES.md](docs/STATE-MACHINES.md), with how to read the state of a running
 application.
 
-- `crates/core`: 89 unit tests and 59 integration tests on **real disk images**
+- `crates/core`: 89 unit tests and 60 integration tests on **real disk images**
   (`crates/core/tests/fixtures`, generated on Linux by `scripts/make-fixtures.sh` with mkntfs,
   mkfs.vfat, sgdisk and sfdisk): Windows UEFI GPT, MBR with logical partitions, dirty NTFS, larger
   / smaller / too-small destination, whole disk, no table, unreadable sectors (stop, zeros, ask),

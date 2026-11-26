@@ -16,7 +16,7 @@
 use super::enumerate::list_volumes;
 use super::wide;
 use crate::boot::{BootStyle, assess_boot};
-use crate::bootprep::{BootPrepOutcome, prepare_volume};
+use crate::bootprep::{BootPrepOutcome, clear_reserved, prepare_volume, reserved_leftover};
 use crate::partition::PartRole;
 use crate::plan::analyze_disk;
 use std::path::PathBuf;
@@ -29,6 +29,8 @@ struct Targets {
     windows_offset: u64,
     windows_len: u64,
     system_offset: u64,
+    /// Microsoft reserved partitions: (number, offset, length).
+    reserved: Vec<(u32, u64, u64)>,
 }
 
 fn find_targets(number: u32) -> Result<Targets, String> {
@@ -56,7 +58,9 @@ fn find_targets(number: u32) -> Result<Targets, String> {
             .unwrap_or(windows),
         _ => return Err(t!("ce disque n'est pas un disque de démarrage Windows", "this disk is not a Windows boot disk").into()),
     };
-    Ok(Targets { style: boot.style, windows_offset: windows, windows_len, system_offset: system })
+    let reserved =
+        a.parts.iter().filter(|p| p.part.role() == PartRole::Msr).map(|p| (p.part.number, p.part.start_lba * ss, p.part.sectors * ss)).collect();
+    Ok(Targets { style: boot.style, windows_offset: windows, windows_len, system_offset: system, reserved })
 }
 
 /// Volume path and existing drive letter of the partition starting at `offset`.
@@ -207,6 +211,25 @@ fn direct_phase(number: u32, t: &Targets, out: &mut BootPrepOutcome, log: &dyn F
     let mut dev = super::rawdisk::RawDisk::open_read_write(&format!(r"\\.\PhysicalDrive{number}"))
         .map_err(|e| tf!("ouverture du disque en écriture impossible : {e}", "cannot open the disk for writing: {e}"))?;
     prepare_volume(&mut dev, t.windows_offset, t.windows_len, out, log);
+    // A file system left in a reserved partition (former EFI partition) is erased: the
+    // firmware would start its old boot manager (see `reserved_leftover`).
+    for &(n, offset, len) in &t.reserved {
+        if let Some(kind) = reserved_leftover(&mut dev, offset, len) {
+            match clear_reserved(&mut dev, offset, len) {
+                Ok(()) => {
+                    out.reserved_cleared.push(n);
+                    let s = tf!(
+                        "Partition réservée {n} : ancien système de fichiers {} effacé",
+                        "Reserved partition {n}: old {} file system erased",
+                        kind.label()
+                    );
+                    log(&s);
+                    out.steps.push(s);
+                }
+                Err(e) => out.warnings.push(tf!("partition réservée {n} non effacée : {e}", "reserved partition {n} not erased: {e}")),
+            }
+        }
+    }
     drop(dev);
     drop(locks);
     Ok(())

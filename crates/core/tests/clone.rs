@@ -228,10 +228,10 @@ fn gpt_same_size_smart_clone_is_verified() {
     assert_eq!(boot.style, chud_clone_core::boot::BootStyle::WindowsUefi);
     assert!(boot.findings.is_empty(), "{:#?}", boot.findings);
     assert_eq!(boot.windows_partition, Some(3));
-    // The MSR is not copied: the destination keeps its old content there.
+    // The MSR is not copied: it is filled with zeros, whatever the destination held there.
     let msr = &l.partitions[1];
-    let o = (msr.start_lba * SS + 4096) as usize;
-    assert!(r.dst[o..o + 4096].iter().all(|b| *b == 0xA5));
+    let (o, n) = ((msr.start_lba * SS) as usize, (msr.sectors * SS) as usize);
+    assert!(r.dst[o..o + n].iter().all(|b| *b == 0));
 }
 
 #[test]
@@ -1053,4 +1053,62 @@ fn identifiers_changed_after_the_clone_are_put_back() {
     d.inner.data[440..444].copy_from_slice(&0x0BADC0DEu32.to_le_bytes());
     d.inner.read_only = true;
     assert!(matches!(recheck_identity(&mut d, &r.plan, &r.analysis), IdentityRecheck::Failed(c, _) if !c.is_empty()));
+}
+
+// ---------------------------------------------------------------------------
+// Former EFI partition left in the reserved partition (0xc000000e at boot)
+// ---------------------------------------------------------------------------
+
+/// A destination that held Windows before has its old EFI partition 1 MiB into the
+/// disk, exactly where the clone's reserved partition goes. The firmware ignores
+/// partition types, finds that old boot manager and may start it: the clone must empty
+/// its reserved partition, and the boot check must flag a disk that still has one.
+#[test]
+fn former_efi_partition_in_the_reserved_partition_is_erased() {
+    use chud_clone_core::boot::assess_boot;
+    use chud_clone_core::bootprep::{clear_reserved, reserved_leftover};
+    let _g = heavy();
+    let src = gpt_image();
+    let mut s = SliceDev::new(src);
+    let analysis = analyze_disk(&mut s).unwrap();
+    let esp = analysis.parts.iter().find(|p| p.part.role() == PartRole::Esp).unwrap().part.clone();
+    let msr = analysis.parts.iter().find(|p| p.part.role() == PartRole::Msr).unwrap().part.clone();
+    let (eo, el) = ((esp.start_lba * SS) as usize, (esp.sectors * SS) as usize);
+    let (mo, ml) = ((msr.start_lba * SS) as usize, (msr.sectors * SS) as usize);
+    let stale = |img: &mut Vec<u8>| {
+        let n = el.min(ml);
+        let fat = src[eo..eo + n].to_vec();
+        img[mo..mo + n].copy_from_slice(&fat);
+    };
+
+    // A disk with such a leftover is flagged, and the repair step erases it.
+    let mut with_leftover = src.to_vec();
+    stale(&mut with_leftover);
+    let mut d = MemDevice::from_vec(with_leftover, 512);
+    let a = analyze_disk(&mut d).unwrap();
+    assert!(reserved_leftover(&mut d, mo as u64, ml as u64).is_some_and(|k| k.is_fat()));
+    let b = assess_boot(&mut d, &a);
+    assert!(b.findings.iter().any(|f| f.code == "BOOT_MSR_LEFTOVER"), "{:#?}", b.findings);
+    clear_reserved(&mut d, mo as u64, ml as u64).unwrap();
+    assert!(d.data[mo..mo + ml].iter().all(|b| *b == 0));
+    assert_eq!(reserved_leftover(&mut d, mo as u64, ml as u64), None);
+    assert!(!assess_boot(&mut d, &a).findings.iter().any(|f| f.code == "BOOT_MSR_LEFTOVER"));
+    // Only the reserved partition was written.
+    assert!(d.data[..mo] == src[..mo] && d.data[mo + ml..] == src[mo + ml..]);
+
+    // Clone onto a destination whose old EFI partition sits where the MSR goes.
+    let plan = build_plan(&analysis, src.len() as u64, 512, &PlanOptions::default());
+    let mut old = vec![0xA5u8; src.len()];
+    stale(&mut old);
+    let mut dst = MemDevice::from_vec(old, 512);
+    let rec = Recorder::default();
+    let ctl = Control::new();
+    let mut s = SliceDev::new(src);
+    let outcome = run_clone(CloneRequest { src: &mut s, dst: &mut dst, src_analysis: &analysis, plan: &plan, opts: &opts(), ctl: &ctl, obs: &rec });
+    assert_eq!(outcome.status, FinalStatus::SuccessVerified, "{}", dump_reasons(&outcome));
+    assert!(dst.data[mo..mo + ml].iter().all(|b| *b == 0), "the clone's reserved partition must be empty");
+    let bd = outcome.boot_destination.as_ref().unwrap();
+    assert!(!bd.findings.iter().any(|f| f.code == "BOOT_MSR_LEFTOVER"), "{:#?}", bd.findings);
+    let logs = rec.logs.lock().unwrap();
+    assert!(logs.iter().any(|(_, m)| m.contains("old") && m.contains("content erased") || m.contains("ancien contenu")), "{logs:#?}");
 }
